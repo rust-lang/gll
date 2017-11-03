@@ -1,0 +1,14 @@
+[package]
+name = "gll"
+version = "0.1.0"
+authors = ["Ana-Maria <mihalacheana.maria@yahoo.com>"]
+repository = "https://github.com/lykenware/gll"
+license = "MIT/Apache-2.0"
+description = "GLL parser generator."
+
+[dependencies]
+ordermap = "0.3.0"
+
+[lib]
+doctest = false
+test = false
