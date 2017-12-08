@@ -117,9 +117,9 @@ pub macro grammar {
     (@unit $atom:expr) => {
         Unit::Atom($atom)
     },
-    ($grammar_name:ident; $($rule_name:ident {
-        $($arm_name:ident { $($unit:tt)* })*
-    })*) => ({
+    ($grammar_name:ident; $($rule_name:ident =
+        $($arm_name:ident { $($unit:tt)* })|+;
+    )*) => ({
         let mut grammar = Grammar::new(stringify!($grammar_name));
         $(grammar.add_rule(stringify!($rule_name), {
             let mut rule = Rule::new();

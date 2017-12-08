@@ -9,11 +9,9 @@ use std::fs::File;
 fn gamma_0() {
     let mut g = grammar!{
         Gamma0;
-        A {
-            X { 'a' A 'b' }
-            Y { 'a' A 'c' }
-            Z { 'a' }
-        }
+        A = X { 'a' A 'b' }
+          | Y { 'a' A 'c' }
+          | Z { 'a' };
     };
 
     g.generate(&mut File::create("tests/gamma0.rs").unwrap())
