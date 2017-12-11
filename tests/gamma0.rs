@@ -22,16 +22,16 @@ pub enum Gamma0 {
 macro_rules! L {
     ("L₀") => (Gamma0::_0);
     ("A") => (Gamma0::_1);
-    ("A.X ::=·'a' A 'b'") => (Gamma0::_2);
-    ("A.X ::= 'a'·A 'b'") => (Gamma0::_3);
-    ("A.X ::= 'a' A·'b'") => (Gamma0::_4);
-    ("A.X ::= 'a' A 'b'·") => (Gamma0::_5);
-    ("A.Y ::=·'a' A 'c'") => (Gamma0::_6);
-    ("A.Y ::= 'a'·A 'c'") => (Gamma0::_7);
-    ("A.Y ::= 'a' A·'c'") => (Gamma0::_8);
-    ("A.Y ::= 'a' A 'c'·") => (Gamma0::_9);
-    ("A.Z ::=·'a'") => (Gamma0::_10);
-    ("A.Z ::= 'a'·") => (Gamma0::_11);
+    ("X") => (Gamma0::_2);
+    ("X ::=·'a' A 'b'") => (Gamma0::_3);
+    ("X ::= 'a'·A 'b'") => (Gamma0::_4);
+    ("X ::= 'a' A·'b'") => (Gamma0::_5);
+    ("Y") => (Gamma0::_6);
+    ("Y ::=·'a' A 'c'") => (Gamma0::_7);
+    ("Y ::= 'a'·A 'c'") => (Gamma0::_8);
+    ("Y ::= 'a' A·'c'") => (Gamma0::_9);
+    ("Z") => (Gamma0::_10);
+    ("Z ::=·'a'") => (Gamma0::_11);
 }
 
 impl Default for Gamma0 {
@@ -45,16 +45,16 @@ impl fmt::Display for Gamma0 {
         let s = match *self {
             L!("L₀") => "L₀",
             L!("A") => "A",
-            L!("A.X ::=·'a' A 'b'") => "A.X ::=·'a' A 'b'",
-            L!("A.X ::= 'a'·A 'b'") => "A.X ::= 'a'·A 'b'",
-            L!("A.X ::= 'a' A·'b'") => "A.X ::= 'a' A·'b'",
-            L!("A.X ::= 'a' A 'b'·") => "A.X ::= 'a' A 'b'·",
-            L!("A.Y ::=·'a' A 'c'") => "A.Y ::=·'a' A 'c'",
-            L!("A.Y ::= 'a'·A 'c'") => "A.Y ::= 'a'·A 'c'",
-            L!("A.Y ::= 'a' A·'c'") => "A.Y ::= 'a' A·'c'",
-            L!("A.Y ::= 'a' A 'c'·") => "A.Y ::= 'a' A 'c'·",
-            L!("A.Z ::=·'a'") => "A.Z ::=·'a'",
-            L!("A.Z ::= 'a'·") => "A.Z ::= 'a'·",
+            L!("X") => "X",
+            L!("X ::=·'a' A 'b'") => "X ::=·'a' A 'b'",
+            L!("X ::= 'a'·A 'b'") => "X ::= 'a'·A 'b'",
+            L!("X ::= 'a' A·'b'") => "X ::= 'a' A·'b'",
+            L!("Y") => "Y",
+            L!("Y ::=·'a' A 'c'") => "Y ::=·'a' A 'c'",
+            L!("Y ::= 'a'·A 'c'") => "Y ::= 'a'·A 'c'",
+            L!("Y ::= 'a' A·'c'") => "Y ::= 'a' A·'c'",
+            L!("Z") => "Z",
+            L!("Z ::=·'a'") => "Z ::=·'a'",
         };
         write!(f, "{}", s)
     }
@@ -63,8 +63,8 @@ impl fmt::Display for Gamma0 {
 impl Label for Gamma0 {
     fn nonterminal_before_dot(&self) -> Option<Gamma0> {
         match *self {
-            L!("A.X ::= 'a' A·'b'") => Some(L!("A")),
-            L!("A.Y ::= 'a' A·'c'") => Some(L!("A")),
+            L!("X ::= 'a' A·'b'") => Some(L!("A")),
+            L!("Y ::= 'a' A·'c'") => Some(L!("A")),
             _ => None,
         }
     }
@@ -86,79 +86,73 @@ pub fn parse(input: &str) -> Parser<Gamma0> {
                 return p;
             },
             L!("A") => {
-                p.candidates
-                    .add(L!("A.X ::=·'a' A 'b'"), c.u, c.i, ParseNode::DUMMY);
-                p.candidates
-                    .add(L!("A.Y ::=·'a' A 'c'"), c.u, c.i, ParseNode::DUMMY);
-                p.candidates
-                    .add(L!("A.Z ::=·'a'"), c.u, c.i, ParseNode::DUMMY);
+                p.candidates.add(L!("X ::=·'a' A 'b'"), c.u, c.i, ParseNode::DUMMY);
+                p.candidates.add(L!("Y ::=·'a' A 'c'"), c.u, c.i, ParseNode::DUMMY);
+                p.candidates.add(L!("Z ::=·'a'"), c.u, c.i, ParseNode::DUMMY);
                 c.l = L!("L₀");
             }
-            L!("A.X ::=·'a' A 'b'") => if input[c.i..].starts_with("a") {
+            L!("X ::=·'a' A 'b'") => if input[c.i..].starts_with("a") {
                 let j = c.i + "a".len();
                 let c_r = ParseNode::terminal(c.i, j);
                 c.i = j;
-                c.w = p.sppf.add_packed(L!("A.X ::= 'a'·A 'b'"), c.w, c_r);
-                c.l = L!("A.X ::= 'a'·A 'b'");
+                c.w = p.sppf.add_packed(L!("X ::= 'a'·A 'b'"), c.w, c_r);
+                c.l = L!("X ::= 'a'·A 'b'");
             } else {
                 c.l = L!("L₀");
             },
-            L!("A.X ::= 'a'·A 'b'") => {
-                c.u = p.create(L!("A.X ::= 'a' A·'b'"), c.u, c.i, c.w);
+            L!("X ::= 'a'·A 'b'") => {
+                c.u = p.create(L!("X ::= 'a' A·'b'"), c.u, c.i, c.w);
                 c.l = L!("A");
             }
-            L!("A.X ::= 'a' A·'b'") => if input[c.i..].starts_with("b") {
+            L!("X ::= 'a' A·'b'") => if input[c.i..].starts_with("b") {
                 let j = c.i + "b".len();
                 let c_r = ParseNode::terminal(c.i, j);
                 c.i = j;
-                c.w = p.sppf.add_packed(L!("A.X ::= 'a' A 'b'·"), c.w, c_r);
-                c.l = L!("A.X ::= 'a' A 'b'·");
+                c.w = p.sppf.add_packed(L!("X"), c.w, c_r);
+                c.l = L!("X");
             } else {
                 c.l = L!("L₀");
             },
-            L!("A.X ::= 'a' A 'b'·") => {
-                c.w = p.sppf.add_packed(L!("A"), ParseNode::DUMMY, c.w);
+            L!("X") => {
                 p.pop(c.u, c.i, c.w);
                 c.l = L!("L₀");
             }
-            L!("A.Y ::=·'a' A 'c'") => if input[c.i..].starts_with("a") {
+            L!("Y ::=·'a' A 'c'") => if input[c.i..].starts_with("a") {
                 let j = c.i + "a".len();
                 let c_r = ParseNode::terminal(c.i, j);
                 c.i = j;
-                c.w = p.sppf.add_packed(L!("A.Y ::= 'a'·A 'c'"), c.w, c_r);
-                c.l = L!("A.Y ::= 'a'·A 'c'");
+                c.w = p.sppf.add_packed(L!("Y ::= 'a'·A 'c'"), c.w, c_r);
+                c.l = L!("Y ::= 'a'·A 'c'");
             } else {
                 c.l = L!("L₀");
             },
-            L!("A.Y ::= 'a'·A 'c'") => {
-                c.u = p.create(L!("A.Y ::= 'a' A·'c'"), c.u, c.i, c.w);
+            L!("Y ::= 'a'·A 'c'") => {
+                c.u = p.create(L!("Y ::= 'a' A·'c'"), c.u, c.i, c.w);
                 c.l = L!("A");
             }
-            L!("A.Y ::= 'a' A·'c'") => if input[c.i..].starts_with("c") {
+            L!("Y ::= 'a' A·'c'") => if input[c.i..].starts_with("c") {
                 let j = c.i + "c".len();
                 let c_r = ParseNode::terminal(c.i, j);
                 c.i = j;
-                c.w = p.sppf.add_packed(L!("A.Y ::= 'a' A 'c'·"), c.w, c_r);
-                c.l = L!("A.Y ::= 'a' A 'c'·");
+                c.w = p.sppf.add_packed(L!("Y"), c.w, c_r);
+                c.l = L!("Y");
             } else {
                 c.l = L!("L₀");
             },
-            L!("A.Y ::= 'a' A 'c'·") => {
-                c.w = p.sppf.add_packed(L!("A"), ParseNode::DUMMY, c.w);
+            L!("Y") => {
                 p.pop(c.u, c.i, c.w);
                 c.l = L!("L₀");
             }
-            L!("A.Z ::=·'a'") => if input[c.i..].starts_with("a") {
+            L!("Z ::=·'a'") => if input[c.i..].starts_with("a") {
                 let j = c.i + "a".len();
                 let c_r = ParseNode::terminal(c.i, j);
                 c.i = j;
-                c.w = p.sppf.add_packed(L!("A.Z ::= 'a'·"), c.w, c_r);
-                c.l = L!("A.Z ::= 'a'·");
+                c.w = p.sppf.add_packed(L!("Z"), c.w, c_r);
+                c.l = L!("Z");
             } else {
                 c.l = L!("L₀");
             },
-            L!("A.Z ::= 'a'·") => {
-                c.w = p.sppf.add_packed(L!("A"), ParseNode::DUMMY, c.w);
+            L!("Z") => {
                 p.pop(c.u, c.i, c.w);
                 c.l = L!("L₀");
             }

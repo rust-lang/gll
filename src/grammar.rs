@@ -25,31 +25,49 @@ impl<A> Grammar<A> {
 
 pub struct Rule<A> {
     label: Label,
-    arms: OrderMap<Symbol, Arm<A>>,
+    kind: RuleKind<A>,
+}
+
+pub enum RuleKind<A> {
+    Sequence(Sequence<A>),
+    Alternation(Vec<Symbol>),
 }
 
 impl<A> Rule<A> {
-    pub fn new() -> Self {
+    pub fn sequence(seq: Sequence<A>) -> Self {
         Rule {
             label: Label::empty(),
-            arms: OrderMap::new(),
+            kind: RuleKind::Sequence(seq),
         }
     }
-    pub fn add_arm(&mut self, name: &str, arm: Arm<A>) {
-        self.arms.insert(Symbol::from(name), arm);
+    pub fn alternation(rules: &[&str]) -> Self {
+        Rule {
+            label: Label::empty(),
+            kind: RuleKind::Alternation(rules.iter().map(|&r| Symbol::from(r)).collect()),
+        }
+    }
+    fn start_label(&self) -> Label {
+        match self.kind {
+            RuleKind::Sequence(ref seq) => if seq.units.is_empty() {
+                self.label
+            } else {
+                seq.labels_before[0]
+            },
+            RuleKind::Alternation(_) => self.label,
+        }
     }
 }
 
-pub struct Arm<A> {
+pub struct Sequence<A> {
     units: Vec<Unit<A>>,
-    labels: Vec<Label>,
+    labels_before: Vec<Label>,
 }
 
-impl<A> Arm<A> {
+impl<A> Sequence<A> {
     pub fn new(units: Vec<Unit<A>>) -> Self {
-        Arm {
+        Sequence {
             units,
-            labels: vec![],
+            labels_before: vec![],
         }
     }
 }
@@ -121,11 +139,12 @@ pub macro grammar {
         $($arm_name:ident { $($unit:tt)* })|+;
     )*) => ({
         let mut grammar = Grammar::new(stringify!($grammar_name));
-        $(grammar.add_rule(stringify!($rule_name), {
-            let mut rule = Rule::new();
-            $(rule.add_arm(stringify!($arm_name), Arm::new(vec![$(grammar!(@unit $unit)),*]));)*
-            rule
-        });)*
+        $(
+            grammar.add_rule(stringify!($rule_name),
+                Rule::alternation(&[$(stringify!($arm_name)),*]));
+            $(grammar.add_rule(stringify!($arm_name),
+                Rule::sequence(Sequence::new(vec![$(grammar!(@unit $unit)),*])));)*
+        )*
         grammar
     })
 }
@@ -141,41 +160,41 @@ impl<A: Atom> Grammar<A> {
         self.l0 = Label::new("L₀");
         for (rule_name, rule) in &mut self.rules {
             rule.label = Label::new(&rule_name.as_str());
-            for (arm_name, arm) in &mut rule.arms {
-                for i in 0..arm.units.len() + 1 {
-                    let mut s = format!("{}.{} ::=", rule_name, arm_name);
-                    for (j, unit) in arm.units.iter().enumerate() {
-                        if i == j {
-                            s.push('·');
-                        } else {
-                            s.push(' ');
-                        }
-                        match *unit {
-                            Unit::Atom(ref a) => {
-                                s.push_str(&a.to_label_description());
+            match rule.kind {
+                RuleKind::Sequence(ref mut seq) => {
+                    for i in 0..seq.units.len() {
+                        let mut s = format!("{} ::=", rule_name);
+                        for (j, unit) in seq.units.iter().enumerate() {
+                            if i == j {
+                                s.push('·');
+                            } else {
+                                s.push(' ');
                             }
-                            Unit::Rule(r) => {
-                                s.push_str(&r.as_str());
+                            match *unit {
+                                Unit::Atom(ref a) => {
+                                    s.push_str(&a.to_label_description());
+                                }
+                                Unit::Rule(r) => {
+                                    s.push_str(&r.as_str());
+                                }
                             }
                         }
+                        seq.labels_before.push(Label::new(&s));
                     }
-                    if i == arm.units.len() {
-                        s.push('·');
-                    }
-                    arm.labels.push(Label::new(&s));
                 }
+                RuleKind::Alternation(_) => {}
             }
         }
         let labels: Vec<_> = iter::once(self.l0)
             .chain(self.rules.values().flat_map(|rule| {
-                iter::once(rule.label).chain(
-                    rule.arms
-                        .values()
-                        .flat_map(|arm| arm.labels.iter().cloned()),
-                )
+                let labels = match rule.kind {
+                    RuleKind::Sequence(ref seq) => &seq.labels_before[..],
+                    RuleKind::Alternation(_) => &[],
+                };
+                iter::once(rule.label).chain(labels.iter().cloned())
             }))
             .collect();
-        let entry_rule_label = self.rules.values().next().unwrap().label;
+        let entry_rule_label = self.rules.values().next().unwrap().start_label();
 
         put!("extern crate gll;
 
@@ -224,13 +243,21 @@ impl Label for ", self.name, " {
     fn nonterminal_before_dot(&self) -> Option<Gamma0> {
         match *self {");
         for rule in self.rules.values() {
-            for arm in rule.arms.values() {
-                for (i, unit) in arm.units.iter().enumerate() {
-                    if let Unit::Rule(r) = *unit {
-                        put!("
-            ", arm.labels[i + 1], " => Some(", self.rules[&r].label, "),");
+            match rule.kind {
+                RuleKind::Sequence(ref seq) => {
+                    for (i, unit) in seq.units.iter().enumerate() {
+                        if let Unit::Rule(r) = *unit {
+                            let next_label = if i == seq.units.len() - 1 {
+                                rule.label
+                            } else {
+                                seq.labels_before[i + 1]
+                            };
+                            put!("
+            ", next_label, " => Some(", self.rules[&r].label, "),");
+                        }
                     }
                 }
+                RuleKind::Alternation(_) => {}
             }
         }
         put!("
@@ -255,46 +282,53 @@ pub fn parse(input: &str) -> Parser<", self.name, "> {
                 return p;
             },");
         for rule in self.rules.values() {
-            put!("
+            match rule.kind {
+                RuleKind::Alternation(ref rules) => {
+                    put!("
             ", rule.label, " => {");
-            for arm in rule.arms.values() {
-                put!("
-                p.candidates
-                    .add(", arm.labels[0], ", c.u, c.i, ParseNode::DUMMY);")
-            }
-            put!("
+                    for r in rules {
+                        put!("
+                p.candidates.add(", self.rules[r].start_label(), ", c.u, c.i, ParseNode::DUMMY);")
+                    }
+                    put!("
                 c.l = ", self.l0, ";
             }");
-            for arm in rule.arms.values() {
-                for (i, unit) in arm.units.iter().enumerate() {
-                    match *unit {
-                        Unit::Rule(r) => put!("
-            ", arm.labels[i], " => {
-                c.u = p.create(", arm.labels[i + 1], ", c.u, c.i, c.w);
-                c.l = ", self.rules[&r].label, ";
+                }
+                RuleKind::Sequence(ref seq) => {
+                    for (i, unit) in seq.units.iter().enumerate() {
+                        let next_label = if i == seq.units.len() - 1 {
+                            rule.label
+                        } else {
+                            seq.labels_before[i + 1]
+                        };
+                        match *unit {
+                            Unit::Rule(r) => put!("
+            ", seq.labels_before[i], " => {
+                c.u = p.create(", next_label, ", c.u, c.i, c.w);
+                c.l = ", self.rules[&r].start_label(), ";
             }"),
-                        Unit::Atom(ref a) => {
-                            let a = a.to_rust_slice();
-                            put!("
-            ", arm.labels[i], " => if input[c.i..].starts_with(", a, ") {
+                            Unit::Atom(ref a) => {
+                                let a = a.to_rust_slice();
+                                put!("
+            ", seq.labels_before[i], " => if input[c.i..].starts_with(", a, ") {
                 let j = c.i + ", a, ".len();
                 let c_r = ParseNode::terminal(c.i, j);
                 c.i = j;
-                c.w = p.sppf.add_packed(", arm.labels[i + 1], ", c.w, c_r);
-                c.l = ", arm.labels[i + 1], ";
+                c.w = p.sppf.add_packed(", next_label, ", c.w, c_r);
+                c.l = ", next_label, ";
             } else {
                 c.l = ", self.l0, ";
             },")
+                            }
                         }
                     }
-                }
 
-                put!("
-            ", arm.labels[arm.units.len()], " => {
-                c.w = p.sppf.add_packed(", rule.label, ", ParseNode::DUMMY, c.w);
+                    put!("
+            ", rule.label, " => {
                 p.pop(c.u, c.i, c.w);
                 c.l = ", self.l0, ";
             }");
+                }
             }
         }
 
