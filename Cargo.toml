@@ -12,3 +12,8 @@ ordermap = "0.3.0"
 [lib]
 doctest = false
 test = false
+
+[workspace]
+members = [
+    "tests"
+]
