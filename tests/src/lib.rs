@@ -1,12 +1,13 @@
 use std::fs::File;
 
-mod gamma0 {
+pub mod gamma0 {
     include!(concat!(env!("OUT_DIR"), "/gamma0.rs"));
 }
 
 #[test]
 fn gamma_0() {
-    let parser = gamma0::parse("aac");
+    let mut parser = gamma0::Parser::default();
+    gamma0::A::parse(&mut parser, "aac");
     parser
         .gss
         .print(&mut File::create(concat!(env!("CARGO_MANIFEST_DIR"), "/../target/gamma0-gss.dot")).unwrap())

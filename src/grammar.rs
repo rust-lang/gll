@@ -194,12 +194,13 @@ impl<A: Atom> Grammar<A> {
                 iter::once(rule.label).chain(labels.iter().cloned())
             }))
             .collect();
-        let entry_rule_label = self.rules.values().next().unwrap().start_label();
 
         put!("extern crate gll;
 
-use self::gll::{Candidate, Label, ParseNode, Parser, StackNode};
+use self::gll::{Candidate, Label, ParseNode, StackNode};
 use std::fmt;
+
+pub type Parser = gll::Parser<", self.name, ">;
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
 pub enum ", self.name, " {");
@@ -264,13 +265,27 @@ impl Label for ", self.name, " {
             _ => None,
         }
     }
-}
+}");
+        for (name, rule) in &self.rules {
+            put!("
 
-pub fn parse(input: &str) -> Parser<", self.name, "> {
-    let mut p = Parser::default();
+pub struct ", name, ";
+
+impl ", name, " {
+    pub fn parse(p: &mut Parser, input: &str) {
+        p.candidates.add(", rule.start_label(), ", StackNode {
+            l: ", rule.start_label(), ",
+            i: 0
+        }, 0, ParseNode::DUMMY);
+        parse(p, input);
+    }
+}");
+        }
+        put!("
+fn parse(p: &mut Parser, input: &str) {
     let mut c = Candidate {
-        l: ", entry_rule_label, ",
-        u: StackNode { l: ", entry_rule_label, ", i: 0 },
+        l: ", self.l0, ",
+        u: StackNode { l: ", self.l0, ", i: 0 },
         i: 0,
         w: ParseNode::DUMMY,
     };
@@ -279,7 +294,7 @@ pub fn parse(input: &str) -> Parser<", self.name, "> {
             ", self.l0, " => if let Some(next) = p.candidates.remove() {
                 c = next;
             } else {
-                return p;
+                return;
             },");
         for rule in self.rules.values() {
             match rule.kind {
