@@ -200,7 +200,7 @@ impl<A: Atom> Grammar<A> {
 use self::gll::{Candidate, Label, ParseNode, StackNode};
 use std::fmt;
 
-pub type Parser = gll::Parser<", self.name, ">;
+pub type Parser<'a> = gll::Parser<", self.name, ", &'a str>;
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
 pub enum ", self.name, " {");
@@ -272,17 +272,17 @@ impl Label for ", self.name, " {
 pub struct ", name, ";
 
 impl ", name, " {
-    pub fn parse(p: &mut Parser, input: &str) {
+    pub fn parse(p: &mut Parser) {
         p.candidates.add(", rule.start_label(), ", StackNode {
             l: ", rule.start_label(), ",
             i: 0
         }, 0, ParseNode::DUMMY);
-        parse(p, input);
+        parse(p);
     }
 }");
         }
         put!("
-fn parse(p: &mut Parser, input: &str) {
+fn parse(p: &mut Parser) {
     let mut c = Candidate {
         l: ", self.l0, ",
         u: StackNode { l: ", self.l0, ", i: 0 },
@@ -325,7 +325,7 @@ fn parse(p: &mut Parser, input: &str) {
                             Unit::Atom(ref a) => {
                                 let a = a.to_rust_slice();
                                 put!("
-            ", seq.labels_before[i], " => if input[c.i..].starts_with(", a, ") {
+            ", seq.labels_before[i], " => if p.input[c.i..].starts_with(", a, ") {
                 let j = c.i + ", a, ".len();
                 let c_r = ParseNode::terminal(c.i, j);
                 c.i = j;

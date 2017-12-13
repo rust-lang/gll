@@ -6,8 +6,8 @@ pub mod gamma0 {
 
 #[test]
 fn gamma_0() {
-    let mut parser = gamma0::Parser::default();
-    gamma0::A::parse(&mut parser, "aac");
+    let mut parser = gamma0::Parser::new("aac");
+    gamma0::A::parse(&mut parser);
     parser
         .gss
         .print(&mut File::create(concat!(env!("CARGO_MANIFEST_DIR"), "/../target/gamma0-gss.dot")).unwrap())

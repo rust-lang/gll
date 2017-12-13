@@ -11,8 +11,8 @@ use std::io::{self, Write};
 
 pub mod grammar;
 
-#[derive(Default)]
-pub struct Parser<L: Label> {
+pub struct Parser<L: Label, I> {
+    pub input: I,
     pub candidates: Candidates<L>,
     pub gss: StackGraph<L>,
     pub sppf: ParseGraph<L>,
@@ -189,7 +189,16 @@ pub enum PackedNode<L: Label> {
     Two(ParseNode<L>, ParseNode<L>),
 }
 
-impl<L: Label> Parser<L> {
+impl<L: Label, I> Parser<L, I> {
+    pub fn new(input: I) -> Parser<L, I> {
+        Parser {
+            input,
+            candidates: Candidates::default(),
+            gss: StackGraph::default(),
+            sppf: ParseGraph::default(),
+            parse_results: HashMap::default(),
+        }
+    }
     pub fn create(&mut self, l: L, u: StackNode<L>, i: usize, w: ParseNode<L>) -> StackNode<L> {
         let v = StackNode {
             l: l.nonterminal_before_dot().unwrap(),
@@ -222,6 +231,6 @@ impl<L: Label> Parser<L> {
     }
 }
 
-pub trait Label: fmt::Display + Ord + Hash + Copy {
+pub trait Label: fmt::Display + Ord + Hash + Copy + Default {
     fn nonterminal_before_dot(&self) -> Option<Self>;
 }
