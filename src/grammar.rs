@@ -241,7 +241,7 @@ impl fmt::Display for ", self.name, " {
 }
 
 impl Label for ", self.name, " {
-    fn nonterminal_before_dot(&self) -> Option<Gamma0> {
+    fn nonterminal_before_dot(&self) -> Option<", self.name, "> {
         match *self {");
         for rule in self.rules.values() {
             match rule.kind {
