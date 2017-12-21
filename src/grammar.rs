@@ -339,7 +339,12 @@ fn parse(p: &mut Parser) {
                     }
 
                     put!("
-            ", rule.label, " => {
+            ", rule.label, " => {");
+                    if seq.units.is_empty() {
+                        put!("
+                c.w = p.sppf.add_packed(", rule.label, ", ParseNode::DUMMY, ParseNode::terminal(c.i, c.i));");
+                    }
+                    put!("
                 p.pop(c.u, c.i, c.w);
                 c.l = ", self.l0, ";
             }");

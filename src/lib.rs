@@ -165,8 +165,8 @@ pub struct ParseNode<L: Label> {
 impl<L: Label> ParseNode<L> {
     pub const DUMMY: ParseNode<L> = ParseNode {
         l: None,
-        i: 1,
-        j: 0,
+        i: !0,
+        j: !0,
     };
 
     pub fn terminal(i: usize, j: usize) -> ParseNode<L> {
@@ -176,6 +176,9 @@ impl<L: Label> ParseNode<L> {
 
 impl<L: Label> fmt::Display for ParseNode<L> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        if *self == Self::DUMMY {
+            return write!(f, "DUMMY");
+        }
         if let Some(l) = self.l {
             write!(f, "{}, ", l)?;
         }
