@@ -16,7 +16,6 @@ pub struct Parser<L: Label, I> {
     pub candidates: Candidates<L>,
     pub gss: StackGraph<L>,
     pub sppf: ParseGraph<L>,
-    pub parse_results: HashMap<StackNode<L>, HashSet<ParseNode<L>>>,
 }
 
 #[derive(Default)]
@@ -104,11 +103,11 @@ impl<L: Label> fmt::Display for StackNode<L> {
 }
 
 #[derive(Default)]
-pub struct ParseGraph<L: Label> {
-    pub children: HashMap<ParseNode<L>, HashSet<PackedNode<L>>>,
+pub struct ParseGraphChildren<L: Label> {
+    pub map: HashMap<ParseNode<L>, HashSet<PackedNode<L>>>,
 }
 
-impl<L: Label> ParseGraph<L> {
+impl<L: Label> ParseGraphChildren<L> {
     pub fn add_packed(&mut self, l: L, w: ParseNode<L>, z: ParseNode<L>) -> ParseNode<L> {
         let (y, p) = if w != ParseNode::DUMMY {
             (
@@ -129,15 +128,28 @@ impl<L: Label> ParseGraph<L> {
                 PackedNode::One(z),
             )
         };
-        self.children.entry(y).or_insert(HashSet::new()).insert(p);
+        self.map.entry(y).or_insert(HashSet::new()).insert(p);
         y
+    }
+}
+
+#[derive(Default)]
+pub struct ParseGraph<L: Label> {
+    pub children: ParseGraphChildren<L>,
+    pub results: HashMap<StackNode<L>, HashSet<ParseNode<L>>>,
+}
+
+impl<L: Label> ParseGraph<L> {
+    pub fn add_packed(&mut self, l: L, w: ParseNode<L>, z: ParseNode<L>) -> ParseNode<L> {
+        self.children.add_packed(l, w, z)
     }
     pub fn print(&self, out: &mut Write) -> io::Result<()> {
         writeln!(out, "digraph gss {{")?;
         let mut p = 0;
-        for (source, children) in &self.children {
+        for (source, children) in &self.children.map {
+            writeln!(out, r#"    "{}" [shape=box]"#, source)?;
             for child in children {
-                writeln!(out, r#"    p{} [label="" shape=none width=0 height=0]"#, p)?;
+                writeln!(out, r#"    p{} [label="" shape=point]"#, p)?;
                 writeln!(out, r#"    "{}" -> p{}:n"#, source, p)?;
                 match *child {
                     PackedNode::One(x) => {
@@ -149,6 +161,11 @@ impl<L: Label> ParseGraph<L> {
                     }
                 }
                 p += 1;
+            }
+        }
+        for (query, results) in &self.results {
+            for result in results {
+                writeln!(out, r#"    "{}" -> "{}""#, query, result)?;
             }
         }
         writeln!(out, "}}")
@@ -199,7 +216,6 @@ impl<L: Label, I> Parser<L, I> {
             candidates: Candidates::default(),
             gss: StackGraph::default(),
             sppf: ParseGraph::default(),
-            parse_results: HashMap::default(),
         }
     }
     pub fn create(&mut self, l: L, u: StackNode<L>, i: usize, w: ParseNode<L>) -> StackNode<L> {
@@ -209,9 +225,9 @@ impl<L: Label, I> Parser<L, I> {
         };
         let edges = self.gss.edges.entry(v).or_insert(HashSet::new());
         if edges.insert((l, w, u)) && edges.len() > 1 {
-            if let Some(results) = self.parse_results.get(&v) {
+            if let Some(results) = self.sppf.results.get(&v) {
                 for &z in results {
-                    let y = self.sppf.add_packed(l, w, z);
+                    let y = self.sppf.children.add_packed(l, w, z);
                     self.candidates.add(l, u, y.j, y);
                 }
             }
@@ -219,7 +235,8 @@ impl<L: Label, I> Parser<L, I> {
         v
     }
     pub fn pop(&mut self, u: StackNode<L>, i: usize, z: ParseNode<L>) {
-        if self.parse_results
+        if self.sppf
+            .results
             .entry(u)
             .or_insert(HashSet::new())
             .insert(z)
