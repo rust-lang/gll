@@ -25,7 +25,7 @@ pub struct Candidates<L: Label> {
 }
 
 impl<L: Label> Candidates<L> {
-    pub fn add(&mut self, l: L, u: StackNode<L>, i: usize, w: ParseNode<L>) {
+    pub fn add(&mut self, l: L, u: Call<L>, i: usize, w: ParseNode<L>) {
         let c = Candidate { l, u, i, w };
         if self.attempted.insert(c) {
             self.queue.push(c);
@@ -54,7 +54,7 @@ impl<L: Label> Candidates<L> {
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub struct Candidate<L: Label> {
     pub l: L,
-    pub u: StackNode<L>,
+    pub u: Call<L>,
     pub i: usize,
     pub w: ParseNode<L>,
 }
@@ -74,7 +74,7 @@ impl<L: Label> Ord for Candidate<L> {
 
 #[derive(Default)]
 pub struct StackGraph<L: Label> {
-    edges: HashMap<StackNode<L>, HashSet<(L, ParseNode<L>, StackNode<L>)>>,
+    edges: HashMap<Call<L>, HashSet<(L, ParseNode<L>, Call<L>)>>,
 }
 
 impl<L: Label> StackGraph<L> {
@@ -91,24 +91,24 @@ impl<L: Label> StackGraph<L> {
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct StackNode<L: Label> {
+pub struct Call<L: Label> {
     pub l: L,
     pub i: usize,
 }
 
-impl<L: Label> fmt::Display for StackNode<L> {
+impl<L: Label> fmt::Display for Call<L> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}, {}..", self.l, self.i)
+        write!(f, "{}({}..)", self.l, self.i)
     }
 }
 
 #[derive(Default)]
 pub struct ParseGraphChildren<L: Label> {
-    pub map: HashMap<ParseNode<L>, HashSet<PackedNode<L>>>,
+    pub map: HashMap<ParseNode<L>, HashSet<ParseResult<L>>>,
 }
 
 impl<L: Label> ParseGraphChildren<L> {
-    pub fn add_packed(&mut self, l: L, w: ParseNode<L>, z: ParseNode<L>) -> ParseNode<L> {
+    pub fn add_result(&mut self, l: L, w: ParseNode<L>, z: ParseNode<L>) -> ParseNode<L> {
         let (y, p) = if w != ParseNode::DUMMY {
             (
                 ParseNode {
@@ -116,7 +116,7 @@ impl<L: Label> ParseGraphChildren<L> {
                     i: w.i,
                     j: z.j,
                 },
-                PackedNode::Two(w, z),
+                ParseResult::Binary(w, z),
             )
         } else {
             (
@@ -125,7 +125,7 @@ impl<L: Label> ParseGraphChildren<L> {
                     i: z.i,
                     j: z.j,
                 },
-                PackedNode::One(z),
+                ParseResult::Unary(z),
             )
         };
         self.map.entry(y).or_insert(HashSet::new()).insert(p);
@@ -136,15 +136,15 @@ impl<L: Label> ParseGraphChildren<L> {
 #[derive(Default)]
 pub struct ParseGraph<L: Label> {
     pub children: ParseGraphChildren<L>,
-    pub results: HashMap<StackNode<L>, HashSet<ParseNode<L>>>,
+    pub results: HashMap<Call<L>, HashSet<ParseNode<L>>>,
 }
 
 impl<L: Label> ParseGraph<L> {
-    pub fn add_packed(&mut self, l: L, w: ParseNode<L>, z: ParseNode<L>) -> ParseNode<L> {
-        self.children.add_packed(l, w, z)
+    pub fn add_result(&mut self, l: L, w: ParseNode<L>, z: ParseNode<L>) -> ParseNode<L> {
+        self.children.add_result(l, w, z)
     }
     pub fn print(&self, out: &mut Write) -> io::Result<()> {
-        writeln!(out, "digraph gss {{")?;
+        writeln!(out, "digraph sppf {{")?;
         let mut p = 0;
         for (source, children) in &self.children.map {
             writeln!(out, r#"    "{}" [shape=box]"#, source)?;
@@ -152,10 +152,10 @@ impl<L: Label> ParseGraph<L> {
                 writeln!(out, r#"    p{} [label="" shape=point]"#, p)?;
                 writeln!(out, r#"    "{}" -> p{}:n"#, source, p)?;
                 match *child {
-                    PackedNode::One(x) => {
+                    ParseResult::Unary(x) => {
                         writeln!(out, r#"    p{}:s -> "{}":n [dir=none]"#, p, x)?;
                     }
-                    PackedNode::Two(a, b) => {
+                    ParseResult::Binary(a, b) => {
                         writeln!(out, r#"    p{}:sw -> "{}":n [dir=none]"#, p, a)?;
                         writeln!(out, r#"    p{}:se -> "{}":n [dir=none]"#, p, b)?;
                     }
@@ -197,16 +197,17 @@ impl<L: Label> fmt::Display for ParseNode<L> {
             return write!(f, "DUMMY");
         }
         if let Some(l) = self.l {
-            write!(f, "{}, ", l)?;
+            write!(f, "{}({}..) = ..{}", l, self.i, self.j)
+        } else {
+            write!(f, "{}..{}", self.i, self.j)
         }
-        write!(f, "{}..{}", self.i, self.j)
     }
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum PackedNode<L: Label> {
-    One(ParseNode<L>),
-    Two(ParseNode<L>, ParseNode<L>),
+pub enum ParseResult<L: Label> {
+    Unary(ParseNode<L>),
+    Binary(ParseNode<L>, ParseNode<L>),
 }
 
 impl<L: Label, I> Parser<L, I> {
@@ -218,23 +219,23 @@ impl<L: Label, I> Parser<L, I> {
             sppf: ParseGraph::default(),
         }
     }
-    pub fn create(&mut self, l: L, u: StackNode<L>, i: usize, w: ParseNode<L>) -> StackNode<L> {
-        let v = StackNode {
-            l: l.nonterminal_before_dot().unwrap(),
-            i,
+    pub fn call(&mut self, callee: Candidate<L>, next: L) -> Call<L> {
+        let v = Call {
+            l: callee.l,
+            i: callee.i,
         };
         let edges = self.gss.edges.entry(v).or_insert(HashSet::new());
-        if edges.insert((l, w, u)) && edges.len() > 1 {
+        if edges.insert((next, callee.w, callee.u)) && edges.len() > 1 {
             if let Some(results) = self.sppf.results.get(&v) {
                 for &z in results {
-                    let y = self.sppf.children.add_packed(l, w, z);
-                    self.candidates.add(l, u, y.j, y);
+                    let y = self.sppf.children.add_result(next, callee.w, z);
+                    self.candidates.add(next, callee.u, y.j, y);
                 }
             }
         }
         v
     }
-    pub fn pop(&mut self, u: StackNode<L>, i: usize, z: ParseNode<L>) {
+    pub fn ret(&mut self, u: Call<L>, i: usize, z: ParseNode<L>) {
         if self.sppf
             .results
             .entry(u)
@@ -243,7 +244,7 @@ impl<L: Label, I> Parser<L, I> {
         {
             if let Some(edges) = self.gss.edges.get(&u) {
                 for &(l, w, v) in edges {
-                    let y = self.sppf.add_packed(l, w, z);
+                    let y = self.sppf.add_result(l, w, z);
                     self.candidates.add(l, v, i, y);
                 }
             }
@@ -251,6 +252,4 @@ impl<L: Label, I> Parser<L, I> {
     }
 }
 
-pub trait Label: fmt::Display + Ord + Hash + Copy + Default {
-    fn nonterminal_before_dot(&self) -> Option<Self>;
-}
+pub trait Label: fmt::Display + Ord + Hash + Copy + Default {}

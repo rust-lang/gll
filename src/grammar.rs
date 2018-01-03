@@ -5,15 +5,13 @@ use std::iter;
 use syntax::symbol::Symbol;
 
 pub struct Grammar<A> {
-    name: Symbol,
     l0: Label,
     rules: OrderMap<Symbol, Rule<A>>,
 }
 
 impl<A> Grammar<A> {
-    pub fn new(name: &str) -> Self {
+    pub fn new() -> Self {
         Grammar {
-            name: Symbol::from(name),
             l0: Label::empty(),
             rules: OrderMap::new(),
         }
@@ -135,10 +133,10 @@ pub macro grammar {
     (@unit $atom:expr) => {
         Unit::Atom($atom)
     },
-    ($grammar_name:ident; $($rule_name:ident =
+    ($($rule_name:ident =
         $($arm_name:ident { $($unit:tt)* })|+;
     )*) => ({
-        let mut grammar = Grammar::new(stringify!($grammar_name));
+        let mut grammar = Grammar::new();
         $(
             grammar.add_rule(stringify!($rule_name),
                 Rule::alternation(&[$(stringify!($arm_name)),*]));
@@ -197,13 +195,13 @@ impl<A: Atom> Grammar<A> {
 
         put!("extern crate gll;
 
-use self::gll::{Candidate, Label, ParseNode, StackNode};
+use self::gll::{Call, Candidate, Label, ParseNode};
 use std::fmt;
 
-pub type Parser<'a> = gll::Parser<", self.name, ", &'a str>;
+pub type Parser<'a> = gll::Parser<_L, &'a str>;
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
-pub enum ", self.name, " {");
+pub enum _L {");
         for i in 0..labels.len() {
             put!(
                 "
@@ -215,18 +213,18 @@ pub enum ", self.name, " {");
 macro_rules! L {");
         for (i, l) in labels.iter().enumerate() {
             put!("
-    (\"", l.description, "\") => (", self.name, "::_", i, ");");
+    (\"", l.description, "\") => (_L::_", i, ");");
         }
         put!("
 }
 
-impl Default for ", self.name, " {
-    fn default() -> ", self.name, " {
+impl Default for _L {
+    fn default() -> _L {
         ", self.l0,"
     }
 }
 
-impl fmt::Display for ", self.name, " {
+impl fmt::Display for _L {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let s = match *self {");
 
@@ -240,32 +238,7 @@ impl fmt::Display for ", self.name, " {
     }
 }
 
-impl Label for ", self.name, " {
-    fn nonterminal_before_dot(&self) -> Option<", self.name, "> {
-        match *self {");
-        for rule in self.rules.values() {
-            match rule.kind {
-                RuleKind::Sequence(ref seq) => {
-                    for (i, unit) in seq.units.iter().enumerate() {
-                        if let Unit::Rule(r) = *unit {
-                            let next_label = if i == seq.units.len() - 1 {
-                                rule.label
-                            } else {
-                                seq.labels_before[i + 1]
-                            };
-                            put!("
-            ", next_label, " => Some(", self.rules[&r].label, "),");
-                        }
-                    }
-                }
-                RuleKind::Alternation(_) => {}
-            }
-        }
-        put!("
-            _ => None,
-        }
-    }
-}");
+impl Label for _L {}");
         for (name, rule) in &self.rules {
             put!("
 
@@ -273,7 +246,7 @@ pub struct ", name, ";
 
 impl ", name, " {
     pub fn parse(p: &mut Parser) {
-        p.candidates.add(", rule.start_label(), ", StackNode {
+        p.candidates.add(", rule.start_label(), ", Call {
             l: ", rule.start_label(), ",
             i: 0
         }, 0, ParseNode::DUMMY);
@@ -285,7 +258,7 @@ impl ", name, " {
 fn parse(p: &mut Parser) {
     let mut c = Candidate {
         l: ", self.l0, ",
-        u: StackNode { l: ", self.l0, ", i: 0 },
+        u: Call { l: ", self.l0, ", i: 0 },
         i: 0,
         w: ParseNode::DUMMY,
     };
@@ -319,8 +292,8 @@ fn parse(p: &mut Parser) {
                         match *unit {
                             Unit::Rule(r) => put!("
             ", seq.labels_before[i], " => {
-                c.u = p.create(", next_label, ", c.u, c.i, c.w);
                 c.l = ", self.rules[&r].start_label(), ";
+                c.u = p.call(c, ", next_label, ");
             }"),
                             Unit::Atom(ref a) => {
                                 let a = a.to_rust_slice();
@@ -329,7 +302,7 @@ fn parse(p: &mut Parser) {
                 let j = c.i + ", a, ".len();
                 let c_r = ParseNode::terminal(c.i, j);
                 c.i = j;
-                c.w = p.sppf.add_packed(", next_label, ", c.w, c_r);
+                c.w = p.sppf.add_result(", next_label, ", c.w, c_r);
                 c.l = ", next_label, ";
             } else {
                 c.l = ", self.l0, ";
@@ -342,10 +315,10 @@ fn parse(p: &mut Parser) {
             ", rule.label, " => {");
                     if seq.units.is_empty() {
                         put!("
-                c.w = p.sppf.add_packed(", rule.label, ", ParseNode::DUMMY, ParseNode::terminal(c.i, c.i));");
+                c.w = p.sppf.add_result(", rule.label, ", ParseNode::DUMMY, ParseNode::terminal(c.i, c.i));");
                     }
                     put!("
-                p.pop(c.u, c.i, c.w);
+                p.ret(c.u, c.i, c.w);
                 c.l = ", self.l0, ";
             }");
                 }

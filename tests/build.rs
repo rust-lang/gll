@@ -11,7 +11,6 @@ fn main() {
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
 
     let mut gll10_g0 = grammar!{
-        G0;
         S = S0 { A S 'd' }
           | S1 { B S }
           | S2 {};
@@ -27,7 +26,6 @@ fn main() {
         .unwrap();
 
     let mut gll13_g1 = grammar!{
-        G1;
         S = X { 'a' S 'b' }
           | Y { 'd' }
           | Z { 'a' 'd' 'b' };
@@ -37,7 +35,6 @@ fn main() {
         .unwrap();
 
     let mut gll15_g0 = grammar!{
-        G0;
         A = X { 'a' A 'b' }
           | Y { 'a' A 'c' }
           | Z { 'a' };
