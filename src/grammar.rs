@@ -196,6 +196,7 @@ impl<A: Atom> Grammar<A> {
 
 use self::gll::{Call, Label, ParseNode};
 use std::fmt;
+use std::ops::Range;
 
 pub type Parser<'a> = gll::Parser<_L, &'a str>;
 
@@ -235,15 +236,26 @@ impl Label for _L {}");
         for (name, rule) in &self.rules {
             put!("
 
-pub struct ", name, ";
+pub struct ", name, " {
+    pub span: Range<usize>,
+}
 
 impl ", name, " {
-    pub fn parse(p: &mut Parser) {
-        p.candidates.add(", rule.start_label(), ", Call {
+    pub fn parse(p: &mut Parser) -> Result<Self, ()> {
+        let call = Call {
             l: ", rule.start_label(), ",
             i: 0
-        }, 0, ParseNode::DUMMY);
+        };
+        p.candidates.add(", rule.start_label(), ", call, 0, ParseNode::DUMMY);
         parse(p);
+        if let Some(results) = p.sppf.results.get(&call) {
+            if let Some(r) = results.iter().rev().next() {
+                return Ok(Self {
+                    span: r.i..r.j
+                });
+            }
+        }
+        Err(())
     }
 }");
         }
@@ -286,7 +298,7 @@ fn parse(p: &mut Parser) {
                                 put!("
             ", seq.labels_before[i], " => if p.input[c.i..].starts_with(", a, ") {
                 let j = c.i + ", a, ".len();
-                c.w = p.sppf.add_result(", next_label, ", c.w, ParseNode::terminal(c.i, j));
+                c.w = p.sppf.add_children(", next_label, ", c.w, ParseNode::terminal(c.i, j));
                 p.candidates.add(", next_label, ", c.u, j, c.w);
             },")
                             }
@@ -297,7 +309,7 @@ fn parse(p: &mut Parser) {
             ", rule.label, " => {");
                     if seq.units.is_empty() {
                         put!("
-                c.w = p.sppf.add_result(", rule.label, ", ParseNode::DUMMY, ParseNode::terminal(c.i, c.i));");
+                c.w = p.sppf.add_children(", rule.label, ", ParseNode::DUMMY, ParseNode::terminal(c.i, c.i));");
                     }
                     put!("
                 p.ret(c.u, c.i, c.w);

@@ -106,7 +106,7 @@ pub struct ParseGraphChildren<L: Label> {
 }
 
 impl<L: Label> ParseGraphChildren<L> {
-    pub fn add_result(&mut self, l: L, w: ParseNode<L>, z: ParseNode<L>) -> ParseNode<L> {
+    pub fn add(&mut self, l: L, w: ParseNode<L>, z: ParseNode<L>) -> ParseNode<L> {
         if w != ParseNode::DUMMY {
             let y = ParseNode {
                 l: Some(l),
@@ -132,12 +132,12 @@ impl<L: Label> ParseGraphChildren<L> {
 
 pub struct ParseGraph<L: Label> {
     pub children: ParseGraphChildren<L>,
-    pub results: HashMap<Call<L>, HashSet<ParseNode<L>>>,
+    pub results: HashMap<Call<L>, BTreeSet<ParseNode<L>>>,
 }
 
 impl<L: Label> ParseGraph<L> {
-    pub fn add_result(&mut self, l: L, w: ParseNode<L>, z: ParseNode<L>) -> ParseNode<L> {
-        self.children.add_result(l, w, z)
+    pub fn add_children(&mut self, l: L, w: ParseNode<L>, z: ParseNode<L>) -> ParseNode<L> {
+        self.children.add(l, w, z)
     }
     pub fn print(&self, out: &mut Write) -> io::Result<()> {
         writeln!(out, "digraph sppf {{")?;
@@ -231,7 +231,7 @@ impl<L: Label, I> Parser<L, I> {
         if edges.insert((next, callee.w, callee.u)) && edges.len() > 1 {
             if let Some(results) = self.sppf.results.get(&v) {
                 for &z in results {
-                    let y = self.sppf.children.add_result(next, callee.w, z);
+                    let y = self.sppf.children.add(next, callee.w, z);
                     self.candidates.add(next, callee.u, y.j, y);
                 }
             }
@@ -242,12 +242,12 @@ impl<L: Label, I> Parser<L, I> {
         if self.sppf
             .results
             .entry(u)
-            .or_insert(HashSet::new())
+            .or_insert(BTreeSet::new())
             .insert(z)
         {
             if let Some(edges) = self.gss.edges.get(&u) {
                 for &(l, w, v) in edges {
-                    let y = self.sppf.add_result(l, w, z);
+                    let y = self.sppf.add_children(l, w, z);
                     self.candidates.add(l, v, i, y);
                 }
             }

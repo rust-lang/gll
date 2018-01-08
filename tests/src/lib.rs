@@ -15,7 +15,10 @@ pub mod gll15_g0 {
 #[test]
 fn gll10_g0() {
     let mut parser = gll10_g0::Parser::new("aad");
-    gll10_g0::S::parse(&mut parser);
+    assert_eq!(
+        gll10_g0::S::parse(&mut parser).unwrap().span,
+        0..parser.input.len()
+    );
     parser
         .gss
         .print(&mut File::create(concat!(env!("CARGO_MANIFEST_DIR"), "/../target/gll10-g0-gss.dot")).unwrap())
@@ -28,8 +31,11 @@ fn gll10_g0() {
 
 #[test]
 fn gll13_g1() {
-    let mut parser = gll13_g1::Parser::new("aad");
-    gll13_g1::S::parse(&mut parser);
+    let mut parser = gll13_g1::Parser::new("adb");
+    assert_eq!(
+        gll13_g1::S::parse(&mut parser).unwrap().span,
+        0..parser.input.len()
+    );
     parser
         .gss
         .print(&mut File::create(concat!(env!("CARGO_MANIFEST_DIR"), "/../target/gll13-g1-gss.dot")).unwrap())
@@ -43,7 +49,10 @@ fn gll13_g1() {
 #[test]
 fn gll15_g0() {
     let mut parser = gll15_g0::Parser::new("aac");
-    gll15_g0::A::parse(&mut parser);
+    assert_eq!(
+        gll15_g0::A::parse(&mut parser).unwrap().span,
+        0..parser.input.len()
+    );
     parser
         .gss
         .print(&mut File::create(concat!(env!("CARGO_MANIFEST_DIR"), "/../target/gll15-g0-gss.dot")).unwrap())
