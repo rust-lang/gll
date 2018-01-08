@@ -104,32 +104,32 @@ impl<L: Label> fmt::Display for Call<L> {
 
 #[derive(Default)]
 pub struct ParseGraphChildren<L: Label> {
-    pub map: HashMap<ParseNode<L>, HashSet<ParseResult<L>>>,
+    pub unary: HashMap<ParseNode<L>, BTreeSet<ParseNode<L>>>,
+    pub binary: HashMap<ParseNode<L>, BTreeSet<(ParseNode<L>, ParseNode<L>)>>,
 }
 
 impl<L: Label> ParseGraphChildren<L> {
     pub fn add_result(&mut self, l: L, w: ParseNode<L>, z: ParseNode<L>) -> ParseNode<L> {
-        let (y, p) = if w != ParseNode::DUMMY {
-            (
-                ParseNode {
-                    l: Some(l),
-                    i: w.i,
-                    j: z.j,
-                },
-                ParseResult::Binary(w, z),
-            )
+        if w != ParseNode::DUMMY {
+            let y = ParseNode {
+                l: Some(l),
+                i: w.i,
+                j: z.j,
+            };
+            self.binary
+                .entry(y)
+                .or_insert(BTreeSet::new())
+                .insert((w, z));
+            y
         } else {
-            (
-                ParseNode {
-                    l: Some(l),
-                    i: z.i,
-                    j: z.j,
-                },
-                ParseResult::Unary(z),
-            )
-        };
-        self.map.entry(y).or_insert(HashSet::new()).insert(p);
-        y
+            let y = ParseNode {
+                l: Some(l),
+                i: z.i,
+                j: z.j,
+            };
+            self.unary.entry(y).or_insert(BTreeSet::new()).insert(z);
+            y
+        }
     }
 }
 
@@ -146,20 +146,22 @@ impl<L: Label> ParseGraph<L> {
     pub fn print(&self, out: &mut Write) -> io::Result<()> {
         writeln!(out, "digraph sppf {{")?;
         let mut p = 0;
-        for (source, children) in &self.children.map {
+        for (source, children) in &self.children.unary {
             writeln!(out, r#"    "{}" [shape=box]"#, source)?;
             for child in children {
                 writeln!(out, r#"    p{} [label="" shape=point]"#, p)?;
                 writeln!(out, r#"    "{}" -> p{}:n"#, source, p)?;
-                match *child {
-                    ParseResult::Unary(x) => {
-                        writeln!(out, r#"    p{}:s -> "{}":n [dir=none]"#, p, x)?;
-                    }
-                    ParseResult::Binary(a, b) => {
-                        writeln!(out, r#"    p{}:sw -> "{}":n [dir=none]"#, p, a)?;
-                        writeln!(out, r#"    p{}:se -> "{}":n [dir=none]"#, p, b)?;
-                    }
-                }
+                writeln!(out, r#"    p{}:s -> "{}":n [dir=none]"#, p, child)?;
+                p += 1;
+            }
+        }
+        for (source, children) in &self.children.binary {
+            writeln!(out, r#"    "{}" [shape=box]"#, source)?;
+            for &(a, b) in children {
+                writeln!(out, r#"    p{} [label="" shape=point]"#, p)?;
+                writeln!(out, r#"    "{}" -> p{}:n"#, source, p)?;
+                writeln!(out, r#"    p{}:sw -> "{}":n [dir=none]"#, p, a)?;
+                writeln!(out, r#"    p{}:se -> "{}":n [dir=none]"#, p, b)?;
                 p += 1;
             }
         }
@@ -202,12 +204,6 @@ impl<L: Label> fmt::Display for ParseNode<L> {
             write!(f, "{}..{}", self.i, self.j)
         }
     }
-}
-
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum ParseResult<L: Label> {
-    Unary(ParseNode<L>),
-    Binary(ParseNode<L>, ParseNode<L>),
 }
 
 impl<L: Label, I> Parser<L, I> {
