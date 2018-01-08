@@ -2,17 +2,16 @@ use ordermap::OrderMap;
 use std::fmt;
 use std::io::{self, Write};
 use std::iter;
+use std::slice;
 use syntax::symbol::Symbol;
 
 pub struct Grammar<A> {
-    l0: Label,
     rules: OrderMap<Symbol, Rule<A>>,
 }
 
 impl<A> Grammar<A> {
     pub fn new() -> Self {
         Grammar {
-            l0: Label::empty(),
             rules: OrderMap::new(),
         }
     }
@@ -28,7 +27,7 @@ pub struct Rule<A> {
 
 pub enum RuleKind<A> {
     Sequence(Sequence<A>),
-    Alternation(Vec<Symbol>),
+    Alternation(Label, Vec<Symbol>),
 }
 
 impl<A> Rule<A> {
@@ -41,7 +40,7 @@ impl<A> Rule<A> {
     pub fn alternation(rules: &[&str]) -> Self {
         Rule {
             label: Label::empty(),
-            kind: RuleKind::Alternation(rules.iter().map(|&r| Symbol::from(r)).collect()),
+            kind: RuleKind::Alternation(Label::empty(), rules.iter().map(|&r| Symbol::from(r)).collect()),
         }
     }
     fn start_label(&self) -> Label {
@@ -51,7 +50,7 @@ impl<A> Rule<A> {
             } else {
                 seq.labels_before[0]
             },
-            RuleKind::Alternation(_) => self.label,
+            RuleKind::Alternation(l, _) => l,
         }
     }
 }
@@ -155,7 +154,6 @@ impl<A: Atom> Grammar<A> {
                 $(write!(out, "{}", $x)?;)*
             })
         }
-        self.l0 = Label::new("L₀");
         for (rule_name, rule) in &mut self.rules {
             rule.label = Label::new(&rule_name.as_str());
             match rule.kind {
@@ -180,22 +178,23 @@ impl<A: Atom> Grammar<A> {
                         seq.labels_before.push(Label::new(&s));
                     }
                 }
-                RuleKind::Alternation(_) => {}
+                RuleKind::Alternation(ref mut start_label, _) => {
+                    *start_label = Label::new(&format!("{} ::=·", rule_name));
+                }
             }
         }
-        let labels: Vec<_> = iter::once(self.l0)
-            .chain(self.rules.values().flat_map(|rule| {
-                let labels = match rule.kind {
-                    RuleKind::Sequence(ref seq) => &seq.labels_before[..],
-                    RuleKind::Alternation(_) => &[],
-                };
-                iter::once(rule.label).chain(labels.iter().cloned())
-            }))
-            .collect();
+        let labels: Vec<_> = self.rules.values().flat_map(|rule| {
+            let labels = match rule.kind {
+                RuleKind::Sequence(ref seq) => &seq.labels_before[..],
+                RuleKind::Alternation(ref l, _) => slice::from_ref(l),
+            };
+            iter::once(rule.label).chain(labels.iter().cloned())
+        })
+        .collect();
 
         put!("extern crate gll;
 
-use self::gll::{Call, Candidate, Label, ParseNode};
+use self::gll::{Call, Label, ParseNode};
 use std::fmt;
 
 pub type Parser<'a> = gll::Parser<_L, &'a str>;
@@ -216,12 +215,6 @@ macro_rules! L {");
     (\"", l.description, "\") => (_L::_", i, ");");
         }
         put!("
-}
-
-impl Default for _L {
-    fn default() -> _L {
-        ", self.l0,"
-    }
 }
 
 impl fmt::Display for _L {
@@ -256,30 +249,23 @@ impl ", name, " {
         }
         put!("
 fn parse(p: &mut Parser) {
-    let mut c = Candidate {
-        l: ", self.l0, ",
-        u: Call { l: ", self.l0, ", i: 0 },
-        i: 0,
-        w: ParseNode::DUMMY,
-    };
-    loop {
-        match c.l {
-            ", self.l0, " => if let Some(next) = p.candidates.remove() {
-                c = next;
-            } else {
-                return;
-            },");
+    while let Some(mut c) = p.candidates.remove() {
+        match c.l {");
         for rule in self.rules.values() {
             match rule.kind {
-                RuleKind::Alternation(ref rules) => {
+                RuleKind::Alternation(start_label, ref rules) => {
                     put!("
-            ", rule.label, " => {");
+            ", start_label, " => {");
                     for r in rules {
                         put!("
-                p.candidates.add(", self.rules[r].start_label(), ", c.u, c.i, ParseNode::DUMMY);")
+                c.l = ", self.rules[r].start_label(), ";
+                c.w = ParseNode::DUMMY;
+                p.call(c, ", rule.label, ");")
                     }
                     put!("
-                c.l = ", self.l0, ";
+            }
+            ", rule.label, " => {
+                p.ret(c.u, c.i, c.w);
             }");
                 }
                 RuleKind::Sequence(ref seq) => {
@@ -293,19 +279,15 @@ fn parse(p: &mut Parser) {
                             Unit::Rule(r) => put!("
             ", seq.labels_before[i], " => {
                 c.l = ", self.rules[&r].start_label(), ";
-                c.u = p.call(c, ", next_label, ");
+                p.call(c, ", next_label, ");
             }"),
                             Unit::Atom(ref a) => {
                                 let a = a.to_rust_slice();
                                 put!("
             ", seq.labels_before[i], " => if p.input[c.i..].starts_with(", a, ") {
                 let j = c.i + ", a, ".len();
-                let c_r = ParseNode::terminal(c.i, j);
-                c.i = j;
-                c.w = p.sppf.add_result(", next_label, ", c.w, c_r);
-                c.l = ", next_label, ";
-            } else {
-                c.l = ", self.l0, ";
+                c.w = p.sppf.add_result(", next_label, ", c.w, ParseNode::terminal(c.i, j));
+                p.candidates.add(", next_label, ", c.u, j, c.w);
             },")
                             }
                         }
@@ -319,7 +301,6 @@ fn parse(p: &mut Parser) {
                     }
                     put!("
                 p.ret(c.u, c.i, c.w);
-                c.l = ", self.l0, ";
             }");
                 }
             }

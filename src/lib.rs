@@ -1,4 +1,4 @@
-#![feature(decl_macro, rustc_private, str_escape)]
+#![feature(decl_macro, from_ref, rustc_private, str_escape)]
 
 extern crate ordermap;
 extern crate syntax;
@@ -18,7 +18,6 @@ pub struct Parser<L: Label, I> {
     pub sppf: ParseGraph<L>,
 }
 
-#[derive(Default)]
 pub struct Candidates<L: Label> {
     queue: BinaryHeap<Candidate<L>>,
     attempted: BTreeSet<Candidate<L>>,
@@ -72,7 +71,6 @@ impl<L: Label> Ord for Candidate<L> {
     }
 }
 
-#[derive(Default)]
 pub struct StackGraph<L: Label> {
     edges: HashMap<Call<L>, HashSet<(L, ParseNode<L>, Call<L>)>>,
 }
@@ -102,7 +100,6 @@ impl<L: Label> fmt::Display for Call<L> {
     }
 }
 
-#[derive(Default)]
 pub struct ParseGraphChildren<L: Label> {
     pub unary: HashMap<ParseNode<L>, BTreeSet<ParseNode<L>>>,
     pub binary: HashMap<ParseNode<L>, BTreeSet<(ParseNode<L>, ParseNode<L>)>>,
@@ -133,7 +130,6 @@ impl<L: Label> ParseGraphChildren<L> {
     }
 }
 
-#[derive(Default)]
 pub struct ParseGraph<L: Label> {
     pub children: ParseGraphChildren<L>,
     pub results: HashMap<Call<L>, HashSet<ParseNode<L>>>,
@@ -210,12 +206,23 @@ impl<L: Label, I> Parser<L, I> {
     pub fn new(input: I) -> Parser<L, I> {
         Parser {
             input,
-            candidates: Candidates::default(),
-            gss: StackGraph::default(),
-            sppf: ParseGraph::default(),
+            candidates: Candidates {
+                queue: BinaryHeap::new(),
+                attempted: BTreeSet::new(),
+            },
+            gss: StackGraph {
+                edges: HashMap::new(),
+            },
+            sppf: ParseGraph {
+                children: ParseGraphChildren {
+                    unary: HashMap::new(),
+                    binary: HashMap::new(),
+                },
+                results: HashMap::new(),
+            },
         }
     }
-    pub fn call(&mut self, callee: Candidate<L>, next: L) -> Call<L> {
+    pub fn call(&mut self, callee: Candidate<L>, next: L) {
         let v = Call {
             l: callee.l,
             i: callee.i,
@@ -229,7 +236,7 @@ impl<L: Label, I> Parser<L, I> {
                 }
             }
         }
-        v
+        self.candidates.add(callee.l, v, callee.i, callee.w);
     }
     pub fn ret(&mut self, u: Call<L>, i: usize, z: ParseNode<L>) {
         if self.sppf
@@ -248,4 +255,4 @@ impl<L: Label, I> Parser<L, I> {
     }
 }
 
-pub trait Label: fmt::Display + Ord + Hash + Copy + Default {}
+pub trait Label: fmt::Display + Ord + Hash + Copy {}
