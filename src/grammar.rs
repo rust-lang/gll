@@ -194,7 +194,7 @@ impl<A: Atom> Grammar<A> {
 
         put!("extern crate gll;
 
-use self::gll::{Call, Label, ParseNode};
+use self::gll::{Call, Continuation, Label, ParseNode};
 use std::fmt;
 use std::ops::Range;
 
@@ -243,12 +243,14 @@ pub struct ", name, " {
 impl ", name, " {
     pub fn parse(p: &mut Parser) -> Result<Self, ()> {
         let call = Call {
-            l: ", rule.start_label(), ",
+            callee: ", rule.start_label(), ",
             i: 0
         };
-        p.candidates.add(", rule.start_label(), ", call, 0, ParseNode::DUMMY);
-        parse(p);
-        if let Some(results) = p.sppf.results.get(&call) {
+        if !p.gss.results.contains_key(&call) {
+            p.gss.threads.spawn(Continuation { code: ", rule.start_label(), ", stack: call, left: ParseNode::DUMMY }, ParseNode::DUMMY, 0);
+            parse(p);
+        }
+        if let Some(results) = p.gss.results.get(&call) {
             if let Some(r) = results.iter().rev().next() {
                 return Ok(Self {
                     span: r.i..r.j
@@ -261,8 +263,8 @@ impl ", name, " {
         }
         put!("
 fn parse(p: &mut Parser) {
-    while let Some(mut c) = p.candidates.remove() {
-        match c.l {");
+    while let Some(Call { callee: (mut c, mut right), i }) = p.gss.threads.steal() {
+        match c.code {");
         for rule in self.rules.values() {
             match rule.kind {
                 RuleKind::Alternation(start_label, ref rules) => {
@@ -270,14 +272,14 @@ fn parse(p: &mut Parser) {
             ", start_label, " => {");
                     for r in rules {
                         put!("
-                c.l = ", self.rules[r].start_label(), ";
-                c.w = ParseNode::DUMMY;
-                p.call(c, ", rule.label, ");")
+                c.code = ", rule.label, ";
+                p.gss.call(Call { callee: ", self.rules[r].start_label(), ", i }, c);")
                     }
                     put!("
             }
             ", rule.label, " => {
-                p.ret(c.u, c.i, c.w);
+                c.left = p.sppf.add_children(", rule.label, ", c.left, right);
+                p.gss.ret(c.stack, c.left);
             }");
                 }
                 RuleKind::Sequence(ref seq) => {
@@ -287,20 +289,27 @@ fn parse(p: &mut Parser) {
                         } else {
                             seq.labels_before[i + 1]
                         };
+                        put!("
+            ", seq.labels_before[i], " => {");
+                        if i != 0 {
+                            put!("
+                c.left = p.sppf.add_children(", seq.labels_before[i], ", c.left, right);");
+                        }
                         match *unit {
                             Unit::Rule(r) => put!("
-            ", seq.labels_before[i], " => {
-                c.l = ", self.rules[&r].start_label(), ";
-                p.call(c, ", next_label, ");
+                c.code = ", next_label, ";
+                p.gss.call(Call { callee: ", self.rules[&r].start_label(), ", i }, c);
             }"),
                             Unit::Atom(ref a) => {
                                 let a = a.to_rust_slice();
                                 put!("
-            ", seq.labels_before[i], " => if p.input[c.i..].starts_with(", a, ") {
-                let j = c.i + ", a, ".len();
-                c.w = p.sppf.add_children(", next_label, ", c.w, ParseNode::terminal(c.i, j));
-                p.candidates.add(", next_label, ", c.u, j, c.w);
-            },")
+                if !p.input[i..].starts_with(", a, ") {
+                    continue;
+                }
+                let j = i + ", a, ".len();
+                right = ParseNode::terminal(i, j);
+                p.gss.threads.spawn(Continuation { code: ", next_label, ", ..c }, right, j);
+            }")
                             }
                         }
                     }
@@ -309,10 +318,11 @@ fn parse(p: &mut Parser) {
             ", rule.label, " => {");
                     if seq.units.is_empty() {
                         put!("
-                c.w = p.sppf.add_children(", rule.label, ", ParseNode::DUMMY, ParseNode::terminal(c.i, c.i));");
+                right = ParseNode::terminal(i, i);");
                     }
                     put!("
-                p.ret(c.u, c.i, c.w);
+                c.left = p.sppf.add_children(", rule.label, ", c.left, right);
+                p.gss.ret(c.stack, c.left);
             }");
                 }
             }
