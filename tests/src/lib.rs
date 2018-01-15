@@ -14,7 +14,7 @@ pub mod gll15_g0 {
 
 #[test]
 fn gll10_g0() {
-    let mut parser = gll10_g0::Parser::new("aad");
+    let mut parser = gll10_g0::Parser::new(b"aad");
     assert_eq!(
         gll10_g0::S::parse(&mut parser).unwrap().span,
         0..parser.input.len()
@@ -30,7 +30,7 @@ fn gll10_g0() {
 
 #[test]
 fn gll13_g1() {
-    let mut parser = gll13_g1::Parser::new("adb");
+    let mut parser = gll13_g1::Parser::new(b"adb");
     assert_eq!(
         gll13_g1::S::parse(&mut parser).unwrap().span,
         0..parser.input.len()
@@ -46,7 +46,7 @@ fn gll13_g1() {
 
 #[test]
 fn gll15_g0() {
-    let mut parser = gll15_g0::Parser::new("aac");
+    let mut parser = gll15_g0::Parser::new(b"aac");
     assert_eq!(
         gll15_g0::A::parse(&mut parser).unwrap().span,
         0..parser.input.len()

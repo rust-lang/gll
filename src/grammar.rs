@@ -90,7 +90,7 @@ impl Atom for str {
         format!("'{}'", self.escape_default())
     }
     fn to_rust_slice(&self) -> String {
-        format!("{:?}", self)
+        format!("{:?}.as_bytes()", self)
     }
 }
 
@@ -198,7 +198,7 @@ use self::gll::{Call, Continuation, Label, ParseNode};
 use std::fmt;
 use std::ops::Range;
 
-pub type Parser<'a> = gll::Parser<_L, &'a str>;
+pub type Parser<'a> = gll::Parser<_L, &'a [u8]>;
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
 pub enum _L {");
