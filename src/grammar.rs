@@ -281,7 +281,7 @@ fn parse(p: &mut Parser) {
                     put!("
             }
             ", rule.label, " => {
-                c.left = p.sppf.add_children(", rule.label, ", c.left, right);
+                c.left = p.sppf.add_unary(", rule.label, ", right);
                 p.gss.ret(c.stack, c.left);
             }");
                 }
@@ -292,11 +292,9 @@ fn parse(p: &mut Parser) {
                         } else {
                             seq.labels_before[i + 1]
                         };
-                        put!("
-            ", seq.labels_before[i], " => {");
-                        if i != 0 {
+                        if i == 0 {
                             put!("
-                c.left = p.sppf.add_children(", seq.labels_before[i], ", c.left, right);");
+            ", seq.labels_before[i], " => {");
                         }
                         match *unit {
                             Unit::Rule(r) => put!("
@@ -315,16 +313,24 @@ fn parse(p: &mut Parser) {
             }")
                             }
                         }
+                        put!("
+            ", next_label, " => {");
+                        if i == 0 {
+                            put!("
+                c.left = p.sppf.add_unary(", next_label, ", right);");
+                        } else if i > 0 {
+                            put!("
+                c.left = p.sppf.add_binary(", next_label, ", c.left, right);");
+                        }
                     }
 
-                    put!("
-            ", rule.label, " => {");
                     if seq.units.is_empty() {
                         put!("
-                right = ParseNode::terminal(Range(range.frontiers().0));");
+            ", rule.label, " => {
+                right = ParseNode::terminal(Range(range.frontiers().0));
+                c.left = p.sppf.add_unary(", rule.label, ", right);");
                     }
                     put!("
-                c.left = p.sppf.add_children(", rule.label, ", c.left, right);
                 p.gss.ret(c.stack, c.left);
             }");
                 }

@@ -200,54 +200,38 @@ impl<'id, L: Label> CallGraph<'id, L> {
     }
 }
 
-pub struct ParseGraphChildren<'id, L: Label> {
+pub struct ParseGraph<'id, L: Label> {
     pub unary: HashMap<ParseNode<'id, L>, BTreeSet<ParseNode<'id, L>>>,
     pub binary: HashMap<ParseNode<'id, L>, BTreeSet<(ParseNode<'id, L>, ParseNode<'id, L>)>>,
 }
 
-impl<'id, L: Label> ParseGraphChildren<'id, L> {
-    pub fn add(
-        &mut self,
-        l: L,
-        left: ParseNode<'id, L>,
-        right: ParseNode<'id, L>,
-    ) -> ParseNode<'id, L> {
-        if left.range.is_empty() && left.l.is_none() {
-            let result = ParseNode {
-                l: Some(l),
-                range: right.range,
-            };
-            self.unary
-                .entry(result)
-                .or_insert(BTreeSet::new())
-                .insert(right);
-            result
-        } else {
-            let result = ParseNode {
-                l: Some(l),
-                range: Range(left.range.join(right.range.0).unwrap().no_proof()),
-            };
-            self.binary
-                .entry(result)
-                .or_insert(BTreeSet::new())
-                .insert((left, right));
-            result
-        }
-    }
-}
-
-pub struct ParseGraph<'id, L: Label> {
-    pub children: ParseGraphChildren<'id, L>,
-}
-
 impl<'id, L: Label> ParseGraph<'id, L> {
-    pub fn add_children(
+    pub fn add_unary(&mut self, l: L, child: ParseNode<'id, L>) -> ParseNode<'id, L> {
+        let result = ParseNode {
+            l: Some(l),
+            range: child.range,
+        };
+        self.unary
+            .entry(result)
+            .or_insert(BTreeSet::new())
+            .insert(child);
+        result
+    }
+    pub fn add_binary(
         &mut self,
         l: L,
         left: ParseNode<'id, L>,
         right: ParseNode<'id, L>,
     ) -> ParseNode<'id, L> {
-        self.children.add(l, left, right)
+        let result = ParseNode {
+            l: Some(l),
+            range: Range(left.range.join(right.range.0).unwrap().no_proof()),
+        };
+        self.binary
+            .entry(result)
+            .or_insert(BTreeSet::new())
+            .insert((left, right));
+        result
     }
 }
 
@@ -255,7 +239,7 @@ impl<'id, L: Label, I> Parser<'id, L, I> {
     pub fn print_sppf(&self, out: &mut Write) -> io::Result<()> {
         writeln!(out, "digraph sppf {{")?;
         let mut p = 0;
-        for (source, children) in &self.sppf.children.unary {
+        for (source, children) in &self.sppf.unary {
             writeln!(out, r#"    "{}" [shape=box]"#, source)?;
             for child in children {
                 writeln!(out, r#"    p{} [label="" shape=point]"#, p)?;
@@ -264,7 +248,7 @@ impl<'id, L: Label, I> Parser<'id, L, I> {
                 p += 1;
             }
         }
-        for (source, children) in &self.sppf.children.binary {
+        for (source, children) in &self.sppf.binary {
             writeln!(out, r#"    "{}" [shape=box]"#, source)?;
             for &(left, right) in children {
                 writeln!(out, r#"    p{} [label="" shape=point]"#, p)?;
@@ -322,10 +306,8 @@ impl<'a, L: Label, I: Trustworthy> Parser<'a, L, I> {
                     results: HashMap::new(),
                 },
                 sppf: ParseGraph {
-                    children: ParseGraphChildren {
-                        unary: HashMap::new(),
-                        binary: HashMap::new(),
-                    },
+                    unary: HashMap::new(),
+                    binary: HashMap::new(),
                 },
             })
         })
