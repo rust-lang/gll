@@ -194,11 +194,10 @@ impl<A: Atom> Grammar<A> {
 
         put!("extern crate gll;
 
-use self::gll::{Call, Continuation, Label, ParseNode};
+use self::gll::{Call, Continuation, Label, ParseNode, Range};
 use std::fmt;
-use std::ops::Range;
 
-pub type Parser<'a> = gll::Parser<_L, &'a [u8]>;
+pub type Parser<'a, 'id> = gll::Parser<'id, _L, &'a [u8]>;
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
 pub enum _L {");
@@ -236,24 +235,28 @@ impl Label for _L {}");
         for (name, rule) in &self.rules {
             put!("
 
-pub struct ", name, " {
-    pub span: Range<usize>,
+pub struct ", name, "<'id> {
+    pub span: Range<'id>,
 }
 
-impl ", name, " {
-    pub fn parse(p: &mut Parser) -> Result<Self, ()> {
+impl<'id> ", name, "<'id> {
+    pub fn parse<'a>(p: &mut Parser<'a, 'id>) -> Result<Self, ()> {
         let call = Call {
             callee: ", rule.start_label(), ",
-            i: 0
+            range: Range(p.input.range()),
         };
         if !p.gss.results.contains_key(&call) {
-            p.gss.threads.spawn(Continuation { code: ", rule.start_label(), ", stack: call, left: ParseNode::DUMMY }, ParseNode::DUMMY, 0);
+            let dummy = ParseNode {
+                l: None,
+                range: Range(p.input.empty_range()),
+            };
+            p.gss.threads.spawn(Continuation { code: ", rule.start_label(), ", stack: call, left: dummy }, dummy, call.range);
             parse(p);
         }
         if let Some(results) = p.gss.results.get(&call) {
             if let Some(r) = results.iter().rev().next() {
                 return Ok(Self {
-                    span: r.i..r.j
+                    span: r.range
                 });
             }
         }
@@ -263,7 +266,7 @@ impl ", name, " {
         }
         put!("
 fn parse(p: &mut Parser) {
-    while let Some(Call { callee: (mut c, mut right), i }) = p.gss.threads.steal() {
+    while let Some(Call { callee: (mut c, mut right), range }) = p.gss.threads.steal() {
         match c.code {");
         for rule in self.rules.values() {
             match rule.kind {
@@ -273,7 +276,7 @@ fn parse(p: &mut Parser) {
                     for r in rules {
                         put!("
                 c.code = ", rule.label, ";
-                p.gss.call(Call { callee: ", self.rules[r].start_label(), ", i }, c);")
+                p.gss.call(Call { callee: ", self.rules[r].start_label(), ", range }, c);")
                     }
                     put!("
             }
@@ -298,17 +301,17 @@ fn parse(p: &mut Parser) {
                         match *unit {
                             Unit::Rule(r) => put!("
                 c.code = ", next_label, ";
-                p.gss.call(Call { callee: ", self.rules[&r].start_label(), ", i }, c);
+                p.gss.call(Call { callee: ", self.rules[&r].start_label(), ", range }, c);
             }"),
                             Unit::Atom(ref a) => {
                                 let a = a.to_rust_slice();
                                 put!("
-                if !p.input[i..].starts_with(", a, ") {
+                if !p.input[range.0].starts_with(", a, ") {
                     continue;
                 }
-                let j = i + ", a, ".len();
-                right = ParseNode::terminal(i, j);
-                p.gss.threads.spawn(Continuation { code: ", next_label, ", ..c }, right, j);
+                let (matched, rest, _) = range.split_at(", a, ".len());
+                right = ParseNode::terminal(Range(matched));
+                p.gss.threads.spawn(Continuation { code: ", next_label, ", ..c }, right, Range(rest));
             }")
                             }
                         }
@@ -318,7 +321,7 @@ fn parse(p: &mut Parser) {
             ", rule.label, " => {");
                     if seq.units.is_empty() {
                         put!("
-                right = ParseNode::terminal(i, i);");
+                right = ParseNode::terminal(Range(range.frontiers().0));");
                     }
                     put!("
                 c.left = p.sppf.add_children(", rule.label, ", c.left, right);
