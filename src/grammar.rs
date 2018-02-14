@@ -2,7 +2,6 @@ use ordermap::OrderMap;
 use std::fmt;
 use std::io::{self, Write};
 use std::iter;
-use std::slice;
 use syntax::symbol::Symbol;
 
 pub struct Grammar<A> {
@@ -27,7 +26,7 @@ pub struct Rule<A> {
 
 pub enum RuleKind<A> {
     Sequence(Sequence<A>),
-    Alternation(Label, Vec<Symbol>),
+    Alternation(Vec<Label>, Vec<Symbol>),
 }
 
 impl<A> Rule<A> {
@@ -40,7 +39,7 @@ impl<A> Rule<A> {
     pub fn alternation(rules: &[&str]) -> Self {
         Rule {
             label: Label::empty(),
-            kind: RuleKind::Alternation(Label::empty(), rules.iter().map(|&r| Symbol::from(r)).collect()),
+            kind: RuleKind::Alternation(vec![], rules.iter().map(|&r| Symbol::from(r)).collect()),
         }
     }
     fn start_label(&self) -> Label {
@@ -50,7 +49,7 @@ impl<A> Rule<A> {
             } else {
                 seq.labels_before[0]
             },
-            RuleKind::Alternation(l, _) => l,
+            RuleKind::Alternation(_, _) => self.label,
         }
     }
 }
@@ -178,15 +177,17 @@ impl<A: Atom> Grammar<A> {
                         seq.labels_before.push(Label::new(&s));
                     }
                 }
-                RuleKind::Alternation(ref mut start_label, _) => {
-                    *start_label = Label::new(&format!("{} ::=·", rule_name));
+                RuleKind::Alternation(ref mut return_labels, ref rules) => {
+                    for r in rules {
+                        return_labels.push(Label::new(&format!("{} ::= {}·", rule_name, r)));
+                    }
                 }
             }
         }
         let labels: Vec<_> = self.rules.values().flat_map(|rule| {
             let labels = match rule.kind {
                 RuleKind::Sequence(ref seq) => &seq.labels_before[..],
-                RuleKind::Alternation(ref l, _) => slice::from_ref(l),
+                RuleKind::Alternation(ref labels, _) => labels,
             };
             iter::once(rule.label).chain(labels.iter().cloned())
         })
@@ -246,17 +247,14 @@ impl<'id> ", name, "<'id> {
             range: Range(p.input.range()),
         };
         if !p.gss.results.contains_key(&call) {
-            let dummy = ParseNode {
-                l: None,
-                range: Range(p.input.empty_range()),
-            };
+            let dummy = Range(p.input.empty_range());
             p.gss.threads.spawn(Continuation { code: ", rule.start_label(), ", stack: call, left: dummy }, dummy, call.range);
             parse(p);
         }
         if let Some(results) = p.gss.results.get(&call) {
-            if let Some(r) = results.iter().rev().next() {
+            if let Some(&r) = results.iter().rev().next() {
                 return Ok(Self {
-                    span: r.range
+                    span: r
                 });
             }
         }
@@ -270,20 +268,23 @@ fn parse(p: &mut Parser) {
         match c.code {");
         for rule in self.rules.values() {
             match rule.kind {
-                RuleKind::Alternation(start_label, ref rules) => {
+                RuleKind::Alternation(ref return_labels, ref rules) => {
                     put!("
-            ", start_label, " => {");
-                    for r in rules {
+            ", rule.label, " => {");
+                    for (i, r) in rules.iter().enumerate() {
                         put!("
-                c.code = ", rule.label, ";
+                c.code = ", return_labels[i], ";
                 p.gss.call(Call { callee: ", self.rules[r].start_label(), ", range }, c);")
                     }
                     put!("
-            }
-            ", rule.label, " => {
-                c.left = p.sppf.add_unary(", rule.label, ", right);
+            }");
+                    for (i, r) in rules.iter().enumerate() {
+                        put!("
+            ", return_labels[i], " => {
+                c.left = p.sppf.add_unary(", rule.label, ", ParseNode { l: Some(", self.rules[r].label, "), range: right }).range;
                 p.gss.ret(c.stack, c.left);
             }");
+                    }
                 }
                 RuleKind::Sequence(ref seq) => {
                     for (i, unit) in seq.units.iter().enumerate() {
@@ -308,7 +309,7 @@ fn parse(p: &mut Parser) {
                     continue;
                 }
                 let (matched, rest, _) = range.split_at(", a, ".len());
-                right = ParseNode::terminal(Range(matched));
+                right = Range(matched);
                 p.gss.threads.spawn(Continuation { code: ", next_label, ", ..c }, right, Range(rest));
             }")
                             }
@@ -317,18 +318,26 @@ fn parse(p: &mut Parser) {
             ", next_label, " => {");
                         if i == 0 {
                             put!("
-                c.left = p.sppf.add_unary(", next_label, ", right);");
-                        } else if i > 0 {
+                c.left = p.sppf.add_unary(", next_label);
+                        } else {
                             put!("
-                c.left = p.sppf.add_binary(", next_label, ", c.left, right);");
+                c.left = p.sppf.add_binary(", next_label, ", ParseNode { l: Some(", seq.labels_before[i], "), range: c.left }");
+                        }
+                        match *unit {
+                            Unit::Rule(r) => {
+                                put!(", ParseNode { l: Some(", self.rules[&r].label, "), range: right }).range;");
+                            }
+                            Unit::Atom(_) => {
+                                put!(", ParseNode::terminal(right)).range;");
+                            }
                         }
                     }
 
                     if seq.units.is_empty() {
                         put!("
             ", rule.label, " => {
-                right = ParseNode::terminal(Range(range.frontiers().0));
-                c.left = p.sppf.add_unary(", rule.label, ", right);");
+                right = Range(range.frontiers().0);
+                c.left = p.sppf.add_unary(", rule.label, ", ParseNode::terminal(right)).range;");
                     }
                     put!("
                 p.gss.ret(c.stack, c.left);

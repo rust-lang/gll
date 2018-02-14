@@ -57,17 +57,12 @@ pub struct Parser<'id, L: Label, I> {
 }
 
 pub struct Threads<'id, L: Label> {
-    queue: BinaryHeap<Call<'id, (Continuation<'id, L>, ParseNode<'id, L>)>>,
-    seen: BTreeSet<Call<'id, (Continuation<'id, L>, ParseNode<'id, L>)>>,
+    queue: BinaryHeap<Call<'id, (Continuation<'id, L>, Range<'id>)>>,
+    seen: BTreeSet<Call<'id, (Continuation<'id, L>, Range<'id>)>>,
 }
 
 impl<'id, L: Label> Threads<'id, L> {
-    pub fn spawn(
-        &mut self,
-        next: Continuation<'id, L>,
-        right: ParseNode<'id, L>,
-        range: Range<'id>,
-    ) {
+    pub fn spawn(&mut self, next: Continuation<'id, L>, right: Range<'id>, range: Range<'id>) {
         let t = Call {
             callee: (next, right),
             range,
@@ -76,7 +71,7 @@ impl<'id, L: Label> Threads<'id, L> {
             self.queue.push(t);
         }
     }
-    pub fn steal(&mut self) -> Option<Call<'id, (Continuation<'id, L>, ParseNode<'id, L>)>> {
+    pub fn steal(&mut self) -> Option<Call<'id, (Continuation<'id, L>, Range<'id>)>> {
         if let Some(t) = self.queue.pop() {
             loop {
                 let old = self.seen.iter().rev().next().cloned();
@@ -101,7 +96,7 @@ impl<'id, L: Label> Threads<'id, L> {
 pub struct Continuation<'id, L: Label> {
     pub code: L,
     pub stack: Call<'id, L>,
-    pub left: ParseNode<'id, L>,
+    pub left: Range<'id>,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
@@ -137,7 +132,7 @@ impl<'id, C: Ord> Ord for Call<'id, C> {
 pub struct CallGraph<'id, L: Label> {
     pub threads: Threads<'id, L>,
     returns: HashMap<Call<'id, L>, BTreeSet<Continuation<'id, L>>>,
-    pub results: HashMap<Call<'id, L>, BTreeSet<ParseNode<'id, L>>>,
+    pub results: HashMap<Call<'id, L>, BTreeSet<Range<'id>>>,
 }
 
 impl<'id, L: Label> CallGraph<'id, L> {
@@ -149,9 +144,7 @@ impl<'id, L: Label> CallGraph<'id, L> {
                 writeln!(
                     out,
                     r#"    "{}" -> "{}" [label="{}"]"#,
-                    source,
-                    next.stack,
-                    next.code
+                    source, next.stack, next.code
                 )?;
             }
         }
@@ -163,15 +156,11 @@ impl<'id, L: Label> CallGraph<'id, L> {
             if returns.len() > 1 {
                 if let Some(results) = self.results.get(&call) {
                     for &right in results {
-                        self.threads
-                            .spawn(next, right, call.range.subtract(right.range));
+                        self.threads.spawn(next, right, call.range.subtract(right));
                     }
                 }
             } else {
-                let dummy = ParseNode {
-                    l: None,
-                    range: Range(call.range.frontiers().0),
-                };
+                let dummy = Range(call.range.frontiers().0);
                 self.threads.spawn(
                     Continuation {
                         code: call.callee,
@@ -184,7 +173,7 @@ impl<'id, L: Label> CallGraph<'id, L> {
             }
         }
     }
-    pub fn ret(&mut self, call: Call<'id, L>, right: ParseNode<'id, L>) {
+    pub fn ret(&mut self, call: Call<'id, L>, right: Range<'id>) {
         if self.results
             .entry(call)
             .or_insert(BTreeSet::new())
@@ -192,8 +181,7 @@ impl<'id, L: Label> CallGraph<'id, L> {
         {
             if let Some(returns) = self.returns.get(&call) {
                 for &next in returns {
-                    self.threads
-                        .spawn(next, right, call.range.subtract(right.range));
+                    self.threads.spawn(next, right, call.range.subtract(right));
                 }
             }
         }
@@ -233,13 +221,11 @@ impl<'id, L: Label> ParseGraph<'id, L> {
             .insert((left, right));
         result
     }
-}
 
-impl<'id, L: Label, I> Parser<'id, L, I> {
-    pub fn print_sppf(&self, out: &mut Write) -> io::Result<()> {
+    pub fn print(&self, out: &mut Write) -> io::Result<()> {
         writeln!(out, "digraph sppf {{")?;
         let mut p = 0;
-        for (source, children) in &self.sppf.unary {
+        for (source, children) in &self.unary {
             writeln!(out, r#"    "{}" [shape=box]"#, source)?;
             for child in children {
                 writeln!(out, r#"    p{} [label="" shape=point]"#, p)?;
@@ -248,7 +234,7 @@ impl<'id, L: Label, I> Parser<'id, L, I> {
                 p += 1;
             }
         }
-        for (source, children) in &self.sppf.binary {
+        for (source, children) in &self.binary {
             writeln!(out, r#"    "{}" [shape=box]"#, source)?;
             for &(left, right) in children {
                 writeln!(out, r#"    p{} [label="" shape=point]"#, p)?;
@@ -256,11 +242,6 @@ impl<'id, L: Label, I> Parser<'id, L, I> {
                 writeln!(out, r#"    p{}:sw -> "{}":n [dir=none]"#, p, left)?;
                 writeln!(out, r#"    p{}:se -> "{}":n [dir=none]"#, p, right)?;
                 p += 1;
-            }
-        }
-        for (query, results) in &self.gss.results {
-            for result in results {
-                writeln!(out, r#"    "{}" -> "{}""#, query, result)?;
             }
         }
         writeln!(out, "}}")
