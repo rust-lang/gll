@@ -195,7 +195,7 @@ impl<A: Atom> Grammar<A> {
 
         put!("extern crate gll;
 
-use self::gll::{Call, Continuation, Label, ParseNode, Range};
+use self::gll::{Call, Continuation, Label, LabelKind, Range};
 use std::fmt;
 
 pub type Parser<'a, 'id> = gll::Parser<'id, _L, &'a [u8]>;
@@ -232,7 +232,77 @@ impl fmt::Display for _L {
     }
 }
 
-impl Label for _L {}");
+impl Label for _L {
+    fn kind(self) -> LabelKind<Self> {
+        match self {");
+        for rule in self.rules.values() {
+            match rule.kind {
+                RuleKind::Alternation(ref return_labels, ref rules) => {
+                    put!("
+            ", rule.label, " => LabelKind::Choice,");
+                    for (i, _) in rules.iter().enumerate() {
+                        put!("
+            ", return_labels[i], " => unreachable!(),");
+                    }
+                }
+                RuleKind::Sequence(ref seq) => {
+                    if seq.units.is_empty() {
+                        put!("
+            ", rule.label, " => LabelKind::Unary(None),");
+                    }
+                    for (i, unit) in seq.units.iter().enumerate() {
+                        let next_label = if i == seq.units.len() - 1 {
+                            rule.label
+                        } else {
+                            seq.labels_before[i + 1]
+                        };
+                        if i == 0 {
+                            put!("
+            ", seq.labels_before[i], " => unreachable!(),");
+                        }
+                        put!("
+            ", next_label, " => LabelKind::");
+                        if i == 0 {
+                            put!("Unary(");
+                        } else {
+                            put!("Binary(");
+                            if i == 1 {
+                                match seq.units[i - 1] {
+                                    Unit::Rule(r) => put!("Some(", self.rules[&r].label, ")"),
+                                    Unit::Atom(_) => put!("None"),
+                                }
+                            } else {
+                                put!("Some(", seq.labels_before[i], ")");
+                            }
+                            put!(", ");
+                        }
+                        match *unit {
+                            Unit::Rule(r) => put!("Some(", self.rules[&r].label, ")"),
+                            Unit::Atom(_) => put!("None"),
+                        }
+                        put!("),");
+                    }
+                }
+            }
+        }
+        put!("
+        }
+    }
+    fn from_usize(i: usize) -> Self {
+        match i {");
+
+        for (i, l) in labels.iter().enumerate() {
+            put!("
+            ", i, " => ", l, ",");
+        }
+        put!("
+            _ => unreachable!(),
+        }
+    }
+    fn to_usize(self) -> usize {
+        self as usize
+    }
+}");
         for (name, rule) in &self.rules {
             put!("
 
@@ -281,7 +351,7 @@ fn parse(p: &mut Parser) {
                     for (i, r) in rules.iter().enumerate() {
                         put!("
             ", return_labels[i], " => {
-                c.left = p.sppf.add_unary(", rule.label, ", ParseNode { l: Some(", self.rules[r].label, "), range: right }).range;
+                c.left = p.sppf.add_choice(", rule.label, ", right, ", self.rules[r].label, ").range;
                 p.gss.ret(c.stack, c.left);
             }");
                     }
@@ -317,19 +387,15 @@ fn parse(p: &mut Parser) {
                         put!("
             ", next_label, " => {");
                         if i == 0 {
+                            if seq.units.len() == 1 {
+                                put!("
+                p.sppf.add_unary(", next_label, ", right);");
+                            }
                             put!("
-                c.left = p.sppf.add_unary(", next_label);
+                c.left = right;");
                         } else {
                             put!("
-                c.left = p.sppf.add_binary(", next_label, ", ParseNode { l: Some(", seq.labels_before[i], "), range: c.left }");
-                        }
-                        match *unit {
-                            Unit::Rule(r) => {
-                                put!(", ParseNode { l: Some(", self.rules[&r].label, "), range: right }).range;");
-                            }
-                            Unit::Atom(_) => {
-                                put!(", ParseNode::terminal(right)).range;");
-                            }
+                c.left = p.sppf.add_binary(", next_label, ", c.left, right).range;");
                         }
                     }
 
@@ -337,7 +403,7 @@ fn parse(p: &mut Parser) {
                         put!("
             ", rule.label, " => {
                 right = Range(range.frontiers().0);
-                c.left = p.sppf.add_unary(", rule.label, ", ParseNode::terminal(right)).range;");
+                c.left = p.sppf.add_unary(", rule.label, ", right).range;");
                     }
                     put!("
                 p.gss.ret(c.stack, c.left);
@@ -345,7 +411,6 @@ fn parse(p: &mut Parser) {
                 }
             }
         }
-
         put!("
         }
     }

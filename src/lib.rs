@@ -189,59 +189,86 @@ impl<'id, L: Label> CallGraph<'id, L> {
 }
 
 pub struct ParseGraph<'id, L: Label> {
-    pub unary: HashMap<ParseNode<'id, L>, BTreeSet<ParseNode<'id, L>>>,
-    pub binary: HashMap<ParseNode<'id, L>, BTreeSet<(ParseNode<'id, L>, ParseNode<'id, L>)>>,
+    pub children: HashMap<ParseNode<'id, L>, BTreeSet<usize>>,
 }
 
 impl<'id, L: Label> ParseGraph<'id, L> {
-    pub fn add_unary(&mut self, l: L, child: ParseNode<'id, L>) -> ParseNode<'id, L> {
-        let result = ParseNode {
-            l: Some(l),
-            range: child.range,
-        };
-        self.unary
+    pub fn add_choice(&mut self, l: L, range: Range<'id>, child: L) -> ParseNode<'id, L> {
+        let result = ParseNode { l: Some(l), range };
+        self.children
             .entry(result)
             .or_insert(BTreeSet::new())
-            .insert(child);
+            .insert(child.to_usize());
         result
     }
-    pub fn add_binary(
-        &mut self,
-        l: L,
-        left: ParseNode<'id, L>,
-        right: ParseNode<'id, L>,
-    ) -> ParseNode<'id, L> {
-        let result = ParseNode {
-            l: Some(l),
-            range: Range(left.range.join(right.range.0).unwrap().no_proof()),
-        };
-        self.binary
+    pub fn add_unary(&mut self, l: L, range: Range<'id>) -> ParseNode<'id, L> {
+        let result = ParseNode { l: Some(l), range };
+        self.children
             .entry(result)
             .or_insert(BTreeSet::new())
-            .insert((left, right));
+            .insert(0);
+        result
+    }
+    pub fn add_binary(&mut self, l: L, left: Range<'id>, right: Range<'id>) -> ParseNode<'id, L> {
+        let result = ParseNode {
+            l: Some(l),
+            range: Range(left.join(right.0).unwrap().no_proof()),
+        };
+        self.children
+            .entry(result)
+            .or_insert(BTreeSet::new())
+            .insert(left.len());
+
         result
     }
 
     pub fn print(&self, out: &mut Write) -> io::Result<()> {
         writeln!(out, "digraph sppf {{")?;
         let mut p = 0;
-        for (source, children) in &self.unary {
+        for (source, children) in &self.children {
             writeln!(out, r#"    "{}" [shape=box]"#, source)?;
-            for child in children {
-                writeln!(out, r#"    p{} [label="" shape=point]"#, p)?;
-                writeln!(out, r#"    "{}" -> p{}:n"#, source, p)?;
-                writeln!(out, r#"    p{}:s -> "{}":n [dir=none]"#, p, child)?;
-                p += 1;
-            }
-        }
-        for (source, children) in &self.binary {
-            writeln!(out, r#"    "{}" [shape=box]"#, source)?;
-            for &(left, right) in children {
-                writeln!(out, r#"    p{} [label="" shape=point]"#, p)?;
-                writeln!(out, r#"    "{}" -> p{}:n"#, source, p)?;
-                writeln!(out, r#"    p{}:sw -> "{}":n [dir=none]"#, p, left)?;
-                writeln!(out, r#"    p{}:se -> "{}":n [dir=none]"#, p, right)?;
-                p += 1;
+            match source.l.unwrap().kind() {
+                LabelKind::Choice => for &child in children {
+                    let child = ParseNode {
+                        l: Some(L::from_usize(child)),
+                        range: source.range,
+                    };
+                    writeln!(out, r#"    p{} [label="" shape=point]"#, p)?;
+                    writeln!(out, r#"    "{}" -> p{}:n"#, source, p)?;
+                    writeln!(out, r#"    p{}:s -> "{}":n [dir=none]"#, p, child)?;
+                    p += 1;
+                },
+
+                LabelKind::Unary(l) => for &child in children {
+                    assert_eq!(child, 0);
+                    let child = ParseNode {
+                        l,
+                        range: source.range,
+                    };
+                    writeln!(out, r#"    p{} [label="" shape=point]"#, p)?;
+                    writeln!(out, r#"    "{}" -> p{}:n"#, source, p)?;
+                    writeln!(out, r#"    p{}:s -> "{}":n [dir=none]"#, p, child)?;
+                    p += 1;
+                },
+
+                LabelKind::Binary(left_l, right_l) => for &child in children {
+                    let (left, right, _) = source.range.split_at(child);
+                    let (left, right) = (
+                        ParseNode {
+                            l: left_l,
+                            range: Range(left),
+                        },
+                        ParseNode {
+                            l: right_l,
+                            range: Range(right),
+                        },
+                    );
+                    writeln!(out, r#"    p{} [label="" shape=point]"#, p)?;
+                    writeln!(out, r#"    "{}" -> p{}:n"#, source, p)?;
+                    writeln!(out, r#"    p{}:sw -> "{}":n [dir=none]"#, p, left)?;
+                    writeln!(out, r#"    p{}:se -> "{}":n [dir=none]"#, p, right)?;
+                    p += 1;
+                },
             }
         }
         writeln!(out, "}}")
@@ -287,12 +314,21 @@ impl<'a, L: Label, I: Trustworthy> Parser<'a, L, I> {
                     results: HashMap::new(),
                 },
                 sppf: ParseGraph {
-                    unary: HashMap::new(),
-                    binary: HashMap::new(),
+                    children: HashMap::new(),
                 },
             })
         })
     }
 }
 
-pub trait Label: fmt::Display + Ord + Hash + Copy {}
+pub enum LabelKind<L: Label> {
+    Unary(Option<L>),
+    Binary(Option<L>, Option<L>),
+    Choice,
+}
+
+pub trait Label: fmt::Display + Ord + Hash + Copy + 'static {
+    fn kind(self) -> LabelKind<Self>;
+    fn from_usize(i: usize) -> Self;
+    fn to_usize(self) -> usize;
+}
