@@ -62,9 +62,9 @@ pub struct Threads<'id, L: Label> {
 }
 
 impl<'id, L: Label> Threads<'id, L> {
-    pub fn spawn(&mut self, next: Continuation<'id, L>, right: Range<'id>, range: Range<'id>) {
+    pub fn spawn(&mut self, next: Continuation<'id, L>, result: Range<'id>, range: Range<'id>) {
         let t = Call {
-            callee: (next, right),
+            callee: (next, result),
             range,
         };
         if self.seen.insert(t) {
@@ -96,7 +96,7 @@ impl<'id, L: Label> Threads<'id, L> {
 pub struct Continuation<'id, L: Label> {
     pub code: L,
     pub stack: Call<'id, L>,
-    pub left: Range<'id>,
+    pub state: usize,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
@@ -155,8 +155,9 @@ impl<'id, L: Label> CallGraph<'id, L> {
         if returns.insert(next) {
             if returns.len() > 1 {
                 if let Some(results) = self.results.get(&call) {
-                    for &right in results {
-                        self.threads.spawn(next, right, call.range.subtract(right));
+                    for &result in results {
+                        self.threads
+                            .spawn(next, result, call.range.subtract(result));
                     }
                 }
             } else {
@@ -165,7 +166,7 @@ impl<'id, L: Label> CallGraph<'id, L> {
                     Continuation {
                         code: call.callee,
                         stack: call,
-                        left: dummy,
+                        state: 0,
                     },
                     dummy,
                     call.range,
@@ -173,15 +174,16 @@ impl<'id, L: Label> CallGraph<'id, L> {
             }
         }
     }
-    pub fn ret(&mut self, call: Call<'id, L>, right: Range<'id>) {
+    pub fn ret(&mut self, call: Call<'id, L>, result: Range<'id>) {
         if self.results
             .entry(call)
             .or_insert(BTreeSet::new())
-            .insert(right)
+            .insert(result)
         {
             if let Some(returns) = self.returns.get(&call) {
                 for &next in returns {
-                    self.threads.spawn(next, right, call.range.subtract(right));
+                    self.threads
+                        .spawn(next, result, call.range.subtract(result));
                 }
             }
         }
@@ -193,33 +195,11 @@ pub struct ParseGraph<'id, L: Label> {
 }
 
 impl<'id, L: Label> ParseGraph<'id, L> {
-    pub fn add_choice(&mut self, l: L, range: Range<'id>, child: L) -> ParseNode<'id, L> {
-        let result = ParseNode { l: Some(l), range };
+    pub fn add(&mut self, l: L, range: Range<'id>, child: usize) {
         self.children
-            .entry(result)
+            .entry(ParseNode { l: Some(l), range })
             .or_insert(BTreeSet::new())
-            .insert(child.to_usize());
-        result
-    }
-    pub fn add_unary(&mut self, l: L, range: Range<'id>) -> ParseNode<'id, L> {
-        let result = ParseNode { l: Some(l), range };
-        self.children
-            .entry(result)
-            .or_insert(BTreeSet::new())
-            .insert(0);
-        result
-    }
-    pub fn add_binary(&mut self, l: L, left: Range<'id>, right: Range<'id>) -> ParseNode<'id, L> {
-        let result = ParseNode {
-            l: Some(l),
-            range: Range(left.join(right.0).unwrap().no_proof()),
-        };
-        self.children
-            .entry(result)
-            .or_insert(BTreeSet::new())
-            .insert(left.len());
-
-        result
+            .insert(child);
     }
 
     pub fn print(&self, out: &mut Write) -> io::Result<()> {

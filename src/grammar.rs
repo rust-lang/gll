@@ -2,6 +2,7 @@ use ordermap::OrderMap;
 use std::fmt;
 use std::io::{self, Write};
 use std::iter;
+use std::slice;
 use syntax::symbol::Symbol;
 
 pub struct Grammar<A> {
@@ -26,7 +27,7 @@ pub struct Rule<A> {
 
 pub enum RuleKind<A> {
     Sequence(Sequence<A>),
-    Alternation(Vec<Label>, Vec<Symbol>),
+    Alternation(Label, Vec<Symbol>),
 }
 
 impl<A> Rule<A> {
@@ -39,7 +40,10 @@ impl<A> Rule<A> {
     pub fn alternation(rules: &[&str]) -> Self {
         Rule {
             label: Label::empty(),
-            kind: RuleKind::Alternation(vec![], rules.iter().map(|&r| Symbol::from(r)).collect()),
+            kind: RuleKind::Alternation(
+                Label::empty(),
+                rules.iter().map(|&r| Symbol::from(r)).collect(),
+            ),
         }
     }
     fn start_label(&self) -> Label {
@@ -177,17 +181,15 @@ impl<A: Atom> Grammar<A> {
                         seq.labels_before.push(Label::new(&s));
                     }
                 }
-                RuleKind::Alternation(ref mut return_labels, ref rules) => {
-                    for r in rules {
-                        return_labels.push(Label::new(&format!("{} ::= {}·", rule_name, r)));
-                    }
+                RuleKind::Alternation(ref mut return_label, _) => {
+                    *return_label = Label::new(&format!("{} ::=·", rule_name));
                 }
             }
         }
         let labels: Vec<_> = self.rules.values().flat_map(|rule| {
             let labels = match rule.kind {
                 RuleKind::Sequence(ref seq) => &seq.labels_before[..],
-                RuleKind::Alternation(ref labels, _) => labels,
+                RuleKind::Alternation(ref l, _) => slice::from_ref(l),
             };
             iter::once(rule.label).chain(labels.iter().cloned())
         })
@@ -237,13 +239,10 @@ impl Label for _L {
         match self {");
         for rule in self.rules.values() {
             match rule.kind {
-                RuleKind::Alternation(ref return_labels, ref rules) => {
+                RuleKind::Alternation(return_label, _) => {
                     put!("
-            ", rule.label, " => LabelKind::Choice,");
-                    for (i, _) in rules.iter().enumerate() {
-                        put!("
-            ", return_labels[i], " => unreachable!(),");
-                    }
+            ", rule.label, " => LabelKind::Choice,
+            ", return_label, " => unreachable!(),");
                 }
                 RuleKind::Sequence(ref seq) => {
                     if seq.units.is_empty() {
@@ -318,7 +317,15 @@ impl<'id> ", name, "<'id> {
         };
         if !p.gss.results.contains_key(&call) {
             let dummy = Range(p.input.empty_range());
-            p.gss.threads.spawn(Continuation { code: ", rule.start_label(), ", stack: call, left: dummy }, dummy, call.range);
+            p.gss.threads.spawn(
+                Continuation {
+                    code: ", rule.start_label(), ",
+                    stack: call,
+                    state: 0,
+                },
+                dummy,
+                call.range,
+            );
             parse(p);
         }
         if let Some(results) = p.gss.results.get(&call) {
@@ -334,27 +341,25 @@ impl<'id> ", name, "<'id> {
         }
         put!("
 fn parse(p: &mut Parser) {
-    while let Some(Call { callee: (mut c, mut right), range }) = p.gss.threads.steal() {
+    while let Some(Call { callee: (mut c, mut result), range }) = p.gss.threads.steal() {
         match c.code {");
         for rule in self.rules.values() {
             match rule.kind {
-                RuleKind::Alternation(ref return_labels, ref rules) => {
+                RuleKind::Alternation(return_label, ref rules) => {
                     put!("
-            ", rule.label, " => {");
-                    for (i, r) in rules.iter().enumerate() {
+            ", rule.label, " => {
+                c.code = ", return_label, ";");
+                    for r in rules {
                         put!("
-                c.code = ", return_labels[i], ";
+                c.state = ", self.rules[r].label, ".to_usize();
                 p.gss.call(Call { callee: ", self.rules[r].start_label(), ", range }, c);")
                     }
                     put!("
+            }
+            ", return_label, " => {
+                p.sppf.add(", rule.label, ", result, c.state);
+                p.gss.ret(c.stack, result);
             }");
-                    for (i, r) in rules.iter().enumerate() {
-                        put!("
-            ", return_labels[i], " => {
-                c.left = p.sppf.add_choice(", rule.label, ", right, ", self.rules[r].label, ").range;
-                p.gss.ret(c.stack, c.left);
-            }");
-                    }
                 }
                 RuleKind::Sequence(ref seq) => {
                     for (i, unit) in seq.units.iter().enumerate() {
@@ -379,8 +384,9 @@ fn parse(p: &mut Parser) {
                     continue;
                 }
                 let (matched, rest, _) = range.split_at(", a, ".len());
-                right = Range(matched);
-                p.gss.threads.spawn(Continuation { code: ", next_label, ", ..c }, right, Range(rest));
+                result = Range(matched);
+                c.code = ", next_label, ";
+                p.gss.threads.spawn(c, result, Range(rest));
             }")
                             }
                         }
@@ -389,24 +395,25 @@ fn parse(p: &mut Parser) {
                         if i == 0 {
                             if seq.units.len() == 1 {
                                 put!("
-                p.sppf.add_unary(", next_label, ", right);");
+                p.sppf.add(", next_label, ", result, 0);");
                             }
-                            put!("
-                c.left = right;");
                         } else {
                             put!("
-                c.left = p.sppf.add_binary(", next_label, ", c.left, right).range;");
+                result = Range(c.stack.range.split_at(c.state + result.len()).0);
+                p.sppf.add(", next_label, ", result, c.state);");
                         }
+                        put!("
+                c.state = result.len();");
                     }
 
                     if seq.units.is_empty() {
                         put!("
             ", rule.label, " => {
-                right = Range(range.frontiers().0);
-                c.left = p.sppf.add_unary(", rule.label, ", right).range;");
+                result = Range(range.frontiers().0);
+                p.sppf.add(", rule.label, ", result, 0);");
                     }
                     put!("
-                p.gss.ret(c.stack, c.left);
+                p.gss.ret(c.stack, result);
             }");
                 }
             }
