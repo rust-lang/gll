@@ -1,4 +1,4 @@
-#![feature(decl_macro, from_ref, rustc_private, str_escape)]
+#![feature(conservative_impl_trait, decl_macro, from_ref, rustc_private, str_escape)]
 
 extern crate indexing;
 extern crate ordermap;
@@ -200,6 +200,44 @@ impl<'id, L: Label> ParseGraph<'id, L> {
             .entry(ParseNode { l: Some(l), range })
             .or_insert(BTreeSet::new())
             .insert(child);
+    }
+
+    pub fn unary_children<'a>(
+        &'a self,
+        node: ParseNode<'id, L>,
+    ) -> impl Iterator<Item = ParseNode<'id, L>> + 'a {
+        match node.l.unwrap().kind() {
+            LabelKind::Unary(l) => self.children[&node].iter().map(move |&i| {
+                assert_eq!(i, 0);
+                ParseNode {
+                    l,
+                    range: node.range,
+                }
+            }),
+            _ => unreachable!(),
+        }
+    }
+
+    pub fn binary_children<'a>(
+        &'a self,
+        node: ParseNode<'id, L>,
+    ) -> impl Iterator<Item = (ParseNode<'id, L>, ParseNode<'id, L>)> + 'a {
+        match node.l.unwrap().kind() {
+            LabelKind::Binary(left_l, right_l) => self.children[&node].iter().map(move |&i| {
+                let (left, right, _) = node.range.split_at(i);
+                (
+                    ParseNode {
+                        l: left_l,
+                        range: Range(left),
+                    },
+                    ParseNode {
+                        l: right_l,
+                        range: Range(right),
+                    },
+                )
+            }),
+            _ => unreachable!(),
+        }
     }
 
     pub fn print(&self, out: &mut Write) -> io::Result<()> {

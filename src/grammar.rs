@@ -59,12 +59,12 @@ impl<A> Rule<A> {
 }
 
 pub struct Sequence<A> {
-    units: Vec<Unit<A>>,
+    units: Vec<(Option<String>, Unit<A>)>,
     labels_before: Vec<Label>,
 }
 
 impl<A> Sequence<A> {
-    pub fn new(units: Vec<Unit<A>>) -> Self {
+    pub fn new(units: Vec<(Option<String>, Unit<A>)>) -> Self {
         Sequence {
             units,
             labels_before: vec![],
@@ -129,11 +129,14 @@ impl fmt::Display for Label {
 }
 
 pub macro grammar {
+    (@unit { $name:ident : $unit:tt }) => {
+        (Some(stringify!($name).to_string()), grammar!(@unit $unit).1)
+    },
     (@unit $rule:ident) => {
-        Unit::rule(stringify!($rule))
+        (None::<String>, Unit::rule(stringify!($rule)))
     },
     (@unit $atom:expr) => {
-        Unit::Atom($atom)
+        (None::<String>, Unit::Atom($atom))
     },
     ($($rule_name:ident =
         $($arm_name:ident { $($unit:tt)* })|+;
@@ -163,11 +166,15 @@ impl<A: Atom> Grammar<A> {
                 RuleKind::Sequence(ref mut seq) => {
                     for i in 0..seq.units.len() {
                         let mut s = format!("{} ::=", rule_name);
-                        for (j, unit) in seq.units.iter().enumerate() {
+                        for (j, &(ref name, ref unit)) in seq.units.iter().enumerate() {
                             if i == j {
                                 s.push('·');
                             } else {
                                 s.push(' ');
+                            }
+                            if let Some(ref name) = *name {
+                               s.push_str(name);
+                               s.push(':');
                             }
                             match *unit {
                                 Unit::Atom(ref a) => {
@@ -197,8 +204,9 @@ impl<A: Atom> Grammar<A> {
 
         put!("extern crate gll;
 
-use self::gll::{Call, Continuation, Label, LabelKind, Range};
+use self::gll::{Call, Continuation, Label, LabelKind, ParseNode, Range};
 use std::fmt;
+use std::marker::PhantomData;
 
 pub type Parser<'a, 'id> = gll::Parser<'id, _L, &'a [u8]>;
 
@@ -249,7 +257,7 @@ impl Label for _L {
                         put!("
             ", rule.label, " => LabelKind::Unary(None),");
                     }
-                    for (i, unit) in seq.units.iter().enumerate() {
+                    for (i, &(_, ref unit)) in seq.units.iter().enumerate() {
                         let next_label = if i == seq.units.len() - 1 {
                             rule.label
                         } else {
@@ -266,7 +274,7 @@ impl Label for _L {
                         } else {
                             put!("Binary(");
                             if i == 1 {
-                                match seq.units[i - 1] {
+                                match seq.units[i - 1].1 {
                                     Unit::Rule(r) => put!("Some(", self.rules[&r].label, ")"),
                                     Unit::Atom(_) => put!("None"),
                                 }
@@ -301,16 +309,221 @@ impl Label for _L {
     fn to_usize(self) -> usize {
         self as usize
     }
-}");
-        for (name, rule) in &self.rules {
-            put!("
-
-pub struct ", name, "<'id> {
-    pub span: Range<'id>,
 }
 
-impl<'id> ", name, "<'id> {
-    pub fn parse<'a>(p: &mut Parser<'a, 'id>) -> Result<Self, ()> {
+pub struct Ambiguity;
+
+pub struct Handle<'a, 'b: 'a, 'id: 'a, T> {
+    pub span: Range<'id>,
+    pub parser: &'a Parser<'b, 'id>,
+    _marker: PhantomData<T>,
+}
+
+impl<'a, 'b, 'id, T> Copy for Handle<'a, 'b, 'id, T> {}
+
+impl<'a, 'b, 'id, T> Clone for Handle<'a, 'b, 'id, T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+");
+        for (name, rule) in &self.rules {
+            match rule.kind {
+                RuleKind::Sequence(ref seq) => {
+                    put!("
+
+#[derive(Debug)]
+pub struct ", name, "<'a, 'b: 'a, 'id: 'a> {");
+                    let mut has_named_units = false;
+                    for &(ref unit_name, ref unit) in &seq.units {
+                        if let Some(ref unit_name) = *unit_name {
+                            if let Unit::Rule(r) = *unit {
+                                put!("
+    pub ", unit_name, ": Handle<'a, 'b, 'id, ", r, "<'a, 'b, 'id>>,");
+                                has_named_units = true;
+                            }
+                        }
+                    }
+                    if !has_named_units {
+                        put!("
+    _marker: PhantomData<(&'a (), &'b (), &'id ())>,");
+                    }
+                    put!("
+}
+
+impl<'a, 'b, 'id> fmt::Debug for Handle<'a, 'b, 'id, ", name, "<'a, 'b, 'id>> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(
+            f,
+            \"{}..{} => \",
+            self.span.start(),
+            self.span.end()
+        )?;
+        for (i, _x) in self.many().enumerate() {
+            if i > 0 {
+                write!(f, \" | \")?;
+            }");
+                    if has_named_units {
+                        put!("
+            fmt::Debug::fmt(&_x, f)?;");
+                    } else {
+                        put!("
+            write!(f, \"", name, "\")?;");
+                    }
+                    put!("
+        }
+        Ok(())
+    }
+}
+
+impl<'a, 'b, 'id> Handle<'a, 'b, 'id, ", name, "<'a, 'b, 'id>> {
+    pub fn one(self) -> Result<", name, "<'a, 'b, 'id>, Ambiguity> {
+        let mut iter = self.many();
+        let first = iter.next().unwrap();
+        if iter.next().is_none() {
+            Ok(first)
+        } else {
+            Err(Ambiguity)
+        }
+    }
+    pub fn many(self) -> impl Iterator<Item = ", name, "<'a, 'b, 'id>> {");
+                    if seq.units.len() == 0 {
+                        put!("
+        ::std::iter::once(", name, " {
+             _marker: PhantomData,
+        })");
+                    } else {
+                        put!("
+        let node = ParseNode { l: Some(", rule.label, "), range: self.span };");
+                        if seq.units.len() == 1 {
+                            put!("
+        self.parser.sppf.unary_children(node)");
+                        } else {
+                            put!("
+        self.parser.sppf.binary_children(node)");
+                            for _ in 0..seq.units.len() - 2 {
+                                put!("
+            .flat_map(move |(left, right)| self.parser.sppf.binary_children(left).map(move |left| (left, right)))");
+                            }
+                        }
+                        put!("
+            .map(move |");
+                        for _ in 0..seq.units.len() - 1 {
+                            put!("(");
+                        }
+                        for (i, &(ref unit_name, ref unit)) in seq.units.iter().enumerate() {
+                            if i > 0 {
+                                put!(", ");
+                            }
+                            if let Some(ref unit_name) = *unit_name {
+                                if let Unit::Rule(_) = *unit {
+                                    put!(unit_name);
+                                } else {
+                                    put!("_");
+                                }
+                            } else {
+                                put!("_");
+                            }
+                            if i > 0 {
+                                put!(")");
+                            }
+                        }
+                        put!("| ", name, " {");
+                        for &(ref unit_name, ref unit) in &seq.units {
+                            if let Some(ref unit_name) = *unit_name {
+                                if let Unit::Rule(_) = *unit {
+                                    put!("
+                ", unit_name, ": Handle {
+                    span: ", unit_name, ".range,
+                    parser: self.parser,
+                    _marker: PhantomData,
+                },");
+                                }
+                            }
+                        }
+                        if !has_named_units {
+                            put!("
+                _marker: PhantomData,");
+                        }
+                        put!("
+            })");
+                    }
+                    put!("
+    }
+}
+");
+                }
+                RuleKind::Alternation(_, ref rules) => {
+                    put!("
+
+pub enum ", name, "<'a, 'b: 'a, 'id: 'a> {");
+                    for r in rules {
+                        put!("
+    ", r, "(Handle<'a, 'b, 'id, ", r, "<'a, 'b, 'id>>),");
+                    }
+                    put!("
+}
+
+impl<'a, 'b, 'id> fmt::Debug for ", name, "<'a, 'b, 'id> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match *self {");
+                    for r in rules {
+                        put!("
+            ", name, "::", r, "(ref x) => fmt::Debug::fmt(x, f),");
+                    }
+                    put!("
+        }
+    }
+}
+
+impl<'a, 'b, 'id> fmt::Debug for Handle<'a, 'b, 'id, ", name, "<'a, 'b, 'id>> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        for (i, x) in self.many().enumerate() {
+            if i > 0 {
+                write!(f, \" | \")?;
+            }
+            fmt::Debug::fmt(&x, f)?;
+        }
+        Ok(())
+    }
+}
+
+impl<'a, 'b, 'id> Handle<'a, 'b, 'id, ", name, "<'a, 'b, 'id>> {
+    pub fn one(self) -> Result<", name, "<'a, 'b, 'id>, Ambiguity> {
+        let mut iter = self.many();
+        let first = iter.next().unwrap();
+        if iter.next().is_none() {
+            Ok(first)
+        } else {
+            Err(Ambiguity)
+        }
+    }
+    pub fn many(self) -> impl Iterator<Item = ", name, "<'a, 'b, 'id>> {
+        let node = ParseNode { l: Some(", rule.label, "), range: self.span };
+        self.parser.sppf.children[&node].iter().map(move |&i| {
+            match _L::from_usize(i) {");
+                    for r in rules {
+                        put!("
+                ", self.rules[r].label," => ", name, "::", r, "(Handle {
+                    span: self.span,
+                    parser: self.parser,
+                    _marker: PhantomData,
+                }),");
+                    }
+                    put!("
+                _ => unreachable!(),
+            }
+        })
+    }
+}
+");
+                }
+            }
+
+            put!("
+
+impl<'a, 'b, 'id> ", name, "<'a, 'b, 'id> {
+    pub fn parse(p: &'a mut Parser<'b, 'id>) -> Result<Handle<'a, 'b, 'id, Self>, ()> {
         let call = Call {
             callee: ", rule.start_label(), ",
             range: Range(p.input.range()),
@@ -330,8 +543,10 @@ impl<'id> ", name, "<'id> {
         }
         if let Some(results) = p.gss.results.get(&call) {
             if let Some(&r) = results.iter().rev().next() {
-                return Ok(Self {
-                    span: r
+                return Ok(Handle {
+                    span: r,
+                    parser: p,
+                    _marker: PhantomData,
                 });
             }
         }
@@ -362,7 +577,7 @@ fn parse(p: &mut Parser) {
             }");
                 }
                 RuleKind::Sequence(ref seq) => {
-                    for (i, unit) in seq.units.iter().enumerate() {
+                    for (i, &(_, ref unit)) in seq.units.iter().enumerate() {
                         let next_label = if i == seq.units.len() - 1 {
                             rule.label
                         } else {
