@@ -3,10 +3,9 @@ use std::fmt;
 use std::io::{self, Write};
 use std::iter;
 use std::slice;
-use syntax::symbol::Symbol;
 
 pub struct Grammar<A> {
-    rules: OrderMap<Symbol, Rule<A>>,
+    rules: OrderMap<String, Rule<A>>,
 }
 
 impl<A> Grammar<A> {
@@ -16,7 +15,7 @@ impl<A> Grammar<A> {
         }
     }
     pub fn add_rule(&mut self, name: &str, rule: Rule<A>) {
-        self.rules.insert(Symbol::from(name), rule);
+        self.rules.insert(name.to_string(), rule);
     }
 }
 
@@ -27,7 +26,7 @@ pub struct Rule<A> {
 
 pub enum RuleKind<A> {
     Sequence(Sequence<A>),
-    Alternation(Label, Vec<Symbol>),
+    Alternation(Label, Vec<String>),
 }
 
 impl<A> Rule<A> {
@@ -42,18 +41,18 @@ impl<A> Rule<A> {
             label: Label::empty(),
             kind: RuleKind::Alternation(
                 Label::empty(),
-                rules.iter().map(|&r| Symbol::from(r)).collect(),
+                rules.iter().map(|&r| r.to_string()).collect(),
             ),
         }
     }
-    fn start_label(&self) -> Label {
+    fn start_label(&self) -> &Label {
         match self.kind {
             RuleKind::Sequence(ref seq) => if seq.units.is_empty() {
-                self.label
+                &self.label
             } else {
-                seq.labels_before[0]
+                &seq.labels_before[0]
             },
-            RuleKind::Alternation(_, _) => self.label,
+            RuleKind::Alternation(_, _) => &self.label,
         }
     }
 }
@@ -74,12 +73,12 @@ impl<A> Sequence<A> {
 
 pub enum Unit<A> {
     Atom(A),
-    Rule(Symbol),
+    Rule(String),
 }
 
 impl<A> Unit<A> {
     pub fn rule(r: &str) -> Self {
-        Unit::Rule(Symbol::from(r))
+        Unit::Rule(r.to_string())
     }
 }
 
@@ -106,15 +105,15 @@ impl Atom for char {
     }
 }
 
-#[derive(Copy, Clone)]
+#[derive(Clone)]
 pub struct Label {
-    pub description: Symbol,
+    pub description: String,
 }
 
 impl Label {
     fn new(s: &str) -> Label {
         Label {
-            description: Symbol::from(s),
+            description: s.to_string(),
         }
     }
     fn empty() -> Label {
@@ -180,7 +179,7 @@ impl<A: Atom> Grammar<A> {
                                 Unit::Atom(ref a) => {
                                     s.push_str(&a.to_label_description());
                                 }
-                                Unit::Rule(r) => {
+                                Unit::Rule(ref r) => {
                                     s.push_str(&r.as_str());
                                 }
                             }
@@ -198,7 +197,7 @@ impl<A: Atom> Grammar<A> {
                 RuleKind::Sequence(ref seq) => &seq.labels_before[..],
                 RuleKind::Alternation(ref l, _) => slice::from_ref(l),
             };
-            iter::once(rule.label).chain(labels.iter().cloned())
+            iter::once(&rule.label).chain(labels.iter())
         })
         .collect();
 
@@ -247,7 +246,7 @@ impl Label for _L {
         match self {");
         for rule in self.rules.values() {
             match rule.kind {
-                RuleKind::Alternation(return_label, _) => {
+                RuleKind::Alternation(ref return_label, _) => {
                     put!("
             ", rule.label, " => LabelKind::Choice,
             ", return_label, " => unreachable!(),");
@@ -259,9 +258,9 @@ impl Label for _L {
                     }
                     for (i, &(_, ref unit)) in seq.units.iter().enumerate() {
                         let next_label = if i == seq.units.len() - 1 {
-                            rule.label
+                            &rule.label
                         } else {
-                            seq.labels_before[i + 1]
+                            &seq.labels_before[i + 1]
                         };
                         if i == 0 {
                             put!("
@@ -275,7 +274,7 @@ impl Label for _L {
                             put!("Binary(");
                             if i == 1 {
                                 match seq.units[i - 1].1 {
-                                    Unit::Rule(r) => put!("Some(", self.rules[&r].label, ")"),
+                                    Unit::Rule(ref r) => put!("Some(", self.rules[r].label, ")"),
                                     Unit::Atom(_) => put!("None"),
                                 }
                             } else {
@@ -284,7 +283,7 @@ impl Label for _L {
                             put!(", ");
                         }
                         match *unit {
-                            Unit::Rule(r) => put!("Some(", self.rules[&r].label, ")"),
+                            Unit::Rule(ref r) => put!("Some(", self.rules[r].label, ")"),
                             Unit::Atom(_) => put!("None"),
                         }
                         put!("),");
@@ -337,7 +336,7 @@ pub struct ", name, "<'a, 'b: 'a, 'id: 'a> {");
                     let mut has_named_units = false;
                     for &(ref unit_name, ref unit) in &seq.units {
                         if let Some(ref unit_name) = *unit_name {
-                            if let Unit::Rule(r) = *unit {
+                            if let Unit::Rule(ref r) = *unit {
                                 put!("
     pub ", unit_name, ": Handle<'a, 'b, 'id, ", r, "<'a, 'b, 'id>>,");
                                 has_named_units = true;
@@ -560,7 +559,7 @@ fn parse(p: &mut Parser) {
         match c.code {");
         for rule in self.rules.values() {
             match rule.kind {
-                RuleKind::Alternation(return_label, ref rules) => {
+                RuleKind::Alternation(ref return_label, ref rules) => {
                     put!("
             ", rule.label, " => {
                 c.code = ", return_label, ";");
@@ -579,18 +578,18 @@ fn parse(p: &mut Parser) {
                 RuleKind::Sequence(ref seq) => {
                     for (i, &(_, ref unit)) in seq.units.iter().enumerate() {
                         let next_label = if i == seq.units.len() - 1 {
-                            rule.label
+                            &rule.label
                         } else {
-                            seq.labels_before[i + 1]
+                            &seq.labels_before[i + 1]
                         };
                         if i == 0 {
                             put!("
             ", seq.labels_before[i], " => {");
                         }
                         match *unit {
-                            Unit::Rule(r) => put!("
+                            Unit::Rule(ref r) => put!("
                 c.code = ", next_label, ";
-                p.gss.call(Call { callee: ", self.rules[&r].start_label(), ", range }, c);
+                p.gss.call(Call { callee: ", self.rules[r].start_label(), ", range }, c);
             }"),
                             Unit::Atom(ref a) => {
                                 let a = a.to_rust_slice();

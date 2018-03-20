@@ -1,8 +1,7 @@
-#![feature(conservative_impl_trait, decl_macro, from_ref, rustc_private, str_escape)]
+#![feature(conservative_impl_trait, decl_macro, from_ref, str_escape)]
 
 extern crate indexing;
 extern crate ordermap;
-extern crate syntax;
 
 use indexing::container_traits::Trustworthy;
 use indexing::{scope, Container};
