@@ -123,7 +123,7 @@ impl Label {
 
 impl fmt::Display for Label {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, r#"L!("{}")"#, self.description)
+        write!(f, r#"!("{}")"#, self.description)
     }
 }
 
@@ -203,14 +203,14 @@ impl<A: Atom> Grammar<A> {
 
         put!("extern crate gll;
 
-use self::gll::{Call, Continuation, Label, LabelKind, ParseNode, Range};
+use self::gll::{Call, Continuation, ParseLabel, CodeLabel, ParseLabelKind, ParseNode, Range};
 use std::fmt;
 use std::marker::PhantomData;
 
-pub type Parser<'a, 'id> = gll::Parser<'id, _L, &'a [u8]>;
+pub type Parser<'a, 'id> = gll::Parser<'id, _P, _C, &'a [u8]>;
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
-pub enum _L {");
+pub enum _P {");
         for i in 0..labels.len() {
             put!(
                 "
@@ -219,21 +219,21 @@ pub enum _L {");
         put!("
 }
 
-macro_rules! L {");
+macro_rules! P {");
         for (i, l) in labels.iter().enumerate() {
             put!("
-    (\"", l.description, "\") => (_L::_", i, ");");
+    (\"", l.description, "\") => (_P::_", i, ");");
         }
         put!("
 }
 
-impl fmt::Display for _L {
+impl fmt::Display for _P {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let s = match *self {");
 
         for l in labels.iter() {
             put!("
-            ", l, " => \"", l.description, "\",");
+            P", l, " => \"", l.description, "\",");
         }
         put!("
         };
@@ -241,20 +241,20 @@ impl fmt::Display for _L {
     }
 }
 
-impl Label for _L {
-    fn kind(self) -> LabelKind<Self> {
+impl ParseLabel for _P {
+    fn kind(self) -> ParseLabelKind<Self> {
         match self {");
         for rule in self.rules.values() {
             match rule.kind {
                 RuleKind::Alternation(ref return_label, _) => {
                     put!("
-            ", rule.label, " => LabelKind::Choice,
-            ", return_label, " => unreachable!(),");
+            P", rule.label, " => ParseLabelKind::Choice,
+            P", return_label, " => unreachable!(),");
                 }
                 RuleKind::Sequence(ref seq) => {
                     if seq.units.is_empty() {
                         put!("
-            ", rule.label, " => LabelKind::Unary(None),");
+            P", rule.label, " => ParseLabelKind::Unary(None),");
                     }
                     for (i, &(_, ref unit)) in seq.units.iter().enumerate() {
                         let next_label = if i == seq.units.len() - 1 {
@@ -264,26 +264,26 @@ impl Label for _L {
                         };
                         if i == 0 {
                             put!("
-            ", seq.labels_before[i], " => unreachable!(),");
+            P", seq.labels_before[i], " => unreachable!(),");
                         }
                         put!("
-            ", next_label, " => LabelKind::");
+            P", next_label, " => ParseLabelKind::");
                         if i == 0 {
                             put!("Unary(");
                         } else {
                             put!("Binary(");
                             if i == 1 {
                                 match seq.units[i - 1].1 {
-                                    Unit::Rule(ref r) => put!("Some(", self.rules[r].label, ")"),
+                                    Unit::Rule(ref r) => put!("Some(P", self.rules[r].label, ")"),
                                     Unit::Atom(_) => put!("None"),
                                 }
                             } else {
-                                put!("Some(", seq.labels_before[i], ")");
+                                put!("Some(P", seq.labels_before[i], ")");
                             }
                             put!(", ");
                         }
                         match *unit {
-                            Unit::Rule(ref r) => put!("Some(", self.rules[r].label, ")"),
+                            Unit::Rule(ref r) => put!("Some(P", self.rules[r].label, ")"),
                             Unit::Atom(_) => put!("None"),
                         }
                         put!("),");
@@ -299,7 +299,7 @@ impl Label for _L {
 
         for (i, l) in labels.iter().enumerate() {
             put!("
-            ", i, " => ", l, ",");
+            ", i, " => P", l, ",");
         }
         put!("
             _ => unreachable!(),
@@ -310,6 +310,56 @@ impl Label for _L {
     }
 }
 
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
+pub enum _C {");
+        for i in 0..labels.len() {
+            put!(
+                "
+    _", i, ",");
+        }
+        put!("
+}
+
+macro_rules! C {");
+        for (i, l) in labels.iter().enumerate() {
+            put!("
+    (\"", l.description, "\") => (_C::_", i, ");");
+        }
+        put!("
+}
+
+impl fmt::Display for _C {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let s = match *self {");
+
+        for l in labels.iter() {
+            put!("
+            C", l, " => \"", l.description, "\",");
+        }
+        put!("
+        };
+        write!(f, \"{}\", s)
+    }
+}
+
+impl CodeLabel for _C {
+    fn from_usize(i: usize) -> Self {
+        match i {");
+
+        for (i, l) in labels.iter().enumerate() {
+            put!("
+            ", i, " => C", l, ",");
+        }
+        put!("
+            _ => unreachable!(),
+        }
+    }
+    fn to_usize(self) -> usize {
+        self as usize
+    }
+}
+
+#[derive(Debug)]
 pub struct Ambiguity;
 
 pub struct Handle<'a, 'b: 'a, 'id: 'a, T> {
@@ -393,7 +443,7 @@ impl<'a, 'b, 'id> Handle<'a, 'b, 'id, ", name, "<'a, 'b, 'id>> {
         })");
                     } else {
                         put!("
-        let node = ParseNode { l: Some(", rule.label, "), range: self.span };");
+        let node = ParseNode { l: Some(P", rule.label, "), range: self.span };");
                         if seq.units.len() == 1 {
                             put!("
         self.parser.sppf.unary_children(node)");
@@ -498,12 +548,12 @@ impl<'a, 'b, 'id> Handle<'a, 'b, 'id, ", name, "<'a, 'b, 'id>> {
         }
     }
     pub fn many(self) -> impl Iterator<Item = ", name, "<'a, 'b, 'id>> {
-        let node = ParseNode { l: Some(", rule.label, "), range: self.span };
+        let node = ParseNode { l: Some(P", rule.label, "), range: self.span };
         self.parser.sppf.children[&node].iter().map(move |&i| {
-            match _L::from_usize(i) {");
+            match _P::from_usize(i) {");
                     for r in rules {
                         put!("
-                ", self.rules[r].label," => ", name, "::", r, "(Handle {
+                P", self.rules[r].label," => ", name, "::", r, "(Handle {
                     span: self.span,
                     parser: self.parser,
                     _marker: PhantomData,
@@ -524,14 +574,14 @@ impl<'a, 'b, 'id> Handle<'a, 'b, 'id, ", name, "<'a, 'b, 'id>> {
 impl<'a, 'b, 'id> ", name, "<'a, 'b, 'id> {
     pub fn parse(p: &'a mut Parser<'b, 'id>) -> Result<Handle<'a, 'b, 'id, Self>, ()> {
         let call = Call {
-            callee: ", rule.start_label(), ",
+            callee: C", rule.start_label(), ",
             range: Range(p.input.range()),
         };
         if !p.gss.results.contains_key(&call) {
             let dummy = Range(p.input.empty_range());
             p.gss.threads.spawn(
                 Continuation {
-                    code: ", rule.start_label(), ",
+                    code: C", rule.start_label(), ",
                     stack: call,
                     state: 0,
                 },
@@ -561,17 +611,17 @@ fn parse(p: &mut Parser) {
             match rule.kind {
                 RuleKind::Alternation(ref return_label, ref rules) => {
                     put!("
-            ", rule.label, " => {
-                c.code = ", return_label, ";");
+            C", rule.label, " => {
+                c.code = C", return_label, ";");
                     for r in rules {
                         put!("
-                c.state = ", self.rules[r].label, ".to_usize();
-                p.gss.call(Call { callee: ", self.rules[r].start_label(), ", range }, c);")
+                c.state = C", self.rules[r].label, ".to_usize();
+                p.gss.call(Call { callee: C", self.rules[r].start_label(), ", range }, c);")
                     }
                     put!("
             }
-            ", return_label, " => {
-                p.sppf.add(", rule.label, ", result, c.state);
+            C", return_label, " => {
+                p.sppf.add(P", rule.label, ", result, c.state);
                 p.gss.ret(c.stack, result);
             }");
                 }
@@ -584,12 +634,12 @@ fn parse(p: &mut Parser) {
                         };
                         if i == 0 {
                             put!("
-            ", seq.labels_before[i], " => {");
+            C", seq.labels_before[i], " => {");
                         }
                         match *unit {
                             Unit::Rule(ref r) => put!("
-                c.code = ", next_label, ";
-                p.gss.call(Call { callee: ", self.rules[r].start_label(), ", range }, c);
+                c.code = C", next_label, ";
+                p.gss.call(Call { callee: C", self.rules[r].start_label(), ", range }, c);
             }"),
                             Unit::Atom(ref a) => {
                                 let a = a.to_rust_slice();
@@ -599,22 +649,22 @@ fn parse(p: &mut Parser) {
                 }
                 let (matched, rest, _) = range.split_at(", a, ".len());
                 result = Range(matched);
-                c.code = ", next_label, ";
+                c.code = C", next_label, ";
                 p.gss.threads.spawn(c, result, Range(rest));
             }")
                             }
                         }
                         put!("
-            ", next_label, " => {");
+            C", next_label, " => {");
                         if i == 0 {
                             if seq.units.len() == 1 {
                                 put!("
-                p.sppf.add(", next_label, ", result, 0);");
+                p.sppf.add(P", next_label, ", result, 0);");
                             }
                         } else {
                             put!("
                 result = Range(c.stack.range.split_at(c.state + result.len()).0);
-                p.sppf.add(", next_label, ", result, c.state);");
+                p.sppf.add(P", next_label, ", result, c.state);");
                         }
                         put!("
                 c.state = result.len();");
@@ -622,9 +672,9 @@ fn parse(p: &mut Parser) {
 
                     if seq.units.is_empty() {
                         put!("
-            ", rule.label, " => {
+            C", rule.label, " => {
                 result = Range(range.frontiers().0);
-                p.sppf.add(", rule.label, ", result, 0);");
+                p.sppf.add(P", rule.label, ", result, 0);");
                     }
                     put!("
                 p.gss.ret(c.stack, result);

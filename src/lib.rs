@@ -49,19 +49,19 @@ impl<'id> Range<'id> {
     }
 }
 
-pub struct Parser<'id, L: Label, I> {
+pub struct Parser<'id, P: ParseLabel, C: CodeLabel, I> {
     pub input: Container<'id, I>,
-    pub gss: CallGraph<'id, L>,
-    pub sppf: ParseGraph<'id, L>,
+    pub gss: CallGraph<'id, C>,
+    pub sppf: ParseGraph<'id, P>,
 }
 
-pub struct Threads<'id, L: Label> {
-    queue: BinaryHeap<Call<'id, (Continuation<'id, L>, Range<'id>)>>,
-    seen: BTreeSet<Call<'id, (Continuation<'id, L>, Range<'id>)>>,
+pub struct Threads<'id, C: CodeLabel> {
+    queue: BinaryHeap<Call<'id, (Continuation<'id, C>, Range<'id>)>>,
+    seen: BTreeSet<Call<'id, (Continuation<'id, C>, Range<'id>)>>,
 }
 
-impl<'id, L: Label> Threads<'id, L> {
-    pub fn spawn(&mut self, next: Continuation<'id, L>, result: Range<'id>, range: Range<'id>) {
+impl<'id, C: CodeLabel> Threads<'id, C> {
+    pub fn spawn(&mut self, next: Continuation<'id, C>, result: Range<'id>, range: Range<'id>) {
         let t = Call {
             callee: (next, result),
             range,
@@ -70,7 +70,7 @@ impl<'id, L: Label> Threads<'id, L> {
             self.queue.push(t);
         }
     }
-    pub fn steal(&mut self) -> Option<Call<'id, (Continuation<'id, L>, Range<'id>)>> {
+    pub fn steal(&mut self) -> Option<Call<'id, (Continuation<'id, C>, Range<'id>)>> {
         if let Some(t) = self.queue.pop() {
             loop {
                 let old = self.seen.iter().rev().next().cloned();
@@ -92,9 +92,9 @@ impl<'id, L: Label> Threads<'id, L> {
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Continuation<'id, L: Label> {
-    pub code: L,
-    pub stack: Call<'id, L>,
+pub struct Continuation<'id, C: CodeLabel> {
+    pub code: C,
+    pub stack: Call<'id, C>,
     pub state: usize,
 }
 
@@ -128,13 +128,13 @@ impl<'id, C: Ord> Ord for Call<'id, C> {
     }
 }
 
-pub struct CallGraph<'id, L: Label> {
-    pub threads: Threads<'id, L>,
-    returns: HashMap<Call<'id, L>, BTreeSet<Continuation<'id, L>>>,
-    pub results: HashMap<Call<'id, L>, BTreeSet<Range<'id>>>,
+pub struct CallGraph<'id, C: CodeLabel> {
+    pub threads: Threads<'id, C>,
+    returns: HashMap<Call<'id, C>, BTreeSet<Continuation<'id, C>>>,
+    pub results: HashMap<Call<'id, C>, BTreeSet<Range<'id>>>,
 }
 
-impl<'id, L: Label> CallGraph<'id, L> {
+impl<'id, C: CodeLabel> CallGraph<'id, C> {
     pub fn print(&self, out: &mut Write) -> io::Result<()> {
         writeln!(out, "digraph gss {{")?;
         writeln!(out, "    graph [rankdir=RL]")?;
@@ -149,7 +149,7 @@ impl<'id, L: Label> CallGraph<'id, L> {
         }
         writeln!(out, "}}")
     }
-    pub fn call(&mut self, call: Call<'id, L>, next: Continuation<'id, L>) {
+    pub fn call(&mut self, call: Call<'id, C>, next: Continuation<'id, C>) {
         let returns = self.returns.entry(call).or_insert(BTreeSet::new());
         if returns.insert(next) {
             if returns.len() > 1 {
@@ -173,7 +173,7 @@ impl<'id, L: Label> CallGraph<'id, L> {
             }
         }
     }
-    pub fn ret(&mut self, call: Call<'id, L>, result: Range<'id>) {
+    pub fn ret(&mut self, call: Call<'id, C>, result: Range<'id>) {
         if self.results
             .entry(call)
             .or_insert(BTreeSet::new())
@@ -189,12 +189,12 @@ impl<'id, L: Label> CallGraph<'id, L> {
     }
 }
 
-pub struct ParseGraph<'id, L: Label> {
-    pub children: HashMap<ParseNode<'id, L>, BTreeSet<usize>>,
+pub struct ParseGraph<'id, P: ParseLabel> {
+    pub children: HashMap<ParseNode<'id, P>, BTreeSet<usize>>,
 }
 
-impl<'id, L: Label> ParseGraph<'id, L> {
-    pub fn add(&mut self, l: L, range: Range<'id>, child: usize) {
+impl<'id, P: ParseLabel> ParseGraph<'id, P> {
+    pub fn add(&mut self, l: P, range: Range<'id>, child: usize) {
         self.children
             .entry(ParseNode { l: Some(l), range })
             .or_insert(BTreeSet::new())
@@ -203,10 +203,10 @@ impl<'id, L: Label> ParseGraph<'id, L> {
 
     pub fn unary_children<'a>(
         &'a self,
-        node: ParseNode<'id, L>,
-    ) -> impl Iterator<Item = ParseNode<'id, L>> + 'a {
+        node: ParseNode<'id, P>,
+    ) -> impl Iterator<Item = ParseNode<'id, P>> + 'a {
         match node.l.unwrap().kind() {
-            LabelKind::Unary(l) => self.children[&node].iter().map(move |&i| {
+            ParseLabelKind::Unary(l) => self.children[&node].iter().map(move |&i| {
                 assert_eq!(i, 0);
                 ParseNode {
                     l,
@@ -219,10 +219,10 @@ impl<'id, L: Label> ParseGraph<'id, L> {
 
     pub fn binary_children<'a>(
         &'a self,
-        node: ParseNode<'id, L>,
-    ) -> impl Iterator<Item = (ParseNode<'id, L>, ParseNode<'id, L>)> + 'a {
+        node: ParseNode<'id, P>,
+    ) -> impl Iterator<Item = (ParseNode<'id, P>, ParseNode<'id, P>)> + 'a {
         match node.l.unwrap().kind() {
-            LabelKind::Binary(left_l, right_l) => self.children[&node].iter().map(move |&i| {
+            ParseLabelKind::Binary(left_l, right_l) => self.children[&node].iter().map(move |&i| {
                 let (left, right, _) = node.range.split_at(i);
                 (
                     ParseNode {
@@ -245,9 +245,9 @@ impl<'id, L: Label> ParseGraph<'id, L> {
         for (source, children) in &self.children {
             writeln!(out, r#"    "{}" [shape=box]"#, source)?;
             match source.l.unwrap().kind() {
-                LabelKind::Choice => for &child in children {
+                ParseLabelKind::Choice => for &child in children {
                     let child = ParseNode {
-                        l: Some(L::from_usize(child)),
+                        l: Some(P::from_usize(child)),
                         range: source.range,
                     };
                     writeln!(out, r#"    p{} [label="" shape=point]"#, p)?;
@@ -256,7 +256,7 @@ impl<'id, L: Label> ParseGraph<'id, L> {
                     p += 1;
                 },
 
-                LabelKind::Unary(l) => for &child in children {
+                ParseLabelKind::Unary(l) => for &child in children {
                     assert_eq!(child, 0);
                     let child = ParseNode {
                         l,
@@ -268,7 +268,7 @@ impl<'id, L: Label> ParseGraph<'id, L> {
                     p += 1;
                 },
 
-                LabelKind::Binary(left_l, right_l) => for &child in children {
+                ParseLabelKind::Binary(left_l, right_l) => for &child in children {
                     let (left, right, _) = source.range.split_at(child);
                     let (left, right) = (
                         ParseNode {
@@ -293,18 +293,18 @@ impl<'id, L: Label> ParseGraph<'id, L> {
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ParseNode<'id, L: Label> {
-    pub l: Option<L>,
+pub struct ParseNode<'id, P: ParseLabel> {
+    pub l: Option<P>,
     pub range: Range<'id>,
 }
 
-impl<'id, L: Label> ParseNode<'id, L> {
-    pub fn terminal(range: Range<'id>) -> ParseNode<'id, L> {
+impl<'id, P: ParseLabel> ParseNode<'id, P> {
+    pub fn terminal(range: Range<'id>) -> ParseNode<'id, P> {
         ParseNode { l: None, range }
     }
 }
 
-impl<'id, L: Label> fmt::Display for ParseNode<'id, L> {
+impl<'id, P: ParseLabel> fmt::Display for ParseNode<'id, P> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         if let Some(l) = self.l {
             write!(f, "{} @ {}..{}", l, self.range.start(), self.range.end())
@@ -314,10 +314,10 @@ impl<'id, L: Label> fmt::Display for ParseNode<'id, L> {
     }
 }
 
-impl<'a, L: Label, I: Trustworthy> Parser<'a, L, I> {
+impl<'a, P: ParseLabel, C: CodeLabel, I: Trustworthy> Parser<'a, P, C, I> {
     pub fn with<F, R>(input: I, f: F) -> R
     where
-        F: for<'id> FnOnce(Parser<'id, L, I>) -> R,
+        F: for<'id> FnOnce(Parser<'id, P, C, I>) -> R,
     {
         scope(input, |input| {
             f(Parser {
@@ -338,14 +338,19 @@ impl<'a, L: Label, I: Trustworthy> Parser<'a, L, I> {
     }
 }
 
-pub enum LabelKind<L: Label> {
-    Unary(Option<L>),
-    Binary(Option<L>, Option<L>),
+pub enum ParseLabelKind<P: ParseLabel> {
+    Unary(Option<P>),
+    Binary(Option<P>, Option<P>),
     Choice,
 }
 
-pub trait Label: fmt::Display + Ord + Hash + Copy + 'static {
-    fn kind(self) -> LabelKind<Self>;
+pub trait ParseLabel: fmt::Display + Ord + Hash + Copy + 'static {
+    fn kind(self) -> ParseLabelKind<Self>;
+    fn from_usize(i: usize) -> Self;
+    fn to_usize(self) -> usize;
+}
+
+pub trait CodeLabel: fmt::Display + Ord + Hash + Copy + 'static {
     fn from_usize(i: usize) -> Self;
     fn to_usize(self) -> usize;
 }
