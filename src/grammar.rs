@@ -2,6 +2,7 @@ use ordermap::OrderMap;
 use std::fmt;
 use std::io::{self, Write};
 use std::iter;
+use std::slice;
 
 pub struct Grammar<A> {
     rules: OrderMap<String, Rule<A>>,
@@ -25,7 +26,7 @@ pub struct Rule<A> {
 
 pub enum RuleKind<A> {
     Sequence(Sequence<A>),
-    Alternation(Vec<String>),
+    Alternation(ParseLabel, Vec<String>),
 }
 
 impl<A> Rule<A> {
@@ -38,21 +39,24 @@ impl<A> Rule<A> {
     pub fn alternation(rules: &[&str]) -> Self {
         Rule {
             label: ParseLabel::empty(),
-            kind: RuleKind::Alternation(rules.iter().map(|&r| r.to_string()).collect()),
+            kind: RuleKind::Alternation(
+                ParseLabel::empty(),
+                rules.iter().map(|&r| r.to_string()).collect(),
+            ),
         }
     }
 }
 
 pub struct Sequence<A> {
     units: Vec<(Option<String>, Unit<A>)>,
-    parse_labels_before: Vec<ParseLabel>,
+    parse_labels_after: Vec<ParseLabel>,
 }
 
 impl<A> Sequence<A> {
     pub fn new(units: Vec<(Option<String>, Unit<A>)>) -> Self {
         Sequence {
             units,
-            parse_labels_before: vec![],
+            parse_labels_after: vec![],
         }
     }
 }
@@ -152,7 +156,7 @@ impl<A: Atom> Grammar<A> {
                     for i in 0..seq.units.len() {
                         let mut s = format!("{} ::=", rule_name);
                         for (j, &(ref name, ref unit)) in seq.units.iter().enumerate() {
-                            if i == j {
+                            if i + 1 == j {
                                 s.push('·');
                                 break;
                             } else {
@@ -171,16 +175,18 @@ impl<A: Atom> Grammar<A> {
                                 }
                             }
                         }
-                        seq.parse_labels_before.push(ParseLabel::new(&s));
+                        seq.parse_labels_after.push(ParseLabel::new(&s));
                     }
                 }
-                RuleKind::Alternation(_) => {}
+                RuleKind::Alternation(ref mut label, _) => {
+                    *label = ParseLabel::new(&format!("{} ::=·", rule_name));
+                }
             }
         }
         let parse_labels: Vec<_> = self.rules.values().flat_map(|rule| {
             let parse_labels = match rule.kind {
-                RuleKind::Sequence(ref seq) => &seq.parse_labels_before[..],
-                RuleKind::Alternation(_) => &[],
+                RuleKind::Sequence(ref seq) => &seq.parse_labels_after[..],
+                RuleKind::Alternation(ref l, _) => slice::from_ref(l),
             };
             iter::once(&rule.label).chain(parse_labels.iter())
         })
@@ -279,7 +285,7 @@ impl<'a, 'b, 'id> Handle<'a, 'b, 'id, ", name, "<'a, 'b, 'id>> {
         })");
                     } else {
                         put!("
-        let node = ParseNode { l: Some(", rule.label, "), range: self.span };");
+        let node = ParseNode { l: Some(", seq.parse_labels_after.last().unwrap(), "), range: self.span };");
                         if seq.units.len() == 1 {
                             put!("
         self.parser.sppf.unary_children(node)");
@@ -338,7 +344,7 @@ impl<'a, 'b, 'id> Handle<'a, 'b, 'id, ", name, "<'a, 'b, 'id>> {
 }
 ");
                 }
-                RuleKind::Alternation(ref rules) => {
+                RuleKind::Alternation(ref label, ref rules) => {
                     put!("
 
 pub enum ", name, "<'a, 'b: 'a, 'id: 'a> {");
@@ -384,7 +390,7 @@ impl<'a, 'b, 'id> Handle<'a, 'b, 'id, ", name, "<'a, 'b, 'id>> {
         }
     }
     pub fn many(self) -> impl Iterator<Item = ", name, "<'a, 'b, 'id>> {
-        let node = ParseNode { l: Some(", rule.label, "), range: self.span };
+        let node = ParseNode { l: Some(", label, "), range: self.span };
         self.parser.sppf.children[&node].iter().map(move |&i| {
             match _P::from_usize(i) {");
                     for r in rules {
@@ -444,12 +450,13 @@ fn parse(p: &mut Parser) {
     while let Some(Call { callee: (mut c, mut result), range }) = p.gss.threads.steal() {
         match c.code {");
         for (name, rule) in &self.rules {
+            put!("
+            _C::", name, " => {");
             code_labels.push(name.clone());
             match rule.kind {
-                RuleKind::Alternation(ref rules) => {
+                RuleKind::Alternation(ref label, ref rules) => {
                     let return_label = format!("{}__1", name);
                     put!("
-            _C::", name, " => {
                 c.code = _C::", return_label, ";");
                     for r in rules {
                         put!("
@@ -459,28 +466,17 @@ fn parse(p: &mut Parser) {
                     put!("
             }
             _C::", return_label, " => {
-                p.sppf.add(", rule.label, ", result, c.state);
-                p.gss.ret(c.stack, result);
-            }");
+                p.sppf.add(", label, ", result, c.state);");
                     code_labels.push(return_label);
                 }
                 RuleKind::Sequence(ref seq) => {
                     for (i, &(_, ref unit)) in seq.units.iter().enumerate() {
-                        let next_parse_label = if i == seq.units.len() - 1 {
-                            &rule.label
-                        } else {
-                            &seq.parse_labels_before[i + 1]
-                        };
                         let next_code_label = format!("{}__{}", name, i + 1);
-                        if i == 0 {
-                            put!("
-            _C::", name, " => {");
-                        }
+                        put!("
+                c.code = _C::", next_code_label, ";");
                         match *unit {
                             Unit::Rule(ref r) => put!("
-                c.code = _C::", next_code_label, ";
-                p.gss.call(Call { callee: _C::", r, ", range }, c);
-            }"),
+                p.gss.call(Call { callee: _C::", r, ", range }, c);"),
                             Unit::Atom(ref a) => {
                                 let a = a.to_rust_slice();
                                 put!("
@@ -489,39 +485,37 @@ fn parse(p: &mut Parser) {
                 }
                 let (matched, rest, _) = range.split_at(", a, ".len());
                 result = Range(matched);
-                c.code = _C::", next_code_label, ";
-                p.gss.threads.spawn(c, result, Range(rest));
-            }")
+                p.gss.threads.spawn(c, result, Range(rest));")
                             }
                         }
                         put!("
+            }
             _C::", next_code_label, " => {");
+                        code_labels.push(next_code_label);
                         if i == 0 {
                             if seq.units.len() == 1 {
                                 put!("
-                p.sppf.add(", next_parse_label, ", result, 0);");
+                p.sppf.add(", seq.parse_labels_after[i], ", result, 0);");
                             }
                         } else {
                             put!("
                 result = Range(c.stack.range.split_at(c.state + result.len()).0);
-                p.sppf.add(", next_parse_label, ", result, c.state);");
+                p.sppf.add(", seq.parse_labels_after[i], ", result, c.state);");
                         }
                         put!("
                 c.state = result.len();");
-                        code_labels.push(next_code_label);
                     }
 
                     if seq.units.is_empty() {
                         put!("
-            _C::", name, " => {
-                result = Range(range.frontiers().0);
-                p.sppf.add(", rule.label, ", result, 0);");
+                result = Range(range.frontiers().0);");
                     }
-                    put!("
-                p.gss.ret(c.stack, result);
-            }");
                 }
             }
+            put!("
+                p.sppf.add(", rule.label, ", result, 0);
+                p.gss.ret(c.stack, result);
+            }");
         }
         put!("
         }
@@ -568,27 +562,22 @@ impl ParseLabel for _P {
         match self {");
         for rule in self.rules.values() {
             match rule.kind {
-                RuleKind::Alternation(_) => {
+                RuleKind::Alternation(ref label, _) => {
                     put!("
-            ", rule.label, " => ParseLabelKind::Choice,");
+            ", rule.label, " => ParseLabelKind::Unary(Some(", label, ")),
+            ", label, " => ParseLabelKind::Choice,");
                 }
                 RuleKind::Sequence(ref seq) => {
-                    if seq.units.is_empty() {
+                    if let Some(label) = seq.parse_labels_after.last() {
+                        put!("
+            ", rule.label, " => ParseLabelKind::Unary(Some(", label, ")),");
+                    } else {
                         put!("
             ", rule.label, " => ParseLabelKind::Unary(None),");
                     }
                     for (i, &(_, ref unit)) in seq.units.iter().enumerate() {
-                        let next_label = if i == seq.units.len() - 1 {
-                            &rule.label
-                        } else {
-                            &seq.parse_labels_before[i + 1]
-                        };
-                        if i == 0 {
-                            put!("
-            ", seq.parse_labels_before[i], " => unreachable!(),");
-                        }
                         put!("
-            ", next_label, " => ParseLabelKind::");
+            ", seq.parse_labels_after[i], " => ParseLabelKind::");
                         if i == 0 {
                             put!("Unary(");
                         } else {
@@ -599,7 +588,7 @@ impl ParseLabel for _P {
                                     Unit::Atom(_) => put!("None"),
                                 }
                             } else {
-                                put!("Some(", seq.parse_labels_before[i], ")");
+                                put!("Some(", seq.parse_labels_after[i - 1], ")");
                             }
                             put!(", ");
                         }
