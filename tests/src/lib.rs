@@ -1,4 +1,4 @@
-#![feature(conservative_impl_trait)]
+#![feature(conservative_impl_trait, decl_macro)]
 
 use std::fs::File;
 

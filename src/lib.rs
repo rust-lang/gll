@@ -98,7 +98,7 @@ pub struct Continuation<'id, C: CodeLabel> {
     pub state: usize,
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Call<'id, C> {
     pub callee: C,
     pub range: Range<'id>,
@@ -142,7 +142,7 @@ impl<'id, C: CodeLabel> CallGraph<'id, C> {
             for next in returns {
                 writeln!(
                     out,
-                    r#"    "{}" -> "{}" [label="{}"]"#,
+                    r#"    "{:?}" -> "{:?}" [label="{:?}"]"#,
                     source, next.stack, next.code
                 )?;
             }
@@ -350,7 +350,4 @@ pub trait ParseLabel: fmt::Display + Ord + Hash + Copy + 'static {
     fn to_usize(self) -> usize;
 }
 
-pub trait CodeLabel: fmt::Display + Ord + Hash + Copy + 'static {
-    fn from_usize(i: usize) -> Self;
-    fn to_usize(self) -> usize;
-}
+pub trait CodeLabel: fmt::Debug + Ord + Hash + Copy + 'static {}
