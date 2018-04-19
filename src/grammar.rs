@@ -18,7 +18,7 @@ impl<A> Grammar<A> {
 }
 
 pub enum Rule<A> {
-    Sequence(Vec<(Option<String>, Unit<A>, ParseLabel)>),
+    Sequence(Vec<(Unit<A>, ParseLabel)>, Vec<Option<String>>),
     Alternation(ParseLabel, Vec<String>),
 }
 
@@ -74,13 +74,19 @@ impl fmt::Display for ParseLabel {
 
 pub macro grammar {
     (@unit { $name:ident : $unit:tt }) => {
-        (Some(stringify!($name).to_string()), grammar!(@unit $unit).1, ParseLabel::empty())
+        grammar!(@unit $unit)
     },
     (@unit $rule:ident) => {
-        (None::<String>, Unit::Rule(stringify!($rule).to_string()), ParseLabel::empty())
+        (Unit::Rule(stringify!($rule).to_string()), ParseLabel::empty())
     },
     (@unit $atom:expr) => {
-        (None::<String>, Unit::Atom($atom), ParseLabel::empty())
+        (Unit::Atom($atom), ParseLabel::empty())
+    },
+    (@unit_name { $name:ident : $unit:tt }) => {
+        Some(stringify!($name).to_string())
+    },
+    (@unit_name $unit:tt) => {
+        None::<String>
     },
     ($($rule_name:ident =
         $($arm_name:ident { $($unit:tt)* })|+;
@@ -90,7 +96,7 @@ pub macro grammar {
             grammar.add_rule(stringify!($rule_name),
                 Rule::Alternation(ParseLabel::empty(), vec![$(stringify!($arm_name).to_string()),*]));
             $(grammar.add_rule(stringify!($arm_name),
-                Rule::Sequence(vec![$(grammar!(@unit $unit)),*]));)*
+                Rule::Sequence(vec![$(grammar!(@unit $unit)),*], vec![$(grammar!(@unit_name $unit)),*]));)*
         )*
         grammar
     })
@@ -106,19 +112,15 @@ impl<A: Atom> Grammar<A> {
         }
         for (rule_name, rule) in &mut self.rules {
             match *rule {
-                Rule::Sequence(ref mut units) => {
+                Rule::Sequence(ref mut units, _) => {
                     for i in 0..units.len() {
                         let mut s = format!("{} ::=", rule_name);
-                        for (j, &(ref name, ref unit, _)) in units.iter().enumerate() {
+                        for (j, &(ref unit, _)) in units.iter().enumerate() {
                             if i + 1 == j {
                                 s.push('·');
                                 break;
                             } else {
                                 s.push(' ');
-                            }
-                            if let Some(ref name) = *name {
-                               s.push_str(name);
-                               s.push(':');
                             }
                             match *unit {
                                 Unit::Atom(ref a) => {
@@ -129,7 +131,7 @@ impl<A: Atom> Grammar<A> {
                                 }
                             }
                         }
-                        units[i].2 = ParseLabel::new(&s);
+                        units[i].1 = ParseLabel::new(&s);
                     }
                 }
                 Rule::Alternation(ref mut label, _) => {
@@ -140,8 +142,8 @@ impl<A: Atom> Grammar<A> {
         let mut parse_labels: Vec<_> = vec![];
         for rule in self.rules.values() {
             match *rule {
-                Rule::Sequence(ref units) => {
-                    for &( _, _, ref label_after) in units {
+                Rule::Sequence(ref units, _) => {
+                    for &( _, ref label_after) in units {
                         parse_labels.push(label_after);
                     }
                 }
@@ -177,13 +179,13 @@ impl<'a, 'b, 'id, T> Clone for Handle<'a, 'b, 'id, T> {
 ");
         for (name, rule) in &self.rules {
             match *rule {
-                Rule::Sequence(ref units) => {
+                Rule::Sequence(ref units, ref unit_names) => {
                     put!("
 
 #[derive(Debug)]
 pub struct ", name, "<'a, 'b: 'a, 'id: 'a> {");
                     let mut has_named_units = false;
-                    for &(ref unit_name, ref unit, _) in units {
+                    for (&(ref unit, _), unit_name) in units.iter().zip(unit_names) {
                         if let Some(ref unit_name) = *unit_name {
                             if let Unit::Rule(ref r) = *unit {
                                 put!("
@@ -242,7 +244,7 @@ impl<'a, 'b, 'id> Handle<'a, 'b, 'id, ", name, "<'a, 'b, 'id>> {
         })");
                     } else {
                         put!("
-        let node = ParseNode { l: Some(", units.last().unwrap().2, "), range: self.span };");
+        let node = ParseNode { l: Some(", units.last().unwrap().1, "), range: self.span };");
                         if units.len() == 1 {
                             put!("
         self.parser.sppf.unary_children(node)");
@@ -259,7 +261,7 @@ impl<'a, 'b, 'id> Handle<'a, 'b, 'id, ", name, "<'a, 'b, 'id>> {
                         for _ in 0..units.len() - 1 {
                             put!("(");
                         }
-                        for (i, &(ref unit_name, ref unit, _)) in units.iter().enumerate() {
+                        for ((i, &(ref unit, _)), unit_name) in units.iter().enumerate().zip(unit_names) {
                             if i > 0 {
                                 put!(", ");
                             }
@@ -277,7 +279,7 @@ impl<'a, 'b, 'id> Handle<'a, 'b, 'id, ", name, "<'a, 'b, 'id>> {
                             }
                         }
                         put!("| ", name, " {");
-                        for &(ref unit_name, ref unit, _) in units {
+                        for (&(ref unit, _), unit_name) in units.iter().zip(unit_names) {
                             if let Some(ref unit_name) = *unit_name {
                                 if let Unit::Rule(_) = *unit {
                                     put!("
@@ -426,8 +428,8 @@ fn parse(p: &mut Parser) {
                 p.sppf.add(", label, ", result, c.state);");
                     code_labels.push(return_label);
                 }
-                Rule::Sequence(ref units) => {
-                    for (i, &(_, ref unit, ref label_after)) in units.iter().enumerate() {
+                Rule::Sequence(ref units, _) => {
+                    for (i, &(ref unit, ref label_after)) in units.iter().enumerate() {
                         let next_code_label = format!("{}__{}", name, i + 1);
                         put!("
                 c.code = _C::", next_code_label, ";");
@@ -533,15 +535,15 @@ impl ParseLabel for _P {
             _P::", name, " => ParseLabelKind::Unary(Some(", label, ")),
             ", label, " => ParseLabelKind::Choice,");
                 }
-                Rule::Sequence(ref units) => {
+                Rule::Sequence(ref units, _) => {
                     if let Some(label) = units.last() {
                         put!("
-            _P::", name, " => ParseLabelKind::Unary(Some(", label.2, ")),");
+            _P::", name, " => ParseLabelKind::Unary(Some(", label.1, ")),");
                     } else {
                         put!("
             _P::", name, " => ParseLabelKind::Unary(None),");
                     }
-                    for (i, &(_, ref unit, ref label_after)) in units.iter().enumerate() {
+                    for (i, &(ref unit, ref label_after)) in units.iter().enumerate() {
                         put!("
             ", label_after, " => ParseLabelKind::");
                         if i == 0 {
@@ -549,12 +551,12 @@ impl ParseLabel for _P {
                         } else {
                             put!("Binary(");
                             if i == 1 {
-                                match units[i - 1].1 {
+                                match units[i - 1].0 {
                                     Unit::Rule(ref r) => put!("Some(_P::", r, ")"),
                                     Unit::Atom(_) => put!("None"),
                                 }
                             } else {
-                                put!("Some(", units[i - 1].2, ")");
+                                put!("Some(", units[i - 1].1, ")");
                             }
                             put!(", ");
                         }
