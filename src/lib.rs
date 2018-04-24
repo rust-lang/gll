@@ -128,36 +128,47 @@ impl<'id, C: Ord> Ord for Call<'id, C> {
     }
 }
 
+pub struct CallNode<'id, C: CodeLabel> {
+    returns: BTreeSet<Continuation<'id, C>>,
+    pub results: BTreeSet<Range<'id>>,
+}
+
+impl<'id, C: CodeLabel> CallNode<'id, C> {
+    pub fn new() -> Self {
+        CallNode {
+            returns: BTreeSet::new(),
+            results: BTreeSet::new(),
+        }
+    }
+}
+
 pub struct CallGraph<'id, C: CodeLabel> {
     pub threads: Threads<'id, C>,
-    returns: HashMap<Call<'id, C>, BTreeSet<Continuation<'id, C>>>,
-    pub results: HashMap<Call<'id, C>, BTreeSet<Range<'id>>>,
+    pub calls: HashMap<Call<'id, C>, CallNode<'id, C>>,
 }
 
 impl<'id, C: CodeLabel> CallGraph<'id, C> {
     pub fn print(&self, out: &mut Write) -> io::Result<()> {
         writeln!(out, "digraph gss {{")?;
         writeln!(out, "    graph [rankdir=RL]")?;
-        for (source, returns) in &self.returns {
-            for next in returns {
+        for (call, node) in &self.calls {
+            for next in &node.returns {
                 writeln!(
                     out,
                     r#"    "{:?}" -> "{:?}" [label="{:?}"]"#,
-                    source, next.stack, next.code
+                    call, next.stack, next.code
                 )?;
             }
         }
         writeln!(out, "}}")
     }
     pub fn call(&mut self, call: Call<'id, C>, next: Continuation<'id, C>) {
-        let returns = self.returns.entry(call).or_insert(BTreeSet::new());
-        if returns.insert(next) {
-            if returns.len() > 1 {
-                if let Some(results) = self.results.get(&call) {
-                    for &result in results {
-                        self.threads
-                            .spawn(next, result, call.range.subtract(result));
-                    }
+        let node = self.calls.entry(call).or_insert(CallNode::new());
+        if node.returns.insert(next) {
+            if node.returns.len() > 1 {
+                for &result in &node.results {
+                    self.threads
+                        .spawn(next, result, call.range.subtract(result));
                 }
             } else {
                 let dummy = Range(call.range.frontiers().0);
@@ -174,16 +185,11 @@ impl<'id, C: CodeLabel> CallGraph<'id, C> {
         }
     }
     pub fn ret(&mut self, call: Call<'id, C>, result: Range<'id>) {
-        if self.results
-            .entry(call)
-            .or_insert(BTreeSet::new())
-            .insert(result)
-        {
-            if let Some(returns) = self.returns.get(&call) {
-                for &next in returns {
-                    self.threads
-                        .spawn(next, result, call.range.subtract(result));
-                }
+        let node = self.calls.entry(call).or_insert(CallNode::new());
+        if node.results.insert(result) {
+            for &next in &node.returns {
+                self.threads
+                    .spawn(next, result, call.range.subtract(result));
             }
         }
     }
@@ -327,8 +333,7 @@ impl<'a, P: ParseLabel, C: CodeLabel, I: Trustworthy> Parser<'a, P, C, I> {
                         queue: BinaryHeap::new(),
                         seen: BTreeSet::new(),
                     },
-                    returns: HashMap::new(),
-                    results: HashMap::new(),
+                    calls: HashMap::new(),
                 },
                 sppf: ParseGraph {
                     children: HashMap::new(),

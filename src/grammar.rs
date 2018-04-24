@@ -408,7 +408,7 @@ impl<'a, 'b, 'id> ", name, "<'a, 'b, 'id> {
             callee: _C::", name, ",
             range: Range(p.input.range()),
         };
-        if !p.gss.results.contains_key(&call) {
+        if !p.gss.calls.contains_key(&call) {
             let dummy = Range(p.input.empty_range());
             p.gss.threads.spawn(
                 Continuation {
@@ -421,8 +421,8 @@ impl<'a, 'b, 'id> ", name, "<'a, 'b, 'id> {
             );
             parse(p);
         }
-        if let Some(results) = p.gss.results.get(&call) {
-            if let Some(&r) = results.iter().rev().next() {
+        if let Some(node) = p.gss.calls.get(&call) {
+            if let Some(&r) = node.results.iter().rev().next() {
                 return Ok(Handle {
                     span: r,
                     parser: p,
