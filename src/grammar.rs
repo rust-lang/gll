@@ -35,6 +35,31 @@ impl<A> RuleWithNamedFields<A> {
             fields: OrderMap::new(),
         }
     }
+    pub fn alternation(rules: Vec<Self>) -> Self {
+        let mut fields = OrderMap::new();
+        let choices = rules
+            .into_iter()
+            .enumerate()
+            .map(|(i, rule)| {
+                fields.extend(rule.fields.into_iter().map(|(name, j)| {
+                    assert_eq!(j, 0);
+                    (name, i)
+                }));
+
+                match rule.rule {
+                    Rule::Sequence(units) => match units[..] {
+                        [(Unit::Rule(ref r), _)] => r.clone(),
+                        _ => unimplemented!(),
+                    },
+                    Rule::Alternation(..) => unimplemented!(),
+                }
+            })
+            .collect();
+        RuleWithNamedFields {
+            rule: Rule::Alternation(ParseLabel::empty(), choices),
+            fields,
+        }
+    }
     pub fn with_field_name(mut self, name: &str) -> Self {
         match self.rule {
             Rule::Sequence(ref units) => assert!(units.len() == 1),
@@ -64,6 +89,24 @@ impl<A> RuleWithNamedFields<A> {
 pub enum Rule<A> {
     Sequence(Vec<(Unit<A>, ParseLabel)>),
     Alternation(ParseLabel, Vec<String>),
+}
+
+impl<A> Rule<A> {
+    fn field_type(&self, i: usize) -> &str {
+        match *self {
+            Rule::Sequence(ref units) => match units[i].0 {
+                Unit::Rule(ref r) => r,
+                Unit::Atom(_) => "Terminal",
+            },
+            Rule::Alternation(_, ref choices) => &choices[i],
+        }
+    }
+    fn field_is_refutable(&self, _i: usize) -> bool {
+        match *self {
+            Rule::Sequence(_) => false,
+            Rule::Alternation(..) => true,
+        }
+    }
 }
 
 pub enum Unit<A> {
@@ -132,10 +175,7 @@ pub macro grammar {
         let mut grammar = Grammar::new();
         $(
             grammar.add_rule(stringify!($rule_name),
-                RuleWithNamedFields {
-                    rule: Rule::Alternation(ParseLabel::empty(), vec![$(stringify!($arm_name).to_string()),*]),
-                    fields: OrderMap::new(),
-                });
+                RuleWithNamedFields::alternation(vec![$(grammar!(@unit { $arm_name: $arm_name })),*]));
             $(grammar.add_rule(stringify!($arm_name),
                 RuleWithNamedFields::empty()
                     $(.then(grammar!(@unit $unit)))*);)*
@@ -218,27 +258,69 @@ impl<'a, 'b, 'id, T> Clone for Handle<'a, 'b, 'id, T> {
         *self
     }
 }
+
+pub struct Terminal<'a, 'b: 'a, 'id: 'a> {
+    _marker: PhantomData<(&'a (), &'b (), &'id ())>,
+}
+
+impl<'a, 'b, 'id> fmt::Debug for Terminal<'a, 'b, 'id> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct(\"\").finish()
+    }
+}
+
+impl<'a, 'b, 'id> fmt::Debug for Handle<'a, 'b, 'id, Terminal<'a, 'b, 'id>> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(
+            f,
+            \"{}..{}\",
+            self.span.start(),
+            self.span.end()
+        )
+    }
+}
 ");
         for (name, rule) in &self.rules {
-            match rule.rule {
-                Rule::Sequence(ref units) => {
-                    put!("
+            put!("
 
-#[derive(Debug)]
 pub struct ", name, "<'a, 'b: 'a, 'id: 'a> {");
-                    let mut has_named_units = false;
-                    for (unit_name, &i) in &rule.fields {
-                        if let Unit::Rule(ref r) = units[i].0 {
-                            put!("
-    pub ", unit_name, ": Handle<'a, 'b, 'id, ", r, "<'a, 'b, 'id>>,");
-                            has_named_units = true;
-                        }
-                    }
-                    if !has_named_units {
-                        put!("
+            for (field_name, &i) in &rule.fields {
+                let refutable = rule.rule.field_is_refutable(i);
+                put!("
+    pub ", field_name, ": ");
+                if refutable {
+                    put!("Option<");
+                }
+                put!("Handle<'a, 'b, 'id, ", rule.rule.field_type(i), "<'a, 'b, 'id>>");
+                if refutable {
+                    put!(">");
+                }
+                put!(",");
+            }
+            if rule.fields.is_empty() {
+                put!("
     _marker: PhantomData<(&'a (), &'b (), &'id ())>,");
-                    }
-                    put!("
+            }
+            put!("
+}
+
+impl<'a, 'b, 'id> fmt::Debug for ", name, "<'a, 'b, 'id> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let mut d = f.debug_struct(\"", name,"\");");
+        for (field_name, &i) in &rule.fields {
+            if rule.rule.field_is_refutable(i) {
+                put!("
+        if let Some(ref field) = self.", field_name, "{
+            d.field(\"", field_name,"\", field);
+        }");
+            } else {
+            put!("
+        d.field(\"", field_name,"\", &self.", field_name,");");
+            }
+        }
+        put!("
+        d.finish()
+    }
 }
 
 impl<'a, 'b, 'id> fmt::Debug for Handle<'a, 'b, 'id, ", name, "<'a, 'b, 'id>> {
@@ -252,15 +334,8 @@ impl<'a, 'b, 'id> fmt::Debug for Handle<'a, 'b, 'id, ", name, "<'a, 'b, 'id>> {
         for (i, _x) in self.many().enumerate() {
             if i > 0 {
                 write!(f, \" | \")?;
-            }");
-                    if has_named_units {
-                        put!("
-            fmt::Debug::fmt(&_x, f)?;");
-                    } else {
-                        put!("
-            write!(f, \"", name, "\")?;");
-                    }
-                    put!("
+            }
+            fmt::Debug::fmt(&_x, f)?;
         }
         Ok(())
     }
@@ -277,10 +352,12 @@ impl<'a, 'b, 'id> Handle<'a, 'b, 'id, ", name, "<'a, 'b, 'id>> {
         }
     }
     pub fn many(self) -> impl Iterator<Item = ", name, "<'a, 'b, 'id>> {");
+            match rule.rule {
+                Rule::Sequence(ref units) => {
                     if units.len() == 0 {
                         put!("
         ::std::iter::once(", name, " {
-             _marker: PhantomData,
+            _marker: PhantomData,
         })");
                     } else {
                         put!("
@@ -311,96 +388,60 @@ impl<'a, 'b, 'id> Handle<'a, 'b, 'id, ", name, "<'a, 'b, 'id>> {
                             }
                         }
                         put!("| ", name, " {");
-                        for (unit_name, &i) in &rule.fields {
-                            if let Unit::Rule(_) = units[i].0 {
-                                put!("
-                ", unit_name, ": Handle {
+                        for (field_name, &i) in &rule.fields {
+                            put!("
+                ", field_name, ": Handle {
                     span: _", i, ".range,
                     parser: self.parser,
                     _marker: PhantomData,
                 },");
-                            }
                         }
-                        if !has_named_units {
+                        if rule.fields.is_empty() {
                             put!("
                 _marker: PhantomData,");
                         }
                         put!("
             })");
                     }
-                    put!("
-    }
-}
-");
                 }
-                Rule::Alternation(ref label, ref rules) => {
+                Rule::Alternation(ref label, ref choices) => {
                     put!("
-
-pub enum ", name, "<'a, 'b: 'a, 'id: 'a> {");
-                    for r in rules {
-                        put!("
-    ", r, "(Handle<'a, 'b, 'id, ", r, "<'a, 'b, 'id>>),");
-                    }
-                    put!("
-}
-
-impl<'a, 'b, 'id> fmt::Debug for ", name, "<'a, 'b, 'id> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match *self {");
-                    for r in rules {
-                        put!("
-            ", name, "::", r, "(ref x) => fmt::Debug::fmt(x, f),");
-                    }
-                    put!("
-        }
-    }
-}
-
-impl<'a, 'b, 'id> fmt::Debug for Handle<'a, 'b, 'id, ", name, "<'a, 'b, 'id>> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        for (i, x) in self.many().enumerate() {
-            if i > 0 {
-                write!(f, \" | \")?;
-            }
-            fmt::Debug::fmt(&x, f)?;
-        }
-        Ok(())
-    }
-}
-
-impl<'a, 'b, 'id> Handle<'a, 'b, 'id, ", name, "<'a, 'b, 'id>> {
-    pub fn one(self) -> Result<", name, "<'a, 'b, 'id>, Ambiguity> {
-        let mut iter = self.many();
-        let first = iter.next().unwrap();
-        if iter.next().is_none() {
-            Ok(first)
-        } else {
-            Err(Ambiguity)
-        }
-    }
-    pub fn many(self) -> impl Iterator<Item = ", name, "<'a, 'b, 'id>> {
         let node = ParseNode { l: Some(", label, "), range: self.span };
         self.parser.sppf.children[&node].iter().map(move |&i| {
             match _P::from_usize(i) {");
-                    for r in rules {
+                    for (i, r) in choices.iter().enumerate() {
                         put!("
-                _P::", r," => ", name, "::", r, "(Handle {
+                _P::", r," => ", name, " {");
+                        for (field_name, &j) in &rule.fields {
+                            put!("
+                ", field_name, ": ");
+                            if i == j {
+                                put!("Some(Handle {
                     span: self.span,
                     parser: self.parser,
                     _marker: PhantomData,
                 }),");
+                            } else {
+                                put!("None,");
+                            }
+                        }
+                        if rule.fields.is_empty() {
+                            put!("
+                _marker: PhantomData,");
+                        }
+                        put!("
+            },");
                     }
                     put!("
                 _ => unreachable!(),
             }
-        })
-    }
-}
-");
+        })");
                 }
             }
 
             put!("
+    }
+}
 
 impl<'a, 'b, 'id> ", name, "<'a, 'b, 'id> {
     pub fn parse(p: &'a mut Parser<'b, 'id>) -> Result<Handle<'a, 'b, 'id, Self>, ()> {
