@@ -160,26 +160,28 @@ impl fmt::Display for ParseLabel {
 }
 
 pub macro grammar {
-    (@unit { $name:ident : $unit:tt }) => {
-        grammar!(@unit $unit).with_field_name(stringify!($name))
+    (@rule { $name:ident : $rule:tt }) => {
+        grammar!(@rule $rule).with_field_name(stringify!($name))
     },
-    (@unit $rule:ident) => {
+    (@rule $rule0:tt | $($rule:tt)|+) => {
+        RuleWithNamedFields::alternation(vec![
+            grammar!(@rule $rule0),
+            $(grammar!(@rule $rule)),*
+        ])
+    },
+    (@rule { $($rule:tt)* }) => {
+        RuleWithNamedFields::empty()
+            $(.then(grammar!(@rule $rule)))*
+    },
+    (@rule $rule:ident) => {
         RuleWithNamedFields::unit(Unit::Rule(stringify!($rule).to_string()))
     },
-    (@unit $atom:expr) => {
+    (@rule $atom:expr) => {
         RuleWithNamedFields::unit(Unit::Atom($atom))
     },
-    ($($rule_name:ident =
-        $($arm_name:ident { $($unit:tt)* })|+;
-    )*) => ({
+    ($($rule_name:ident = $($rule:tt)|+;)*) => ({
         let mut grammar = Grammar::new();
-        $(
-            grammar.add_rule(stringify!($rule_name),
-                RuleWithNamedFields::alternation(vec![$(grammar!(@unit { $arm_name: $arm_name })),*]));
-            $(grammar.add_rule(stringify!($arm_name),
-                RuleWithNamedFields::empty()
-                    $(.then(grammar!(@unit $unit)))*);)*
-        )*
+        $(grammar.add_rule(stringify!($rule_name), grammar!(@rule $($rule)|+));)*
         grammar
     })
 }
