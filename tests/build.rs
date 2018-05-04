@@ -28,9 +28,7 @@ fn main() {
         B1 = { 'a' };
         B2 = { 'b' };
     };
-    gll10_g0
-        .generate(&mut File::create(&out_dir.join("gll10_g0.rs")).unwrap())
-        .unwrap();
+    gll10_g0.generate(&mut File::create(&out_dir.join("gll10_g0.rs")).unwrap());
 
     let mut gll13_g1 = grammar!{
         S = {x: X}
@@ -40,9 +38,7 @@ fn main() {
         Y = { 'd' };
         Z = { 'a' 'd' 'b' };
     };
-    gll13_g1
-        .generate(&mut File::create(&out_dir.join("gll13_g1.rs")).unwrap())
-        .unwrap();
+    gll13_g1.generate(&mut File::create(&out_dir.join("gll13_g1.rs")).unwrap());
 
     let mut gll15_g0 = grammar!{
         A = {x: X}
@@ -52,7 +48,5 @@ fn main() {
         Y = { 'a' {a: A} 'c' };
         Z = { 'a' };
     };
-    gll15_g0
-        .generate(&mut File::create(&out_dir.join("gll15_g0.rs")).unwrap())
-        .unwrap();
+    gll15_g0.generate(&mut File::create(&out_dir.join("gll15_g0.rs")).unwrap());
 }
