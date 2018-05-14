@@ -1,4 +1,5 @@
-#![feature(conservative_impl_trait, decl_macro, from_ref, nll, slice_patterns, str_escape)]
+#![feature(box_patterns, conservative_impl_trait, decl_macro, from_ref, nll, slice_patterns,
+           str_escape)]
 
 extern crate indexing;
 extern crate ordermap;

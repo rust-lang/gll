@@ -19,19 +19,19 @@ impl<A> Grammar<A> {
 
 pub struct RuleWithNamedFields<A> {
     rule: Rule<A>,
-    fields: OrderMap<String, usize>,
+    fields: OrderMap<String, Vec<usize>>,
 }
 
 impl<A: Clone> RuleWithNamedFields<A> {
     pub fn empty() -> Self {
         RuleWithNamedFields {
-            rule: Rule::Sequence(vec![]),
+            rule: Rule::Empty,
             fields: OrderMap::new(),
         }
     }
     pub fn unit(unit: Unit<A>) -> Self {
         RuleWithNamedFields {
-            rule: Rule::Sequence(vec![(unit, ParseLabel::empty())]),
+            rule: Rule::Concat(Box::new(Rule::Empty), (unit, ParseLabel::empty())),
             fields: OrderMap::new(),
         }
     }
@@ -41,17 +41,14 @@ impl<A: Clone> RuleWithNamedFields<A> {
             .into_iter()
             .enumerate()
             .map(|(i, rule)| {
-                fields.extend(rule.fields.into_iter().map(|(name, j)| {
-                    assert_eq!(j, 0);
-                    (name, i)
+                fields.extend(rule.fields.into_iter().map(|(name, path)| {
+                    assert_eq!(path, &[1]);
+                    (name, vec![i])
                 }));
 
                 match rule.rule {
-                    Rule::Sequence(units) => match units[..] {
-                        [(ref unit, _)] => unit.clone(),
-                        _ => unimplemented!(),
-                    },
-                    Rule::Alternation(..) => unimplemented!(),
+                    Rule::Concat(box Rule::Empty, (unit, _)) => unit,
+                    _ => unimplemented!(),
                 }
             })
             .collect();
@@ -62,23 +59,20 @@ impl<A: Clone> RuleWithNamedFields<A> {
     }
     pub fn with_field_name(mut self, name: &str) -> Self {
         match self.rule {
-            Rule::Sequence(ref units) => assert!(units.len() == 1),
+            Rule::Concat(box Rule::Empty, _) => {}
             _ => unimplemented!(),
         }
-        self.fields.insert(name.to_string(), 0);
+        self.fields.insert(name.to_string(), vec![1]);
         self
     }
     pub fn then(mut self, other: Self) -> Self {
-        match (self.rule, other.rule) {
-            (Rule::Sequence(mut self_units), Rule::Sequence(other_units)) => {
-                self.fields.extend(
-                    other
-                        .fields
-                        .into_iter()
-                        .map(|(name, i)| (name, i + self_units.len())),
-                );
-                self_units.extend(other_units);
-                self.rule = Rule::Sequence(self_units);
+        match other.rule {
+            Rule::Concat(box Rule::Empty, (unit, l)) => {
+                for path in self.fields.values_mut() {
+                    path.insert(0, 0);
+                }
+                self.fields.extend(other.fields);
+                self.rule = Rule::Concat(Box::new(self.rule), (unit, l));
             }
             _ => unimplemented!(),
         }
@@ -87,52 +81,65 @@ impl<A: Clone> RuleWithNamedFields<A> {
 }
 
 pub enum Rule<A> {
-    Sequence(Vec<(Unit<A>, ParseLabel)>),
+    Empty,
+    Concat(Box<Rule<A>>, (Unit<A>, ParseLabel)),
     Alternation(ParseLabel, Vec<Unit<A>>),
 }
 
 impl<A: Atom> Rule<A> {
-    fn field_type(&self, i: usize) -> &str {
+    fn field_type(&self, path: &[usize]) -> &str {
         let unit = match *self {
-            Rule::Sequence(ref units) => &units[i].0,
-            Rule::Alternation(_, ref choices) => &choices[i],
+            Rule::Empty => return "Terminal",
+            Rule::Concat(ref rule, (ref unit, _)) => match *path {
+                [0, ref rest..] => {
+                    return rule.field_type(rest);
+                }
+                [1] => unit,
+                _ => unreachable!(),
+            },
+            Rule::Alternation(_, ref choices) => &choices[path[0]],
         };
         match *unit {
             Unit::Rule(ref r) => r,
             Unit::Atom(_) => "Terminal",
         }
     }
-    fn field_is_refutable(&self, _i: usize) -> bool {
+    fn field_is_refutable(&self, path: &[usize]) -> bool {
         match *self {
-            Rule::Sequence(_) => false,
+            Rule::Empty => false,
+            Rule::Concat(ref rule, _) => match *path {
+                [0, ref rest..] => rule.field_is_refutable(rest),
+                [1] => false,
+                _ => unreachable!(),
+            },
             Rule::Alternation(..) => true,
         }
     }
     fn compute_parse_labels(&mut self, name: &str, parse_labels: &mut Vec<ParseLabel>) {
         match *self {
-            Rule::Sequence(ref mut units) => for i in 0..units.len() {
-                let mut s = format!("{} ::=", name);
-                for (j, &(ref unit, _)) in units.iter().enumerate() {
-                    if i + 1 == j {
-                        s.push('·');
-                        break;
-                    } else {
-                        s.push(' ');
+            Rule::Empty => {}
+            Rule::Concat(ref mut rule, (ref unit, ref mut label)) => {
+                rule.compute_parse_labels(name, parse_labels);
+                let mut s = match **rule {
+                    Rule::Empty => format!("{} ::=", name),
+                    Rule::Concat(_, (_, ref l)) | Rule::Alternation(ref l, _) => {
+                        l.description.clone()
                     }
-                    match *unit {
-                        Unit::Atom(ref a) => {
-                            s.push_str(&a.to_label_description());
-                        }
-                        Unit::Rule(ref r) => {
-                            s.push_str(&r.as_str());
-                        }
+                };
+                s.push(' ');
+                match *unit {
+                    Unit::Atom(ref a) => {
+                        s.push_str(&a.to_label_description());
+                    }
+                    Unit::Rule(ref r) => {
+                        s.push_str(&r.as_str());
                     }
                 }
-                units[i].1 = ParseLabel::new(&s);
-                parse_labels.push(units[i].1.clone());
-            },
+                *label = ParseLabel::new(&s);
+                parse_labels.push(label.clone());
+            }
             Rule::Alternation(ref mut label, _) => {
-                *label = ParseLabel::new(&format!("{} ::=·", name));
+                *label = ParseLabel::new(&format!("{} ::=", name));
                 parse_labels.push(label.clone());
             }
         }
@@ -278,14 +285,14 @@ impl<'a, 'b, 'id> fmt::Debug for Handle<'a, 'b, 'id, Terminal<'a, 'b, 'id>> {
             put!("
 
 pub struct ", name, "<'a, 'b: 'a, 'id: 'a> {");
-            for (field_name, &i) in &rule.fields {
-                let refutable = rule.rule.field_is_refutable(i);
+            for (field_name, path) in &rule.fields {
+                let refutable = rule.rule.field_is_refutable(path);
                 put!("
     pub ", field_name, ": ");
                 if refutable {
                     put!("Option<");
                 }
-                put!("Handle<'a, 'b, 'id, ", rule.rule.field_type(i), "<'a, 'b, 'id>>");
+                put!("Handle<'a, 'b, 'id, ", rule.rule.field_type(path), "<'a, 'b, 'id>>");
                 if refutable {
                     put!(">");
                 }
@@ -301,8 +308,8 @@ pub struct ", name, "<'a, 'b: 'a, 'id: 'a> {");
 impl<'a, 'b, 'id> fmt::Debug for ", name, "<'a, 'b, 'id> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let mut d = f.debug_struct(\"", name,"\");");
-        for (field_name, &i) in &rule.fields {
-            if rule.rule.field_is_refutable(i) {
+        for (field_name, path) in &rule.fields {
+            if rule.rule.field_is_refutable(path) {
                 put!("
         if let Some(ref field) = self.", field_name, "{
             d.field(\"", field_name,"\", field);
@@ -345,14 +352,50 @@ impl<'a, 'b, 'id> Handle<'a, 'b, 'id, ", name, "<'a, 'b, 'id>> {
             Err(Ambiguity)
         }
     }
-    pub fn many(self) -> impl Iterator<Item = ", name, "<'a, 'b, 'id>> {");
+    pub fn many(self) -> impl Iterator<Item = ", name, "<'a, 'b, 'id>> {
+        let node = ParseNode { l: Some(_P::", name, "), range: self.span };
+        self.parser.sppf.unary_children(node).flat_map(move |node|");
             let mut cx = RuleContext {
                 out,
                 name,
                 code_labels: &mut code_labels,
+                code_label_counter: 0,
             };
-            cx.generate_traverse(&rule.rule, &rule.fields);
+            cx.generate_traverse(&rule.rule);
+
+            put!(")
+            .map(move |_r| ", name, " {");
+            for (field_name, path) in &rule.fields {
+                if rule.rule.field_is_refutable(path) {
+                    put!("
+                ", field_name, ": _r");
+                    for p in path {
+                        put!(" .", p);
+                    }
+                    put!(".map(|span| Handle {
+                    span,
+                    parser: self.parser,
+                    _marker: PhantomData,
+                }),");
+                } else {
+                    put!("
+                ", field_name, ": Handle {
+                    span: _r");
+                    for p in path {
+                        put!(" .", p);
+                    }
+                    put!(",
+                    parser: self.parser,
+                    _marker: PhantomData,
+                },");
+                }
+            }
+            if rule.fields.is_empty() {
+                put!("
+                _marker: PhantomData,");
+            }
             put!("
+            })
     }
 }
 
@@ -390,15 +433,23 @@ impl<'a, 'b, 'id> ", name, "<'a, 'b, 'id> {
         }
         put!("
 fn parse(p: &mut Parser) {
-    while let Some(Call { callee: (mut c, mut result), range }) = p.gss.threads.steal() {
+    while let Some(Call { callee: (mut c, mut _result), range }) = p.gss.threads.steal() {
         match c.code {");
         for (name, rule) in &self.rules {
+            put!("
+            _C::", name, " => {");
+            code_labels.push(name.clone());
             let mut cx = RuleContext {
                 out,
                 name,
                 code_labels: &mut code_labels,
+                code_label_counter: 0,
             };
             cx.generate_parse(&rule.rule);
+            put!("
+                p.sppf.add(_P::", name, ", _result, 0);
+                p.gss.ret(c.stack, _result);
+            }");
         }
         put!("
         }
@@ -453,10 +504,21 @@ impl ParseLabel for _P {
     fn kind(self) -> ParseLabelKind<Self> {
         match self {");
         for (name, rule) in &self.rules {
+            put!("
+            _P::", name, " => ParseLabelKind::Unary(");
+            match rule.rule {
+                Rule::Empty => {
+                    put!("None),");
+                }
+                Rule::Concat(_, (_, ref label)) | Rule::Alternation(ref label, _) => {
+                    put!("Some(", label, ")),");
+                }
+            }
             let mut cx = RuleContext {
                 out,
                 name,
                 code_labels: &mut code_labels,
+                code_label_counter: 0,
             };
             cx.generate_parse_label_kind(&rule.rule);
         }
@@ -503,10 +565,17 @@ struct RuleContext<'a> {
     out: &'a mut Write,
     name: &'a str,
     code_labels: &'a mut Vec<String>,
+    code_label_counter: usize,
 }
 
 #[cfg_attr(rustfmt, rustfmt_skip)]
 impl<'a> RuleContext<'a> {
+    fn make_code_label(&mut self) -> String {
+        self.code_label_counter += 1;
+        let next_code_label = format!("{}__{}", self.name, self.code_label_counter);
+        self.code_labels.push(next_code_label.clone());
+        next_code_label
+    }
     fn generate_parse_unit<A: Atom>(&mut self, unit: &Unit<A>) {
         macro put($($x:expr),*) {{ $(write!(self.out, "{}", $x).unwrap();)* }}
 
@@ -520,20 +589,34 @@ impl<'a> RuleContext<'a> {
                     continue;
                 }
                 let (matched, rest, _) = range.split_at(", a, ".len());
-                result = Range(matched);
-                p.gss.threads.spawn(c, result, Range(rest));")
+                _result = Range(matched);
+                p.gss.threads.spawn(c, _result, Range(rest));")
             }
         }
     }
     fn generate_parse<A: Atom>(&mut self, rule: &Rule<A>) {
         macro put($($x:expr),*) {{ $(write!(self.out, "{}", $x).unwrap();)* }}
 
-        put!("
-            _C::", self.name, " => {");
-        self.code_labels.push(self.name.clone().to_string());
         match *rule {
+            Rule::Empty => {
+                put!("
+                _result = Range(range.frontiers().0);");
+            }
+            Rule::Concat(ref rule, (ref unit, ref label_after)) => {
+                self.generate_parse(rule);
+                let next_code_label = self.make_code_label();
+                put!("
+                c.code = _C::", next_code_label, ";");
+                self.generate_parse_unit(unit);
+                put!("
+            }
+            _C::", next_code_label, " => {
+                _result = Range(c.stack.range.split_at(c.state + _result.len()).0);
+                p.sppf.add(", label_after, ", _result, c.state);
+                c.state = _result.len();");
+            }
             Rule::Alternation(ref label, ref rules) => {
-                let return_label = format!("{}__1", self.name);
+                let return_label = self.make_code_label();
                 put!("
                 c.code = _C::", return_label, ";");
                 for unit in rules {
@@ -547,145 +630,56 @@ impl<'a> RuleContext<'a> {
                 put!("
             }
             _C::", return_label, " => {
-                p.sppf.add(", label, ", result, c.state);");
-                self.code_labels.push(return_label);
-            }
-            Rule::Sequence(ref units) => {
-                for (i, &(ref unit, ref label_after)) in units.iter().enumerate() {
-                    let next_code_label = format!("{}__{}", self.name, i + 1);
-                    put!("
-                c.code = _C::", next_code_label, ";");
-                    self.generate_parse_unit(unit);
-                    put!("
-            }
-            _C::", next_code_label, " => {");
-                    self.code_labels.push(next_code_label);
-                    if i == 0 {
-                        if units.len() == 1 {
-                            put!("
-                p.sppf.add(", label_after, ", result, 0);");
-                        }
-                    } else {
-                        put!("
-                result = Range(c.stack.range.split_at(c.state + result.len()).0);
-                p.sppf.add(", label_after, ", result, c.state);");
-                    }
-                    put!("
-                c.state = result.len();");
-                }
-
-                if units.is_empty() {
-                    put!("
-                result = Range(range.frontiers().0);");
-                }
+                p.sppf.add(", label, ", _result, c.state);");
             }
         }
-        put!("
-                p.sppf.add(_P::", self.name, ", result, 0);
-                p.gss.ret(c.stack, result);
-            }");
     }
     fn generate_parse_label_kind<A: Atom>(&mut self, rule: &Rule<A>){
         macro put($($x:expr),*) {{ $(write!(self.out, "{}", $x).unwrap();)* }}
 
         match *rule {
+            Rule::Empty => {}
+            Rule::Concat(ref rule, (ref unit, ref label_after)) => {
+                self.generate_parse_label_kind(rule);
+                put!("
+            ", label_after, " => ParseLabelKind::Binary(");
+                match **rule {
+                    Rule::Empty => {
+                        put!("None");
+                    }
+                    Rule::Concat(_, (_, ref label)) | Rule::Alternation(ref label, _) => {
+                        put!("Some(", label, ")");
+                    }
+                }
+                put!(", ");
+                match *unit {
+                    Unit::Rule(ref r) => put!("Some(_P::", r, ")"),
+                    Unit::Atom(_) => put!("None"),
+                }
+                put!("),");
+            }
             Rule::Alternation(ref label, _) => {
                 put!("
-            _P::", self.name, " => ParseLabelKind::Unary(Some(", label, ")),
             ", label, " => ParseLabelKind::Choice,");
-            }
-            Rule::Sequence(ref units) => {
-                if let Some(label) = units.last() {
-                    put!("
-            _P::", self.name, " => ParseLabelKind::Unary(Some(", label.1, ")),");
-                } else {
-                    put!("
-            _P::", self.name, " => ParseLabelKind::Unary(None),");
-                }
-                for (i, &(ref unit, ref label_after)) in units.iter().enumerate() {
-                    put!("
-            ", label_after, " => ParseLabelKind::");
-                    if i == 0 {
-                        put!("Unary(");
-                    } else {
-                        put!("Binary(");
-                        if i == 1 {
-                            match units[i - 1].0 {
-                                Unit::Rule(ref r) => put!("Some(_P::", r, ")"),
-                                Unit::Atom(_) => put!("None"),
-                            }
-                        } else {
-                            put!("Some(", units[i - 1].1, ")");
-                        }
-                        put!(", ");
-                    }
-                    match *unit {
-                        Unit::Rule(ref r) => put!("Some(_P::", r, ")"),
-                        Unit::Atom(_) => put!("None"),
-                    }
-                    put!("),");
-                }
             }
         }
     }
-    fn generate_traverse<A: Atom>(&mut self, rule: &Rule<A>, fields: &OrderMap<String, usize>) {
+    fn generate_traverse<A: Atom>(&mut self, rule: &Rule<A>) {
         macro put($($x:expr),*) {{ $(write!(self.out, "{}", $x).unwrap();)* }}
 
         match *rule {
-            Rule::Sequence(ref units) => {
-                if units.len() == 0 {
-                    put!("
-        ::std::iter::once(", self.name, " {
-            _marker: PhantomData,
-        })");
-                } else {
-                    put!("
-        let node = ParseNode { l: Some(", units.last().unwrap().1, "), range: self.span };");
-                    if units.len() == 1 {
-                        put!("
-        self.parser.sppf.unary_children(node)");
-                    } else {
-                        put!("
-        self.parser.sppf.binary_children(node)");
-                        for _ in 0..units.len() - 2 {
-                            put!("
-            .flat_map(move |(left, right)| self.parser.sppf.binary_children(left).map(move |left| (left, right)))");
-                        }
-                    }
-                    put!("
-            .map(move |");
-                    for _ in 0..units.len() - 1 {
-                        put!("(");
-                    }
-                    for i in 0..units.len() {
-                        if i > 0 {
-                            put!(", ");
-                        }
-                        put!("_", i);
-                        if i > 0 {
-                            put!(")");
-                        }
-                    }
-                    put!("| ", self.name, " {");
-                    for (field_name, &i) in fields {
-                        put!("
-                ", field_name, ": Handle {
-                    span: _", i, ".range,
-                    parser: self.parser,
-                    _marker: PhantomData,
-                },");
-                    }
-                    if fields.is_empty() {
-                        put!("
-                _marker: PhantomData,");
-                    }
-                    put!("
-            })");
-                }
-            }
-            Rule::Alternation(ref label, ref choices) => {
+            Rule::Empty => {
                 put!("
-        let node = ParseNode { l: Some(", label, "), range: self.span };
+        ::std::iter::once(node.range)");
+            }
+            Rule::Concat(ref rule, _) => {
+                put!("
+        self.parser.sppf.binary_children(node).flat_map(move |(node, right)|");
+                self.generate_traverse(rule);
+                put!(".map(move |left| (left, right.range)))");
+            }
+            Rule::Alternation(_, ref choices) => {
+                put!("
         self.parser.sppf.children[&node].iter().map(move |&i| {
             match _P::from_usize(i) {");
                 for (i, unit) in choices.iter().enumerate() {
@@ -694,26 +688,15 @@ impl<'a> RuleContext<'a> {
                         Unit::Atom(..) => unimplemented!(),
                     };
                     put!("
-                _P::", parse_label, " => ", self.name, " {");
-                    for (field_name, &j) in fields {
-                        put!("
-                ", field_name, ": ");
+                _P::", parse_label, " => (");
+                    for (j, _) in choices.iter().enumerate() {
                         if i == j {
-                            put!("Some(Handle {
-                    span: self.span,
-                    parser: self.parser,
-                    _marker: PhantomData,
-                }),");
+                            put!("Some(node.range),");
                         } else {
                             put!("None,");
                         }
                     }
-                    if fields.is_empty() {
-                        put!("
-                _marker: PhantomData,");
-                    }
-                    put!("
-            },");
+                    put!("),");
                 }
                 put!("
                 _ => unreachable!(),
