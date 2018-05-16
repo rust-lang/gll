@@ -127,19 +127,19 @@ impl<A: Atom> Rule<A> {
                     }
                 };
                 s.push(' ');
-                match *unit {
-                    Unit::Atom(ref a) => {
-                        s.push_str(&a.to_label_description());
-                    }
-                    Unit::Rule(ref r) => {
-                        s.push_str(&r.as_str());
-                    }
-                }
+                s.push_str(&unit.to_label_description());
                 *label = ParseLabel::new(&s);
                 parse_labels.push(label.clone());
             }
-            Rule::Alternation(ref mut label, _) => {
-                *label = ParseLabel::new(&format!("{} ::=", name));
+            Rule::Alternation(ref mut label, ref units) => {
+                let mut s = format!("{} ::=", name);
+                for (i, unit) in units.iter().enumerate() {
+                    if i > 0 {
+                        s.push('|');
+                    }
+                    s.push_str(&unit.to_label_description());
+                }
+                *label = ParseLabel::new(&s);
                 parse_labels.push(label.clone());
             }
         }
@@ -150,6 +150,15 @@ impl<A: Atom> Rule<A> {
 pub enum Unit<A> {
     Atom(A),
     Rule(String),
+}
+
+impl<A: Atom> Unit<A> {
+    fn to_label_description(&self) -> String {
+        match *self {
+            Unit::Atom(ref a) => a.to_label_description(),
+            Unit::Rule(ref r) => r.clone(),
+        }
+    }
 }
 
 pub trait Atom {
