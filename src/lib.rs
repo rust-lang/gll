@@ -344,7 +344,8 @@ impl<'a, P: ParseLabel, C: CodeLabel, I: Trustworthy> Parser<'a, P, C, I> {
     }
 }
 
-pub enum ParseLabelKind<P: ParseLabel> {
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+pub enum ParseLabelKind<P> {
     Unary(Option<P>),
     Binary(Option<P>, Option<P>),
     Choice,
