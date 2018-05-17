@@ -122,27 +122,24 @@ impl<A: Atom> Rule<A> {
             Rule::Empty => {}
             Rule::Concat(ref mut rule, (ref unit, ref mut label)) => {
                 rule.compute_parse_labels(parse_labels);
-                let mut s = match **rule {
-                    Rule::Empty => String::new(),
-                    Rule::Concat(_, (_, ref l)) | Rule::Alternation(ref l, _) => {
-                        l.description.clone()
-                    }
+                let left = match **rule {
+                    Rule::Empty => "()",
+                    Rule::Concat(_, (_, ref l)) | Rule::Alternation(ref l, _) => &l.description,
                 };
-                if !s.is_empty() {
-                    s.push(' ');
-                }
-                s.push_str(&unit.to_label_description());
-                *label = ParseLabel::new(&s);
+                let right = unit.to_label_description();
+                *label = ParseLabel::new(&format!("({} {})", left, right));
                 parse_labels.insert(label.clone());
             }
             Rule::Alternation(ref mut label, ref units) => {
-                let mut s = String::new();
-                for unit in units {
-                    if !s.is_empty() {
-                        s.push('|');
+                assert!(units.len() > 1);
+                let mut s = String::from("(");
+                for (i, unit) in units.iter().enumerate() {
+                    if i > 0 {
+                        s.push_str(" | ");
                     }
                     s.push_str(&unit.to_label_description());
                 }
+                s.push(')');
                 *label = ParseLabel::new(&s);
                 parse_labels.insert(label.clone());
             }
@@ -150,7 +147,7 @@ impl<A: Atom> Rule<A> {
     }
     fn compute_parse_label_kind(
         &self,
-        parse_label_kinds: &mut BTreeSet<(String, ParseLabelKind<String>)>,
+        parse_label_kinds: &mut BTreeSet<(ParseLabel, ParseLabelKind<ParseLabel>)>,
     ) {
         match *self {
             Rule::Empty => {}
@@ -159,18 +156,18 @@ impl<A: Atom> Rule<A> {
                 let left = match **rule {
                     Rule::Empty => None,
                     Rule::Concat(_, (_, ref label)) | Rule::Alternation(ref label, _) => {
-                        Some(label.to_string())
+                        Some(label.clone())
                     }
                 };
                 let right = match *unit {
-                    Unit::Rule(ref r) => Some(format!("_P::{}", r)),
+                    Unit::Rule(ref r) => Some(ParseLabel::new(r)),
                     Unit::Atom(_) => None,
                 };
                 parse_label_kinds
-                    .insert((label_after.to_string(), ParseLabelKind::Binary(left, right)));
+                    .insert((label_after.clone(), ParseLabelKind::Binary(left, right)));
             }
             Rule::Alternation(ref label, _) => {
-                parse_label_kinds.insert((label.to_string(), ParseLabelKind::Choice));
+                parse_label_kinds.insert((label.clone(), ParseLabelKind::Choice));
             }
         }
     }
@@ -198,7 +195,7 @@ pub trait Atom {
 
 impl Atom for str {
     fn to_label_description(&self) -> String {
-        format!("'{}'", self.escape_default())
+        format!("\"{}\"", self.escape_default())
     }
     fn to_rust_slice(&self) -> String {
         format!("{:?}.as_bytes()", self)
@@ -232,7 +229,7 @@ impl ParseLabel {
 
 impl fmt::Display for ParseLabel {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, r#"P!("{}")"#, self.description)
+        write!(f, "P!({})", self.description)
     }
 }
 
@@ -269,7 +266,8 @@ impl<A: Atom> Grammar<A> {
         macro put($($x:expr),*) {{ $(write!(out, "{}", $x).unwrap();)* }}
 
         let mut parse_labels = BTreeSet::new();
-        for (_, rule) in &mut self.rules {
+        for (name, rule) in &mut self.rules {
+            parse_labels.insert(ParseLabel::new(name));
             rule.rule.compute_parse_labels(&mut parse_labels);
         }
         let mut code_labels = vec![];
@@ -392,7 +390,7 @@ impl<'a, 'b, 'id> Handle<'a, 'b, 'id, ", name, "<'a, 'b, 'id>> {
         }
     }
     pub fn many(self) -> impl Iterator<Item = ", name, "<'a, 'b, 'id>> {
-        let node = ParseNode { l: Some(_P::", name, "), range: self.span };
+        let node = ParseNode { l: Some(", ParseLabel::new(name), "), range: self.span };
         self.parser.sppf.unary_children(node).flat_map(move |node|");
             let mut cx = RuleContext {
                 out,
@@ -486,7 +484,7 @@ fn parse(p: &mut Parser) {
             };
             cx.generate_parse(&rule.rule);
             put!("
-                p.sppf.add(_P::", name, ", _result, 0);
+                p.sppf.add(", ParseLabel::new(name), ", _result, 0);
                 p.gss.ret(c.stack, _result);
             }");
         }
@@ -497,11 +495,6 @@ fn parse(p: &mut Parser) {
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
 pub enum _P {");
-        for (name, _) in &self.rules {
-            put!(
-                "
-    ", name, ",");
-        }
         for i in 0..parse_labels.len() {
             put!(
                 "
@@ -516,7 +509,7 @@ macro P {");
                 put!(",");
             }
             put!("
-    (\"", l.description, "\") => (_P::_", i, ")");
+    (", l.description, ") => (_P::_", i, ")");
         }
         put!("
 }
@@ -524,14 +517,9 @@ macro P {");
 impl fmt::Display for _P {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let s = match *self {");
-        for (name, _) in &self.rules {
-            put!(
-                "
-            _P::", name, " => \"", name, "\",");
-        }
         for l in parse_labels.iter() {
             put!("
-            ", l, " => \"", l.description, "\",");
+            ", l, " => \"", l.description.escape_default(), "\",");
         }
         put!("
         };
@@ -549,10 +537,10 @@ impl ParseLabel for _P {
                     None
                 }
                 Rule::Concat(_, (_, ref label)) | Rule::Alternation(ref label, _) => {
-                    Some(label.to_string())
+                    Some(label.clone())
                 }
             };
-            parse_label_kinds.insert((format!("_P::{}", name), ParseLabelKind::Unary(inner)));
+            parse_label_kinds.insert((ParseLabel::new(name), ParseLabelKind::Unary(inner)));
             rule.rule.compute_parse_label_kind(&mut parse_label_kinds);
         }
         for (label, kind) in parse_label_kinds {
@@ -589,14 +577,9 @@ impl ParseLabel for _P {
     fn from_usize(i: usize) -> Self {
         match i {");
 
-        for (i, (name, _)) in self.rules.iter().enumerate() {
-            put!(
-                "
-            ", i, " => _P::", name, ",");
-        }
         for (i, l) in parse_labels.iter().enumerate() {
             put!("
-            ", i + self.rules.len(), " => ", l, ",");
+            ", i, " => ", l, ",");
         }
         put!("
             _ => unreachable!(),
@@ -683,7 +666,7 @@ impl<'a> RuleContext<'a> {
                 for unit in rules {
                     match *unit {
                         Unit::Rule(ref r) => put!("
-                c.state = _P::", r, ".to_usize();"),
+                c.state = ", ParseLabel::new(r), ".to_usize();"),
                         Unit::Atom(..) => unimplemented!(),
                     }
                     self.generate_parse_unit(unit);
@@ -715,11 +698,11 @@ impl<'a> RuleContext<'a> {
             match _P::from_usize(i) {");
                 for (i, unit) in choices.iter().enumerate() {
                     let parse_label = match *unit {
-                        Unit::Rule(ref r) => r,
+                        Unit::Rule(ref r) => ParseLabel::new(r),
                         Unit::Atom(..) => unimplemented!(),
                     };
                     put!("
-                _P::", parse_label, " => (");
+                ", parse_label, " => (");
                     for (j, _) in choices.iter().enumerate() {
                         if i == j {
                             put!("Some(node.range),");

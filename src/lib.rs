@@ -250,7 +250,7 @@ impl<'id, P: ParseLabel> ParseGraph<'id, P> {
         writeln!(out, "digraph sppf {{")?;
         let mut p = 0;
         for (source, children) in &self.children {
-            writeln!(out, r#"    "{}" [shape=box]"#, source)?;
+            writeln!(out, "    {:?} [shape=box]", source.to_string())?;
             match source.l.unwrap().kind() {
                 ParseLabelKind::Choice => for &child in children {
                     let child = ParseNode {
@@ -258,8 +258,8 @@ impl<'id, P: ParseLabel> ParseGraph<'id, P> {
                         range: source.range,
                     };
                     writeln!(out, r#"    p{} [label="" shape=point]"#, p)?;
-                    writeln!(out, r#"    "{}" -> p{}:n"#, source, p)?;
-                    writeln!(out, r#"    p{}:s -> "{}":n [dir=none]"#, p, child)?;
+                    writeln!(out, "    {:?} -> p{}:n", source.to_string(), p)?;
+                    writeln!(out, "    p{}:s -> {:?}:n [dir=none]", p, child.to_string())?;
                     p += 1;
                 },
 
@@ -270,8 +270,8 @@ impl<'id, P: ParseLabel> ParseGraph<'id, P> {
                         range: source.range,
                     };
                     writeln!(out, r#"    p{} [label="" shape=point]"#, p)?;
-                    writeln!(out, r#"    "{}" -> p{}:n"#, source, p)?;
-                    writeln!(out, r#"    p{}:s -> "{}":n [dir=none]"#, p, child)?;
+                    writeln!(out, "    {:?} -> p{}:n", source.to_string(), p)?;
+                    writeln!(out, "    p{}:s -> {:?}:n [dir=none]", p, child.to_string())?;
                     p += 1;
                 },
 
@@ -288,9 +288,9 @@ impl<'id, P: ParseLabel> ParseGraph<'id, P> {
                         },
                     );
                     writeln!(out, r#"    p{} [label="" shape=point]"#, p)?;
-                    writeln!(out, r#"    "{}" -> p{}:n"#, source, p)?;
-                    writeln!(out, r#"    p{}:sw -> "{}":n [dir=none]"#, p, left)?;
-                    writeln!(out, r#"    p{}:se -> "{}":n [dir=none]"#, p, right)?;
+                    writeln!(out, "    {:?} -> p{}:n", source.to_string(), p)?;
+                    writeln!(out, "    p{}:sw -> {:?}:n [dir=none]", p, left.to_string())?;
+                    writeln!(out, "    p{}:se -> {:?}:n [dir=none]", p, right.to_string())?;
                     p += 1;
                 },
             }
