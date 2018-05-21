@@ -1,5 +1,5 @@
-#![feature(box_patterns, conservative_impl_trait, decl_macro, from_ref, nll, slice_patterns,
-           str_escape)]
+#![feature(arbitrary_self_types, conservative_impl_trait, decl_macro, from_ref, nll,
+           slice_patterns, str_escape)]
 
 extern crate indexing;
 extern crate ordermap;
@@ -344,7 +344,7 @@ impl<'a, P: ParseLabel, C: CodeLabel, I: Trustworthy> Parser<'a, P, C, I> {
     }
 }
 
-#[derive(PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ParseLabelKind<P> {
     Unary(Option<P>),
     Binary(Option<P>, Option<P>),
