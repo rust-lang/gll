@@ -117,18 +117,37 @@ impl<A: Atom> Rule<A> {
             Rule::Alternation(..) => true,
         }
     }
-    fn compute_parse_labels(&mut self, parse_labels: &mut BTreeSet<ParseLabel>) {
+    fn compute_parse_labels(
+        &mut self,
+        parse_labels: &mut BTreeSet<ParseLabel>,
+        parse_label_kinds: &mut BTreeSet<(ParseLabel, ParseLabelKind<ParseLabel>)>,
+    ) -> ParseLabel {
         match *self {
-            Rule::Empty => {}
-            Rule::Concat(ref mut rule, (ref unit, ref mut label)) => {
-                rule.compute_parse_labels(parse_labels);
-                let left = match **rule {
-                    Rule::Empty => "()",
-                    Rule::Concat(_, (_, ref l)) | Rule::Alternation(ref l, _) => &l.description,
-                };
-                let right = unit.to_label_description();
-                *label = ParseLabel::new(&format!("({} {})", left, right));
+            Rule::Empty => {
+                let label = ParseLabel::new("()");
                 parse_labels.insert(label.clone());
+                parse_label_kinds.insert((label.clone(), ParseLabelKind::Unary(None)));
+                label
+            }
+            Rule::Concat(ref mut rule, (ref unit, ref mut label)) => {
+                let left = rule.compute_parse_labels(parse_labels, parse_label_kinds);
+                let right = unit.to_label_description();
+                *label = ParseLabel::new(&format!("({} {})", left.description, right));
+                parse_labels.insert(label.clone());
+
+                let left = match **rule {
+                    Rule::Empty => None,
+                    Rule::Concat(_, (_, ref label)) | Rule::Alternation(ref label, _) => {
+                        Some(label.clone())
+                    }
+                };
+                let right = match *unit {
+                    Unit::Rule(ref r) => Some(ParseLabel::new(r)),
+                    Unit::Atom(_) => None,
+                };
+                parse_label_kinds.insert((label.clone(), ParseLabelKind::Binary(left, right)));
+
+                label.clone()
             }
             Rule::Alternation(ref mut label, ref units) => {
                 assert!(units.len() > 1);
@@ -142,32 +161,8 @@ impl<A: Atom> Rule<A> {
                 s.push(')');
                 *label = ParseLabel::new(&s);
                 parse_labels.insert(label.clone());
-            }
-        }
-    }
-    fn compute_parse_label_kind(
-        &self,
-        parse_label_kinds: &mut BTreeSet<(ParseLabel, ParseLabelKind<ParseLabel>)>,
-    ) {
-        match *self {
-            Rule::Empty => {}
-            Rule::Concat(ref rule, (ref unit, ref label_after)) => {
-                rule.compute_parse_label_kind(parse_label_kinds);
-                let left = match **rule {
-                    Rule::Empty => None,
-                    Rule::Concat(_, (_, ref label)) | Rule::Alternation(ref label, _) => {
-                        Some(label.clone())
-                    }
-                };
-                let right = match *unit {
-                    Unit::Rule(ref r) => Some(ParseLabel::new(r)),
-                    Unit::Atom(_) => None,
-                };
-                parse_label_kinds
-                    .insert((label_after.clone(), ParseLabelKind::Binary(left, right)));
-            }
-            Rule::Alternation(ref label, _) => {
                 parse_label_kinds.insert((label.clone(), ParseLabelKind::Choice));
+                label.clone()
             }
         }
     }
@@ -266,9 +261,11 @@ impl<A: Atom> Grammar<A> {
         macro put($($x:expr),*) {{ $(write!(out, "{}", $x).unwrap();)* }}
 
         let mut parse_labels = BTreeSet::new();
+        let mut parse_label_kinds = BTreeSet::new();
         for (name, rule) in &mut self.rules {
+            let inner = rule.rule.compute_parse_labels(&mut parse_labels, &mut parse_label_kinds);
             parse_labels.insert(ParseLabel::new(name));
-            rule.rule.compute_parse_labels(&mut parse_labels);
+            parse_label_kinds.insert((ParseLabel::new(name), ParseLabelKind::Unary(Some(inner))));
         }
         let mut code_labels = vec![];
 
@@ -530,19 +527,6 @@ impl fmt::Display for _P {
 impl ParseLabel for _P {
     fn kind(self) -> ParseLabelKind<Self> {
         match self {");
-        let mut parse_label_kinds = BTreeSet::new();
-        for (name, rule) in &self.rules {
-            let inner = match rule.rule {
-                Rule::Empty => {
-                    None
-                }
-                Rule::Concat(_, (_, ref label)) | Rule::Alternation(ref label, _) => {
-                    Some(label.clone())
-                }
-            };
-            parse_label_kinds.insert((ParseLabel::new(name), ParseLabelKind::Unary(inner)));
-            rule.rule.compute_parse_label_kind(&mut parse_label_kinds);
-        }
         for (label, kind) in parse_label_kinds {
             put!("
                 ", label, " => ParseLabelKind::");
