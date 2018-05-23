@@ -1,6 +1,7 @@
 use ordermap::OrderMap;
 use std::collections::BTreeMap;
 use std::fmt;
+use std::fmt::Write as FmtWrite;
 use std::io::Write;
 use std::rc::Rc;
 use ParseLabelKind;
@@ -382,49 +383,40 @@ impl<'a, 'b, 'id> Handle<'a, 'b, 'id, ", name, "<'a, 'b, 'id>> {
     }
     pub fn many(self) -> impl Iterator<Item = ", name, "<'a, 'b, 'id>> {
         let node = ParseNode { l: Some(", ParseLabel::new(name), "), range: self.span };
-        self.parser.sppf.unary_children(node).flat_map(move |node|");
-            let mut cx = RuleContext {
-                out,
-                name,
-                code_labels: &mut code_labels,
-                code_label_counter: 0,
-                parse_labels: &mut parse_labels,
-            };
-            cx.generate_traverse(&rule.rule);
-
-            put!(")
-            .map(move |_r| ", name, " {");
+        self.parser.sppf.unary_children(node).flat_map(move |node| {",
+                rule.rule.generate_traverse(), "
+        }).map(move |_r| ", name, " {");
             for (field_name, path) in &rule.fields {
                 if rule.rule.field_is_refutable(path) {
                     put!("
-                ", field_name, ": _r");
+            ", field_name, ": _r");
                     for p in path {
                         put!(" .", p);
                     }
                     put!(".map(|span| Handle {
-                    span,
-                    parser: self.parser,
-                    _marker: PhantomData,
-                }),");
+                span,
+                parser: self.parser,
+                _marker: PhantomData,
+            }),");
                 } else {
                     put!("
-                ", field_name, ": Handle {
-                    span: _r");
+            ", field_name, ": Handle {
+                span: _r");
                     for p in path {
                         put!(" .", p);
                     }
                     put!(",
-                    parser: self.parser,
-                    _marker: PhantomData,
-                },");
+                parser: self.parser,
+                _marker: PhantomData,
+            },");
                 }
             }
             if rule.fields.is_empty() {
                 put!("
-                _marker: PhantomData,");
+            _marker: PhantomData,");
             }
             put!("
-            })
+        })
     }
 }
 
@@ -462,27 +454,24 @@ impl<'a, 'b, 'id> ", name, "<'a, 'b, 'id> {
         }
         put!("
 fn parse(p: &mut Parser) {
-    while let Some(Call { callee: (mut c, mut _result), range }) = p.gss.threads.steal() {
+    while let Some(Call { callee: (mut c, _result), range: _range }) = p.gss.threads.steal() {
         match c.code {");
         for (name, rule) in &self.rules {
-            put!("
-            _C::", name, " => {");
             code_labels.push(name.clone());
             let parse_label = ParseLabel::new(name);
             let inner = rule.rule.parse_label(&mut parse_labels);
             named_parse_labels.push((parse_label.clone(), ParseLabelKind::Unary(Some(inner))));
-            let mut cx = RuleContext {
-                out,
-                name,
+
+            put!(reify_as(name.clone(), rule.rule.generate_parse(Continuation {
                 code_labels: &mut code_labels,
-                code_label_counter: 0,
+                code_label_prefix: name,
+                code_label_counter: &mut 0,
+                code_label_arms: &mut String::new(),
                 parse_labels: &mut parse_labels,
-            };
-            cx.generate_parse(&rule.rule);
-            put!("
-                p.sppf.add(", parse_label, ", _result, 0);
-                p.gss.ret(c.stack, _result);
-            }");
+                code: Code::Inline(format!("
+                p.sppf.add({}, _result, 0);
+                p.gss.ret(c.stack, _result);", parse_label)),
+            })).code_label_arms);
         }
         put!("
         }
@@ -588,93 +577,172 @@ impl CodeLabel for _C {}
     }
 }
 
-struct RuleContext<'a, A: 'a> {
-    out: &'a mut Write,
-    name: &'a str,
+struct Continuation<'a, A: 'a> {
     code_labels: &'a mut Vec<String>,
-    code_label_counter: usize,
+    code_label_prefix: &'a str,
+    code_label_counter: &'a mut usize,
+    code_label_arms: &'a mut String,
     parse_labels: &'a mut BTreeMap<Rc<Rule<A>>, (ParseLabel, ParseLabelKind<ParseLabel>)>,
+    code: Code,
 }
 
-#[cfg_attr(rustfmt, rustfmt_skip)]
-impl<'a, A: Atom + Ord> RuleContext<'a, A> {
+#[derive(Clone)]
+enum Code {
+    Inline(String),
+    Label(String),
+}
+
+impl<'a, A> Continuation<'a, A> {
     fn make_code_label(&mut self) -> String {
-        self.code_label_counter += 1;
-        let next_code_label = format!("{}__{}", self.name, self.code_label_counter);
+        *self.code_label_counter += 1;
+        let next_code_label = format!("{}__{}", self.code_label_prefix, self.code_label_counter);
         self.code_labels.push(next_code_label.clone());
         next_code_label
     }
-    fn generate_parse_unit(&mut self, unit: &Unit<A>) {
-        macro put($($x:expr),*) {{ $(write!(self.out, "{}", $x).unwrap();)* }}
+    fn to_inline(&mut self) -> &mut String {
+        match self.code {
+            Code::Inline(ref mut code) => code,
+            Code::Label(ref label) => {
+                self.code = Code::Inline(format!(
+                    "
+                c.code = _C::{};
+                p.gss.threads.spawn(c, _result, _range);",
+                    label
+                ));
+                self.to_inline()
+            }
+        }
+    }
+    fn to_label(&mut self) -> &str {
+        match self.code {
+            Code::Label(ref label) => label,
+            Code::Inline(_) => {
+                let label = self.make_code_label();
+                self.reify_as(label);
+                self.to_label()
+            }
+        }
+    }
 
-        match *unit {
-            Unit::Rule(ref r) => put!("
-                p.gss.call(Call { callee: _C::", r, ", range }, c);"),
+    #[cfg_attr(rustfmt, rustfmt_skip)]
+    fn reify_as(&mut self, code_label: String) {
+        let code = format!("
+            _C::{} => {{{}
+            }}", code_label, self.to_inline());
+        self.code_label_arms.push_str(&code);
+        self.code = Code::Label(code_label);
+    }
+}
+
+macro build($($x:expr),*; $cont:expr) {{
+    let mut prefix = String::new();
+    $(write!(prefix, "{}", $x).unwrap();)*
+    let mut cont = $cont;
+    cont.to_inline().insert_str(0, &prefix);
+    cont
+}}
+
+fn get_state<'a, A>(
+    f: impl FnOnce(&str, Continuation<'a, A>) -> Continuation<'a, A>,
+    cont: Continuation<'a, A>,
+) -> Continuation<'a, A> {
+    f("c.state", cont)
+}
+
+fn set_state<'a, A>(state: &str, cont: Continuation<'a, A>) -> Continuation<'a, A> {
+    build!("
+                c.state = ", state, ";"; cont)
+}
+
+fn reify_as<'a, A>(code_label: String, mut cont: Continuation<'a, A>) -> Continuation<'a, A> {
+    cont.reify_as(code_label);
+    cont
+}
+
+#[cfg_attr(rustfmt, rustfmt_skip)]
+impl<A: Atom + Ord> Unit<A> {
+    fn generate_parse<'a>(&self, mut cont: Continuation<'a, A>) -> Continuation<'a, A> {
+        match *self {
+            Unit::Rule(ref r) => {
+                cont.code = Code::Inline(format!("
+                c.code = _C::{};
+                p.gss.call(Call {{ callee: _C::{}, range: _range }}, c);",
+                    cont.to_label(), r
+                ));
+                cont
+            }
             Unit::Atom(ref a) => {
                 let a = a.to_rust_slice();
-                put!("
-                if !p.input[range.0].starts_with(", a, ") {
-                    continue;
-                }
-                let (matched, rest, _) = range.split_at(", a, ".len());
-                _result = Range(matched);
-                p.gss.threads.spawn(c, _result, Range(rest));")
+                cont = build!("
+                let _result = Range(_range.split_at(", a, ".len()).0);
+                let _range = _range.subtract(_result);"; cont);
+                let code = cont.to_inline();
+                *code = format!("
+                if p.input[_range.0].starts_with({}) {{{}
+                }}", a, code.replace("\n", "\n    "));
+                cont
             }
         }
     }
-    fn generate_parse(&mut self, rule: &Rc<Rule<A>>) {
-        macro put($($x:expr),*) {{ $(write!(self.out, "{}", $x).unwrap();)* }}
+}
 
-        match **rule {
+#[cfg_attr(rustfmt, rustfmt_skip)]
+impl<A: Atom + Ord> Rule<A> {
+    fn generate_parse<'a>(self: &Rc<Self>, mut cont: Continuation<'a, A>) -> Continuation<'a, A> {
+        match **self {
             Rule::Empty => {
-                put!("
-                _result = Range(range.frontiers().0);");
+                build!("
+                let _result = Range(_range.frontiers().0);"; cont)
             }
-            Rule::Concat(ref left, ref unit) => {
-                self.generate_parse(left);
-                let next_code_label = self.make_code_label();
-                put!("
-                c.code = _C::", next_code_label, ";");
-                self.generate_parse_unit(unit);
-                put!("
-            }
-            _C::", next_code_label, " => {
-                _result = Range(c.stack.range.split_at(c.state + _result.len()).0);
-                p.sppf.add(", rule.parse_label(self.parse_labels), ", _result, c.state);
-                c.state = _result.len();");
+            Rule::Concat(ref left, ref right) => {
+                let parse_label = self.parse_label(cont.parse_labels);
+                build!("
+                assert_eq!(_range.start(), c.stack.range.start());";
+                left.generate_parse(
+                set_state("_result.len()",
+                right.generate_parse(
+                get_state(|state, cont| build!("
+                let _result = Range(c.stack.range.split_at(", state, " + _result.len()).0);
+                p.sppf.add(", parse_label, ", _result, ", state, ");"; cont), cont)))))
             }
             Rule::Alternation(ref rules) => {
-                let return_label = self.make_code_label();
-                put!("
-                c.code = _C::", return_label, ";");
+                cont = get_state(|state, cont| build!("
+                p.sppf.add(", self.parse_label(cont.parse_labels), ", _result, ", state, ");"; cont), cont);
+                cont.to_label();
+                let mut code = String::new();
                 for unit in rules {
-                    match *unit {
-                        Unit::Rule(ref r) => put!("
-                c.state = ", ParseLabel::new(r), ".to_usize();"),
+                    let parse_label = match *unit {
+                        Unit::Rule(ref r) => ParseLabel::new(r),
                         Unit::Atom(..) => unimplemented!(),
-                    }
-                    self.generate_parse_unit(unit);
+                    };
+                    code.push_str(set_state(&format!("{}.to_usize()", parse_label), unit.generate_parse(Continuation {
+                        code_labels: cont.code_labels,
+                        code_label_prefix: cont.code_label_prefix,
+                        code_label_counter: cont.code_label_counter,
+                        code_label_arms: cont.code_label_arms,
+                        parse_labels: cont.parse_labels,
+                        code: cont.code.clone(),
+                    })).to_inline());
                 }
-                put!("
-            }
-            _C::", return_label, " => {
-                p.sppf.add(", rule.parse_label(self.parse_labels), ", _result, c.state);");
+                cont.code = Code::Inline(code);
+                cont
             }
         }
     }
-    fn generate_traverse(&mut self, rule: &Rule<A>) {
-        macro put($($x:expr),*) {{ $(write!(self.out, "{}", $x).unwrap();)* }}
+    fn generate_traverse(&self) -> String {
+        let mut out = String::new();
+        macro put($($x:expr),*) {{ $(write!(out, "{}", $x).unwrap();)* }}
 
-        match *rule {
+        match *self {
             Rule::Empty => {
                 put!("
         ::std::iter::once(node.range)");
             }
             Rule::Concat(ref rule, _) => {
                 put!("
-        self.parser.sppf.binary_children(node).flat_map(move |(node, right)|");
-                self.generate_traverse(rule);
-                put!(".map(move |left| (left, right.range)))");
+        self.parser.sppf.binary_children(node).flat_map(move |(node, right)| {",
+                    rule.generate_traverse(), ".map(move |left| (left, right.range))
+        })");
             }
             Rule::Alternation(ref choices) => {
                 put!("
@@ -702,5 +770,6 @@ impl<'a, A: Atom + Ord> RuleContext<'a, A> {
         })");
             }
         }
+        out.replace("\n", "\n    ")
     }
 }
