@@ -91,7 +91,7 @@ impl<A: Clone + fmt::Debug + PartialEq> RuleWithNamedFields<A> {
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Rule<A> {
+enum Rule<A> {
     Empty,
     Concat(Rc<Rule<A>>, Unit<A>),
     Alternation(Vec<Unit<A>>),
@@ -134,17 +134,20 @@ impl<A: Atom + Ord> Rule<A> {
             return label.clone();
         }
         let (label, kind) = match **self {
-            Rule::Empty => (ParseLabel::new("()"), ParseLabelKind::Unary(None)),
-            Rule::Concat(ref rule, ref unit) => {
+            Rule::Empty => (ParseLabel("()".to_string()), ParseLabelKind::Unary(None)),
+            Rule::Concat(ref rule, ref right) => {
                 let left = rule.parse_label(parse_labels);
-                let right = unit.to_label_description();
-                let label = ParseLabel::new(&format!("({} {})", left.description, right));
 
-                let right = match *unit {
-                    Unit::Rule(ref r) => Some(ParseLabel::new(r)),
-                    Unit::Atom(_) => None,
-                };
-                (label, ParseLabelKind::Binary(Some(left), right))
+                (
+                    ParseLabel(format!("({} {})", left.0, right.to_label_description())),
+                    ParseLabelKind::Binary(
+                        Some(left),
+                        match *right {
+                            Unit::Rule(ref r) => Some(ParseLabel(r.clone())),
+                            Unit::Atom(_) => None,
+                        },
+                    ),
+                )
             }
             Rule::Alternation(ref units) => {
                 assert!(units.len() > 1);
@@ -156,7 +159,7 @@ impl<A: Atom + Ord> Rule<A> {
                     s.push_str(&unit.to_label_description());
                 }
                 s.push(')');
-                (ParseLabel::new(&s), ParseLabelKind::Choice)
+                (ParseLabel(s), ParseLabelKind::Choice)
             }
         };
         assert!(
@@ -207,24 +210,20 @@ impl Atom for char {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct ParseLabel {
-    description: String,
-}
-
-impl ParseLabel {
-    fn new(s: &str) -> ParseLabel {
-        ParseLabel {
-            description: s.to_string(),
-        }
-    }
-    pub fn empty() -> ParseLabel {
-        ParseLabel::new("")
-    }
-}
+struct ParseLabel(String);
 
 impl fmt::Display for ParseLabel {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "P!({})", self.description)
+        write!(f, "P!({})", self.0)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct CodeLabel(String);
+
+impl fmt::Display for CodeLabel {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "_C::{}", self.0)
     }
 }
 
@@ -382,7 +381,7 @@ impl<'a, 'b, 'id> Handle<'a, 'b, 'id, ", name, "<'a, 'b, 'id>> {
         }
     }
     pub fn many(self) -> impl Iterator<Item = ", name, "<'a, 'b, 'id>> {
-        let node = ParseNode { l: Some(", ParseLabel::new(name), "), range: self.span };
+        let node = ParseNode { l: Some(", ParseLabel(name.clone()), "), range: self.span };
         self.parser.sppf.unary_children(node).flat_map(move |node| {",
                 rule.rule.generate_traverse(), "
         }).map(move |_r| ", name, " {");
@@ -423,7 +422,7 @@ impl<'a, 'b, 'id> Handle<'a, 'b, 'id, ", name, "<'a, 'b, 'id>> {
 impl<'a, 'b, 'id> ", name, "<'a, 'b, 'id> {
     pub fn parse(p: &'a mut Parser<'b, 'id>) -> Result<Handle<'a, 'b, 'id, Self>, ()> {
         let call = Call {
-            callee: _C::", name, ",
+            callee: ", CodeLabel(name.clone()), ",
             range: Range(p.input.range()),
         };
         if !p.gss.calls.contains_key(&call) {
@@ -457,12 +456,12 @@ fn parse(p: &mut Parser) {
     while let Some(Call { callee: (mut c, _result), range: _range }) = p.gss.threads.steal() {
         match c.code {");
         for (name, rule) in &self.rules {
-            code_labels.push(name.clone());
-            let parse_label = ParseLabel::new(name);
+            code_labels.push(CodeLabel(name.clone()));
+            let parse_label = ParseLabel(name.clone());
             let inner = rule.rule.parse_label(&mut parse_labels);
             named_parse_labels.push((parse_label.clone(), ParseLabelKind::Unary(Some(inner))));
 
-            put!(reify_as(name.clone(), rule.rule.generate_parse(Continuation {
+            put!(reify_as(CodeLabel(name.clone()), rule.rule.generate_parse(Continuation {
                 code_labels: &mut code_labels,
                 code_label_prefix: name,
                 code_label_counter: &mut 0,
@@ -494,7 +493,7 @@ macro P {");
                 put!(",");
             }
             put!("
-    (", l.description, ") => (_P::_", i, ")");
+    (", l.0, ") => (_P::_", i, ")");
         }
         put!("
 }
@@ -504,7 +503,7 @@ impl fmt::Display for _P {
         let s = match *self {");
         for &(ref l, _) in named_parse_labels.iter().chain(parse_labels.values()) {
             put!("
-            ", l, " => \"", l.description.escape_default(), "\",");
+            ", l, " => \"", l.0.escape_default(), "\",");
         }
         put!("
         };
@@ -567,7 +566,7 @@ impl ParseLabel for _P {
 pub enum _C {");
         for s in code_labels {
             put!("
-    ", s, ",");
+    ", s.0, ",");
         }
         put!("
 }
@@ -578,7 +577,7 @@ impl CodeLabel for _C {}
 }
 
 struct Continuation<'a, A: 'a> {
-    code_labels: &'a mut Vec<String>,
+    code_labels: &'a mut Vec<CodeLabel>,
     code_label_prefix: &'a str,
     code_label_counter: &'a mut usize,
     code_label_arms: &'a mut String,
@@ -589,23 +588,17 @@ struct Continuation<'a, A: 'a> {
 #[derive(Clone)]
 enum Code {
     Inline(String),
-    Label(String),
+    Label(CodeLabel),
 }
 
 impl<'a, A> Continuation<'a, A> {
-    fn make_code_label(&mut self) -> String {
-        *self.code_label_counter += 1;
-        let next_code_label = format!("{}__{}", self.code_label_prefix, self.code_label_counter);
-        self.code_labels.push(next_code_label.clone());
-        next_code_label
-    }
     fn to_inline(&mut self) -> &mut String {
         match self.code {
             Code::Inline(ref mut code) => code,
             Code::Label(ref label) => {
                 self.code = Code::Inline(format!(
                     "
-                c.code = _C::{};
+                c.code = {};
                 p.gss.threads.spawn(c, _result, _range);",
                     label
                 ));
@@ -613,11 +606,16 @@ impl<'a, A> Continuation<'a, A> {
             }
         }
     }
-    fn to_label(&mut self) -> &str {
+    fn to_label(&mut self) -> &CodeLabel {
         match self.code {
             Code::Label(ref label) => label,
             Code::Inline(_) => {
-                let label = self.make_code_label();
+                *self.code_label_counter += 1;
+                let label = CodeLabel(format!(
+                    "{}__{}",
+                    self.code_label_prefix, self.code_label_counter
+                ));
+                self.code_labels.push(label.clone());
                 self.reify_as(label);
                 self.to_label()
             }
@@ -625,12 +623,12 @@ impl<'a, A> Continuation<'a, A> {
     }
 
     #[cfg_attr(rustfmt, rustfmt_skip)]
-    fn reify_as(&mut self, code_label: String) {
+    fn reify_as(&mut self, label: CodeLabel) {
         let code = format!("
-            _C::{} => {{{}
-            }}", code_label, self.to_inline());
+            {} => {{{}
+            }}", label, self.to_inline());
         self.code_label_arms.push_str(&code);
-        self.code = Code::Label(code_label);
+        self.code = Code::Label(label);
     }
 }
 
@@ -654,8 +652,8 @@ fn set_state<'a, A>(state: &str, cont: Continuation<'a, A>) -> Continuation<'a, 
                 c.state = ", state, ";"; cont)
 }
 
-fn reify_as<'a, A>(code_label: String, mut cont: Continuation<'a, A>) -> Continuation<'a, A> {
-    cont.reify_as(code_label);
+fn reify_as<'a, A>(label: CodeLabel, mut cont: Continuation<'a, A>) -> Continuation<'a, A> {
+    cont.reify_as(label);
     cont
 }
 
@@ -665,9 +663,9 @@ impl<A: Atom + Ord> Unit<A> {
         match *self {
             Unit::Rule(ref r) => {
                 cont.code = Code::Inline(format!("
-                c.code = _C::{};
-                p.gss.call(Call {{ callee: _C::{}, range: _range }}, c);",
-                    cont.to_label(), r
+                c.code = {};
+                p.gss.call(Call {{ callee: {}, range: _range }}, c);",
+                    cont.to_label(), CodeLabel(r.clone())
                 ));
                 cont
             }
@@ -712,7 +710,7 @@ impl<A: Atom + Ord> Rule<A> {
                 let mut code = String::new();
                 for unit in rules {
                     let parse_label = match *unit {
-                        Unit::Rule(ref r) => ParseLabel::new(r),
+                        Unit::Rule(ref r) => ParseLabel(r.clone()),
                         Unit::Atom(..) => unimplemented!(),
                     };
                     code.push_str(set_state(&format!("{}.to_usize()", parse_label), unit.generate_parse(Continuation {
@@ -750,7 +748,7 @@ impl<A: Atom + Ord> Rule<A> {
             match _P::from_usize(i) {");
                 for (i, unit) in choices.iter().enumerate() {
                     let parse_label = match *unit {
-                        Unit::Rule(ref r) => ParseLabel::new(r),
+                        Unit::Rule(ref r) => ParseLabel(r.clone()),
                         Unit::Atom(..) => unimplemented!(),
                     };
                     put!("
