@@ -11,42 +11,36 @@ fn main() {
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
 
     let mut gll10_g0 = grammar!{
-        S = {s0: S0}
-          | {s1: S1}
-          | {s2: S2};
-        S0 = { {a: A} {s: S} {d: 'd'} };
-        S1 = { {b: B} {s: S} };
-        S2 = {};
+        S = { {a: A} {s0: S} {d: 'd'} }
+          | { {b: B} {s1: S} }
+          | {};
 
-        A = {a1: A1}
-          | {a2: A2};
-        A1 = { 'a' };
-        A2 = { 'c' };
+        A = {a: 'a'}
+          | {c: 'c'};
 
-        B = {b1: B1}
-          | {b2: B2};
-        B1 = { 'a' };
-        B2 = { 'b' };
+        B = {a: 'a'}
+          | {b: 'b'};
     };
     gll10_g0.generate(&mut File::create(&out_dir.join("gll10_g0.rs")).unwrap());
 
     let mut gll13_g1 = grammar!{
-        S = {x: X}
-          | {y: Y}
-          | {z: Z};
-        X = { 'a' {s: S} 'b' };
-        Y = { 'd' };
-        Z = { 'a' 'd' 'b' };
+        S = { {a0: 'a'} {s: S} {b0: 'b'} }
+          | {d0: 'd'}
+          | { {a1: 'a'} {d1: 'd'} {b1: 'b'} };
     };
     gll13_g1.generate(&mut File::create(&out_dir.join("gll13_g1.rs")).unwrap());
 
     let mut gll15_g0 = grammar!{
-        A = {x: X}
-          | {y: Y}
-          | {z: Z};
-        X = { 'a' {a: A} 'b' };
-        Y = { 'a' {a: A} 'c' };
-        Z = { 'a' };
+        A = { {a0: 'a'} {a1: A} {b: 'b'} }
+          | { {a2: 'a'} {a3: A} {c: 'c'} }
+          | {a4: 'a'};
     };
     gll15_g0.generate(&mut File::create(&out_dir.join("gll15_g0.rs")).unwrap());
+
+    let mut gll15_g0_nested = grammar!{
+        A = { {a0: 'a'} { {a1: A} {b: 'b'} } }
+          | { {a2: 'a'} {a3: A} {c: 'c'} }
+          | {a4: 'a'};
+    };
+    gll15_g0_nested.generate(&mut File::create(&out_dir.join("gll15_g0_nested.rs")).unwrap());
 }

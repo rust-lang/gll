@@ -44,9 +44,9 @@ impl<'id> Hash for Range<'id> {
 }
 
 impl<'id> Range<'id> {
-    pub fn subtract(self, other: Self) -> Self {
-        assert_eq!(self.start(), other.start());
-        Range(self.split_at(other.len()).1)
+    pub fn subtract_suffix(self, other: Self) -> Self {
+        assert_eq!(self.end(), other.end());
+        Range(self.split_at(other.start() - self.start()).0)
     }
 }
 
@@ -57,21 +57,21 @@ pub struct Parser<'id, P: ParseLabel, C: CodeLabel, I> {
 }
 
 pub struct Threads<'id, C: CodeLabel> {
-    queue: BinaryHeap<Call<'id, (Continuation<'id, C>, Range<'id>)>>,
-    seen: BTreeSet<Call<'id, (Continuation<'id, C>, Range<'id>)>>,
+    queue: BinaryHeap<Call<'id, Continuation<'id, C>>>,
+    seen: BTreeSet<Call<'id, Continuation<'id, C>>>,
 }
 
 impl<'id, C: CodeLabel> Threads<'id, C> {
-    pub fn spawn(&mut self, next: Continuation<'id, C>, result: Range<'id>, range: Range<'id>) {
+    pub fn spawn(&mut self, next: Continuation<'id, C>, range: Range<'id>) {
         let t = Call {
-            callee: (next, result),
+            callee: next,
             range,
         };
         if self.seen.insert(t) {
             self.queue.push(t);
         }
     }
-    pub fn steal(&mut self) -> Option<Call<'id, (Continuation<'id, C>, Range<'id>)>> {
+    pub fn steal(&mut self) -> Option<Call<'id, Continuation<'id, C>>> {
         if let Some(t) = self.queue.pop() {
             loop {
                 let old = self.seen.iter().rev().next().cloned();
@@ -131,14 +131,14 @@ impl<'id, C: Ord> Ord for Call<'id, C> {
 
 pub struct CallNode<'id, C: CodeLabel> {
     returns: BTreeSet<Continuation<'id, C>>,
-    pub results: BTreeSet<Range<'id>>,
+    lengths: BTreeSet<usize>,
 }
 
 impl<'id, C: CodeLabel> CallNode<'id, C> {
     pub fn new() -> Self {
         CallNode {
             returns: BTreeSet::new(),
-            results: BTreeSet::new(),
+            lengths: BTreeSet::new(),
         }
     }
 }
@@ -163,34 +163,45 @@ impl<'id, C: CodeLabel> CallGraph<'id, C> {
         }
         writeln!(out, "}}")
     }
+    pub fn results<'a>(
+        &'a self,
+        call: Call<'id, C>,
+    ) -> impl DoubleEndedIterator<Item = Range<'id>> + 'a {
+        self.calls.get(&call).into_iter().flat_map(move |node| {
+            node.lengths
+                .iter()
+                .map(move |&len| Range(call.range.split_at(len).0))
+        })
+    }
+    pub fn longest_result(&self, call: Call<'id, C>) -> Option<Range<'id>> {
+        self.results(call).rev().next()
+    }
     pub fn call(&mut self, call: Call<'id, C>, next: Continuation<'id, C>) {
         let node = self.calls.entry(call).or_insert(CallNode::new());
         if node.returns.insert(next) {
             if node.returns.len() > 1 {
-                for &result in &node.results {
-                    self.threads
-                        .spawn(next, result, call.range.subtract(result));
+                for &len in &node.lengths {
+                    self.threads.spawn(next, Range(call.range.split_at(len).1));
                 }
             } else {
-                let dummy = Range(call.range.frontiers().0);
                 self.threads.spawn(
                     Continuation {
                         code: call.callee,
                         stack: call,
                         state: 0,
                     },
-                    dummy,
                     call.range,
                 );
             }
         }
     }
-    pub fn ret(&mut self, call: Call<'id, C>, result: Range<'id>) {
+    pub fn ret(&mut self, call: Call<'id, C>, remaining: Range<'id>) {
         let node = self.calls.entry(call).or_insert(CallNode::new());
-        if node.results.insert(result) {
+        if node.lengths
+            .insert(call.range.subtract_suffix(remaining).len())
+        {
             for &next in &node.returns {
-                self.threads
-                    .spawn(next, result, call.range.subtract(result));
+                self.threads.spawn(next, remaining);
             }
         }
     }
@@ -206,6 +217,19 @@ impl<'id, P: ParseLabel> ParseGraph<'id, P> {
             .entry(ParseNode { l: Some(l), range })
             .or_insert(BTreeSet::new())
             .insert(child);
+    }
+
+    pub fn choice_children<'a>(
+        &'a self,
+        node: ParseNode<'id, P>,
+    ) -> impl Iterator<Item = ParseNode<'id, P>> + 'a {
+        match node.l.unwrap().kind() {
+            ParseLabelKind::Choice => self.children[&node].iter().map(move |&i| ParseNode {
+                l: Some(P::from_usize(i)),
+                range: node.range,
+            }),
+            _ => unreachable!(),
+        }
     }
 
     pub fn unary_children<'a>(
