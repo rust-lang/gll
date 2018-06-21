@@ -33,9 +33,15 @@ impl<A: Clone + fmt::Debug + PartialEq> RuleWithNamedFields<A> {
             fields: OrderMap::new(),
         }
     }
-    pub fn unit(unit: Unit<A>) -> Self {
+    pub fn atom(atom: A) -> Self {
         RuleWithNamedFields {
-            rule: Rc::new(Rule::Unit(unit)),
+            rule: Rc::new(Rule::Atom(atom)),
+            fields: OrderMap::new(),
+        }
+    }
+    pub fn call(call: String) -> Self {
+        RuleWithNamedFields {
+            rule: Rc::new(Rule::Call(call)),
             fields: OrderMap::new(),
         }
     }
@@ -61,7 +67,7 @@ impl<A: Clone + fmt::Debug + PartialEq> RuleWithNamedFields<A> {
     }
     pub fn with_field_name(mut self, name: &str) -> Self {
         match *self.rule {
-            Rule::Unit(_) => {}
+            Rule::Atom(_) | Rule::Call(_) => {}
             _ => unimplemented!(),
         }
         self.fields.insert(name.to_string(), vec![]);
@@ -90,7 +96,8 @@ impl<A: Clone + fmt::Debug + PartialEq> RuleWithNamedFields<A> {
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Rule<A> {
     Empty,
-    Unit(Unit<A>),
+    Atom(A),
+    Call(String),
     Concat([Rc<Rule<A>>; 2]),
     Or(Vec<Rc<Rule<A>>>),
 }
@@ -98,15 +105,15 @@ pub enum Rule<A> {
 impl<A: Atom + Ord> Rule<A> {
     fn field_type(&self, path: &[usize]) -> &str {
         match *self {
-            Rule::Empty | Rule::Unit(Unit::Atom(_)) => "Terminal",
-            Rule::Unit(Unit::Rule(ref r)) => r,
+            Rule::Empty | Rule::Atom(_) => "Terminal",
+            Rule::Call(ref r) => r,
             Rule::Concat(ref rules) => rules[path[0]].field_type(&path[1..]),
             Rule::Or(ref rules) => rules[path[0]].field_type(&path[1..]),
         }
     }
     fn field_is_refutable(&self, path: &[usize]) -> bool {
         match *self {
-            Rule::Empty | Rule::Unit(_) => false,
+            Rule::Empty | Rule::Atom(_) | Rule::Call(_) => false,
             Rule::Concat(ref rules) => rules[path[0]].field_is_refutable(&path[1..]),
             Rule::Or(..) => true,
         }
@@ -120,13 +127,11 @@ impl<A: Atom + Ord> Rule<A> {
         }
         let (label, kind) = match **self {
             Rule::Empty => (ParseLabel("()".to_string()), ParseLabelKind::Unary(None)),
-            Rule::Unit(ref unit) => match *unit {
-                Unit::Atom(ref a) => (
-                    ParseLabel(a.to_label_description()),
-                    ParseLabelKind::Unary(None),
-                ),
-                Unit::Rule(ref r) => return ParseLabel(r.clone()),
-            },
+            Rule::Atom(ref a) => (
+                ParseLabel(a.to_label_description()),
+                ParseLabelKind::Unary(None),
+            ),
+            Rule::Call(ref r) => return ParseLabel(r.clone()),
             Rule::Concat([ref left, ref right]) => {
                 let left = left.parse_label(parse_labels);
                 let right = right.parse_label(parse_labels);
@@ -156,12 +161,6 @@ impl<A: Atom + Ord> Rule<A> {
         );
         label
     }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Unit<A> {
-    Atom(A),
-    Rule(String),
 }
 
 pub trait Atom {
@@ -220,10 +219,10 @@ pub macro grammar {
             $(.then(grammar!(@rule $rule)))*
     },
     (@rule $rule:ident) => {
-        RuleWithNamedFields::unit(Unit::Rule(stringify!($rule).to_string()))
+        RuleWithNamedFields::call(stringify!($rule).to_string())
     },
     (@rule $atom:expr) => {
-        RuleWithNamedFields::unit(Unit::Atom($atom))
+        RuleWithNamedFields::atom($atom)
     },
     ($($rule_name:ident = $($rule:tt)|+;)*) => ({
         let mut grammar = Grammar::new();
@@ -652,18 +651,11 @@ fn reify_as<'a, A>(label: CodeLabel, mut cont: Continuation<'a, A>) -> Continuat
 }
 
 #[cfg_attr(rustfmt, rustfmt_skip)]
-impl<A: Atom + Ord> Unit<A> {
-    fn generate_parse<'a>(&self, mut cont: Continuation<'a, A>) -> Continuation<'a, A> {
-        match *self {
-            Unit::Rule(ref r) => {
-                cont.code = Code::Inline(format!("
-                c.code = {};
-                p.gss.call(Call {{ callee: {}, range: _range }}, c);",
-                    cont.to_label(), CodeLabel(r.clone())
-                ));
-                cont
-            }
-            Unit::Atom(ref a) => {
+impl<A: Atom + Ord> Rule<A> {
+    fn generate_parse<'a>(self: &Rc<Self>, mut cont: Continuation<'a, A>) -> Continuation<'a, A> {
+        match **self {
+            Rule::Empty => cont,
+            Rule::Atom(ref a) => {
                 let a = a.to_rust_slice();
                 cont = build!("
                 let _range = Range(_range.split_at(", a, ".len()).1);"; cont);
@@ -672,19 +664,15 @@ impl<A: Atom + Ord> Unit<A> {
                 if p.input[_range.0].starts_with({}) {{{}
                 }}", a, code.replace("\n", "\n    "));
                 cont
-            }
-        }
-    }
-}
-
-#[cfg_attr(rustfmt, rustfmt_skip)]
-impl<A: Atom + Ord> Rule<A> {
-    fn generate_parse<'a>(self: &Rc<Self>, mut cont: Continuation<'a, A>) -> Continuation<'a, A> {
-        match **self {
-            Rule::Empty => cont,
-            Rule::Unit(ref unit) => {
-                unit.generate_parse(cont)
-            }
+            },
+            Rule::Call(ref r) => {
+                cont.code = Code::Inline(format!("
+                c.code = {};
+                p.gss.call(Call {{ callee: {}, range: _range }}, c);",
+                    cont.to_label(), CodeLabel(r.clone())
+                ));
+                cont
+            },
             Rule::Concat([ref left, ref right]) => {
                 let parse_label = self.parse_label(cont.parse_labels);
                 build!("
@@ -731,7 +719,7 @@ impl<A: Atom + Ord> Rule<A> {
         macro put($($x:expr),*) {{ $(write!(out, "{}", $x).unwrap();)* }}
 
         match *self {
-            Rule::Empty | Rule::Unit(_) => {
+            Rule::Empty | Rule::Atom(_) | Rule::Call(_) => {
                 put!("::std::iter::once(");
                 if refutable {
                     put!("Some(")
