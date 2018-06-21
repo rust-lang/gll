@@ -1,5 +1,5 @@
-#![feature(arbitrary_self_types, conservative_impl_trait, decl_macro, from_ref, nll,
-           slice_patterns, str_escape, universal_impl_trait)]
+#![feature(arbitrary_self_types, conservative_impl_trait, decl_macro, fn_traits, from_ref, nll,
+           slice_patterns, str_escape, unboxed_closures, universal_impl_trait)]
 
 extern crate indexing;
 extern crate ordermap;

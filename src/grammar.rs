@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::fmt::Write as FmtWrite;
 use std::io::Write;
+use std::ops::Add;
 use std::rc::Rc;
 use ParseLabelKind;
 
@@ -434,7 +435,7 @@ fn parse(p: &mut Parser) {
             let inner = rule.rule.parse_label(&mut parse_labels);
             named_parse_labels.push((parse_label.clone(), ParseLabelKind::Unary(Some(inner))));
 
-            put!(reify_as(CodeLabel(name.clone()), rule.rule.generate_parse(Continuation {
+            put!((reify_as(CodeLabel(name.clone())) + rule.rule.generate_parse())(Continuation {
                 code_labels: &mut code_labels,
                 code_label_prefix: name,
                 code_label_counter: &mut 0,
@@ -444,7 +445,7 @@ fn parse(p: &mut Parser) {
                 p.sppf.add({}, c.stack.range.subtract_suffix(_range), 0);
                 p.gss.ret(c.stack, _range);", parse_label)),
                 nested_frames: vec![],
-            })).code_label_arms);
+            }).code_label_arms);
         }
         put!("
         }
@@ -607,63 +608,113 @@ impl<'a, A> Continuation<'a, A> {
     }
 }
 
-macro build($($x:expr),*; $cont:expr) {{
+struct Compose<F, G>(F, G);
+
+impl<A, F: FnOnce<A>, G: FnOnce<(F::Output,)>> FnOnce<A> for Compose<F, G> {
+    type Output = G::Output;
+    extern "rust-call" fn call_once(self, args: A) -> Self::Output {
+        self.1(self.0.call_once(args))
+    }
+}
+
+struct Thunk<F>(F);
+
+impl<F> Thunk<F> {
+    fn new<A>(f: F) -> Self
+    where
+        F: FnOnce(Continuation<A>) -> Continuation<A>,
+    {
+        Thunk(f)
+    }
+}
+
+impl<F, G> Add<Thunk<G>> for Thunk<F> {
+    type Output = Thunk<Compose<G, F>>;
+    fn add(self, other: Thunk<G>) -> Self::Output {
+        Thunk(Compose(other.0, self.0))
+    }
+}
+
+impl<A, F: FnOnce<A>> FnOnce<A> for Thunk<F> {
+    type Output = F::Output;
+    extern "rust-call" fn call_once(self, args: A) -> Self::Output {
+        self.0.call_once(args)
+    }
+}
+
+macro thunk($($x:expr),*) {{
     let mut prefix = String::new();
     $(write!(prefix, "{}", $x).unwrap();)*
-    let mut cont = $cont;
-    cont.to_inline().insert_str(0, &prefix);
-    cont
+    Thunk::new(move |mut cont| {
+        cont.to_inline().insert_str(0, &prefix);
+        cont
+    })
 }}
 
-fn pop_state<'a, A>(
-    f: impl FnOnce(&str, Continuation<'a, A>) -> Continuation<'a, A>,
-    mut cont: Continuation<'a, A>,
-) -> Continuation<'a, A> {
-    if let Some(&None) = cont.nested_frames.last() {
-        *cont.nested_frames.last_mut().unwrap() = Some(cont.to_label().clone());
-        cont.code = Code::Inline(
-            "
+fn pop_state<A, F: FnOnce(Continuation<A>) -> Continuation<A>>(
+    f: impl FnOnce(&str) -> Thunk<F>,
+) -> Thunk<impl FnOnce(Continuation<A>) -> Continuation<A>> {
+    f("c.state") + Thunk::new(|mut cont| {
+        if let Some(&None) = cont.nested_frames.last() {
+            *cont.nested_frames.last_mut().unwrap() = Some(cont.to_label().clone());
+            cont.code = Code::Inline(
+                "
                 p.gss.ret(c.stack, _range);"
-                .to_string(),
-        );
-    }
-    cont.nested_frames.push(None);
-    f("c.state", cont)
+                    .to_string(),
+            );
+        }
+        cont.nested_frames.push(None);
+        cont
+    })
 }
 
-fn push_state<'a, A>(state: &str, mut cont: Continuation<'a, A>) -> Continuation<'a, A> {
-    if let Some(ret_label) = cont.nested_frames.pop().unwrap() {
-        cont.code = Code::Inline(format!(
-            "
+fn push_state<'a, A>(
+    state: &'a str,
+) -> Thunk<impl FnOnce(Continuation<A>) -> Continuation<A> + 'a> {
+    thunk!(
+        "
+                c.state = ",
+        state,
+        ";"
+    ) + Thunk::new(move |mut cont| {
+        if let Some(ret_label) = cont.nested_frames.pop().unwrap() {
+            cont.code = Code::Inline(format!(
+                "
                 c.code = {};
                 p.gss.call(Call {{ callee: {}, range: _range }}, c);",
-            ret_label,
-            cont.to_label()
-        ));
-    }
-    build!("
-                c.state = ", state, ";"; cont)
+                ret_label,
+                cont.to_label()
+            ));
+        }
+        cont
+    })
 }
 
-fn reify_as<'a, A>(label: CodeLabel, mut cont: Continuation<'a, A>) -> Continuation<'a, A> {
-    cont.reify_as(label);
-    cont
+fn reify_as<A>(label: CodeLabel) -> Thunk<impl FnOnce(Continuation<A>) -> Continuation<A>> {
+    Thunk::new(|mut cont| {
+        cont.reify_as(label);
+        cont
+    })
 }
 
 #[cfg_attr(rustfmt, rustfmt_skip)]
 impl<A: Atom + Ord> Rule<A> {
-    fn generate_parse<'a>(self: &Rc<Self>, mut cont: Continuation<'a, A>) -> Continuation<'a, A> {
-        match **self {
+    fn generate_parse<'a>(self: &'a Rc<Self>) -> Thunk<impl FnOnce(Continuation<A>) -> Continuation<A> + 'a> {
+        Thunk::new(move |mut cont| match **self {
             Rule::Empty => cont,
             Rule::Atom(ref a) => {
                 let a = a.to_rust_slice();
-                cont = build!("
-                let _range = Range(_range.split_at(", a, ".len()).1);"; cont);
-                let code = cont.to_inline();
-                *code = format!("
+                (
+                    Thunk::new(|mut cont| {
+                        let code = cont.to_inline();
+                        *code = format!("
                 if p.input[_range.0].starts_with({}) {{{}
                 }}", a, code.replace("\n", "\n    "));
-                cont
+                        cont
+                    }) +
+                    thunk!("
+                let _range = Range(_range.split_at(", a, ".len()).1);")
+                )(cont)
             },
             Rule::Call(ref r) => {
                 cont.code = Code::Inline(format!("
@@ -675,39 +726,48 @@ impl<A: Atom + Ord> Rule<A> {
             },
             Rule::Concat([ref left, ref right]) => {
                 let parse_label = self.parse_label(cont.parse_labels);
-                build!("
-                assert_eq!(_range.start(), c.stack.range.start());";
-                left.generate_parse(
-                push_state("c.stack.range.subtract_suffix(_range).len()",
-                right.generate_parse(
-                pop_state(|state, cont| build!("
-                p.sppf.add(", parse_label, ", c.stack.range.subtract_suffix(_range), ", state, ");"; cont), cont)))))
+                (
+                    thunk!("
+                assert_eq!(_range.start(), c.stack.range.start());") +
+                    left.generate_parse() +
+                    push_state("c.stack.range.subtract_suffix(_range).len()") +
+                    right.generate_parse() +
+                    pop_state(|state| thunk!("
+                p.sppf.add(", parse_label, ", c.stack.range.subtract_suffix(_range), ", state, ");"))
+                )(cont)
             }
             Rule::Or(ref rules) => {
-                cont = pop_state(|state, cont| build!("
-                p.sppf.add(", self.parse_label(cont.parse_labels), ", c.stack.range.subtract_suffix(_range), ", state, ");"; cont), cont);
-                cont.to_label();
-                let mut code = String::new();
-                for rule in rules {
-                    let parse_label = rule.parse_label(cont.parse_labels);
-                    code.push_str(push_state(&format!("{}.to_usize()", parse_label),
-                    rule.generate_parse(Continuation {
-                        code_labels: cont.code_labels,
-                        code_label_prefix: cont.code_label_prefix,
-                        code_label_counter: cont.code_label_counter,
-                        code_label_arms: cont.code_label_arms,
-                        parse_labels: cont.parse_labels,
-                        code: cont.code.clone(),
-                        nested_frames: vec![None],
-                    })).to_inline());
-                }
-                cont.code = Code::Inline(code);
-                assert_eq!(cont.nested_frames.pop(), Some(None));
-                build!("
-                assert_eq!(_range.start(), c.stack.range.start());";
-                cont)
+                let parse_label = self.parse_label(cont.parse_labels);
+                (
+                    thunk!("
+                assert_eq!(_range.start(), c.stack.range.start());") +
+                    Thunk::new(|mut cont| {
+                        cont.to_label();
+                        let mut code = String::new();
+                        for rule in rules {
+                            let parse_label = rule.parse_label(cont.parse_labels);
+                            code.push_str((
+                                push_state(&format!("{}.to_usize()", parse_label)) +
+                                rule.generate_parse()
+                            )(Continuation {
+                                code_labels: cont.code_labels,
+                                code_label_prefix: cont.code_label_prefix,
+                                code_label_counter: cont.code_label_counter,
+                                code_label_arms: cont.code_label_arms,
+                                parse_labels: cont.parse_labels,
+                                code: cont.code.clone(),
+                                nested_frames: vec![None],
+                            }).to_inline());
+                        }
+                        cont.code = Code::Inline(code);
+                        assert_eq!(cont.nested_frames.pop(), Some(None));
+                        cont
+                    }) +
+                    pop_state(|state| thunk!("
+                p.sppf.add(", parse_label, ", c.stack.range.subtract_suffix(_range), ", state, ");"))
+                )(cont)
             }
-        }
+        })
     }
     fn generate_traverse(
         &self,
