@@ -95,7 +95,7 @@ impl<'id, C: CodeLabel> Threads<'id, C> {
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Continuation<'id, C: CodeLabel> {
     pub code: C,
-    pub stack: Call<'id, C>,
+    pub frame: Call<'id, C>,
     pub state: usize,
 }
 
@@ -157,7 +157,7 @@ impl<'id, C: CodeLabel> CallGraph<'id, C> {
                 writeln!(
                     out,
                     r#"    "{:?}" -> "{:?}" [label="{:?}"]"#,
-                    call, next.stack, next.code
+                    call, next.frame, next.code
                 )?;
             }
         }
@@ -187,7 +187,7 @@ impl<'id, C: CodeLabel> CallGraph<'id, C> {
                 self.threads.spawn(
                     Continuation {
                         code: call.callee,
-                        stack: call,
+                        frame: call,
                         state: 0,
                     },
                     call.range,

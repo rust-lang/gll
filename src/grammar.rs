@@ -410,7 +410,7 @@ impl<'a, 'b, 'id> ", name, "<'a, 'b, 'id> {
             p.gss.threads.spawn(
                 Continuation {
                     code: call.callee,
-                    stack: call,
+                    frame: call,
                     state: 0,
                 },
                 call.range,
@@ -439,7 +439,7 @@ fn parse(p: &mut Parser) {
             named_parse_labels.push((parse_label.clone(), ParseLabelKind::Unary(Some(inner))));
 
             put!((reify_as(CodeLabel(name.clone())) + rule.rule.generate_parse(&mut parse_labels) + thunk!(&format!("
-                p.sppf.add({}, c.stack.range.subtract_suffix(_range), 0);", parse_label)) + ret())(Continuation {
+                p.sppf.add({}, c.frame.range.subtract_suffix(_range), 0);", parse_label)) + ret())(Continuation {
                 code_labels: &mut code_labels,
                 code_label_prefix: name,
                 code_label_counter: &mut 0,
@@ -711,7 +711,7 @@ fn call(callee: CodeLabel) -> Thunk<impl FnOnce(Continuation) -> Continuation> {
 fn ret() -> Thunk<impl FnOnce(Continuation) -> Continuation> {
     thunk!(
         "
-                p.gss.ret(c.stack, _range);"
+                p.gss.ret(c.frame, _range);"
     ) + Thunk::new(|mut cont| {
         assert_eq!(cont.to_inline(), "");
         cont
@@ -785,23 +785,23 @@ impl<A: Atom + Ord> Rule<A> {
             Rule::Concat([ref left, ref right]) =>
                 (
                     thunk!("
-                assert_eq!(_range.start(), c.stack.range.start());") +
+                assert_eq!(_range.start(), c.frame.range.start());") +
                     left.generate_parse(parse_labels) +
-                    push_state("c.stack.range.subtract_suffix(_range).len()") +
+                    push_state("c.frame.range.subtract_suffix(_range).len()") +
                     right.generate_parse(parse_labels) +
                     pop_state(|state| thunk!("
-                p.sppf.add(", self.parse_label(parse_labels), ", c.stack.range.subtract_suffix(_range), ", state, ");"))
+                p.sppf.add(", self.parse_label(parse_labels), ", c.frame.range.subtract_suffix(_range), ", state, ");"))
                 )(cont),
             Rule::Or(ref rules) =>
                 (
                     thunk!("
-                assert_eq!(_range.start(), c.stack.range.start());") +
+                assert_eq!(_range.start(), c.frame.range.start());") +
                     parallel(rules.iter().map(|rule| {
                         push_state(&format!("{}.to_usize()", rule.parse_label(parse_labels))) +
                         rule.generate_parse(parse_labels)
                     })) +
                     pop_state(|state| thunk!("
-                p.sppf.add(", self.parse_label(parse_labels), ", c.stack.range.subtract_suffix(_range), ", state, ");"))
+                p.sppf.add(", self.parse_label(parse_labels), ", c.frame.range.subtract_suffix(_range), ", state, ");"))
                 )(cont),
         })
     }
