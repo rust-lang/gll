@@ -16,53 +16,53 @@ use std::ops::Deref;
 pub mod grammar;
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
-pub struct Range<'id>(pub indexing::Range<'id>);
+pub struct Range<'i>(pub indexing::Range<'i>);
 
-impl<'id> Deref for Range<'id> {
-    type Target = indexing::Range<'id>;
+impl<'i> Deref for Range<'i> {
+    type Target = indexing::Range<'i>;
     fn deref(&self) -> &Self::Target {
         &self.0
     }
 }
 
-impl<'id> PartialOrd for Range<'id> {
+impl<'i> PartialOrd for Range<'i> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         (self.start(), self.end()).partial_cmp(&(other.start(), other.end()))
     }
 }
 
-impl<'id> Ord for Range<'id> {
+impl<'i> Ord for Range<'i> {
     fn cmp(&self, other: &Self) -> Ordering {
         (self.start(), self.end()).cmp(&(other.start(), other.end()))
     }
 }
 
-impl<'id> Hash for Range<'id> {
+impl<'i> Hash for Range<'i> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         (self.start(), self.end()).hash(state);
     }
 }
 
-impl<'id> Range<'id> {
+impl<'i> Range<'i> {
     pub fn subtract_suffix(self, other: Self) -> Self {
         assert_eq!(self.end(), other.end());
         Range(self.split_at(other.start() - self.start()).0)
     }
 }
 
-pub struct Parser<'id, P: ParseLabel, C: CodeLabel, I> {
-    pub input: Container<'id, I>,
-    pub gss: CallGraph<'id, C>,
-    pub sppf: ParseGraph<'id, P>,
+pub struct Parser<'i, P: ParseLabel, C: CodeLabel, I> {
+    pub input: Container<'i, I>,
+    pub gss: CallGraph<'i, C>,
+    pub sppf: ParseGraph<'i, P>,
 }
 
-pub struct Threads<'id, C: CodeLabel> {
-    queue: BinaryHeap<Call<'id, Continuation<'id, C>>>,
-    seen: BTreeSet<Call<'id, Continuation<'id, C>>>,
+pub struct Threads<'i, C: CodeLabel> {
+    queue: BinaryHeap<Call<'i, Continuation<'i, C>>>,
+    seen: BTreeSet<Call<'i, Continuation<'i, C>>>,
 }
 
-impl<'id, C: CodeLabel> Threads<'id, C> {
-    pub fn spawn(&mut self, next: Continuation<'id, C>, range: Range<'id>) {
+impl<'i, C: CodeLabel> Threads<'i, C> {
+    pub fn spawn(&mut self, next: Continuation<'i, C>, range: Range<'i>) {
         let t = Call {
             callee: next,
             range,
@@ -71,7 +71,7 @@ impl<'id, C: CodeLabel> Threads<'id, C> {
             self.queue.push(t);
         }
     }
-    pub fn steal(&mut self) -> Option<Call<'id, Continuation<'id, C>>> {
+    pub fn steal(&mut self) -> Option<Call<'i, Continuation<'i, C>>> {
         if let Some(t) = self.queue.pop() {
             loop {
                 let old = self.seen.iter().rev().next().cloned();
@@ -93,19 +93,19 @@ impl<'id, C: CodeLabel> Threads<'id, C> {
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Continuation<'id, C: CodeLabel> {
+pub struct Continuation<'i, C: CodeLabel> {
     pub code: C,
-    pub frame: Call<'id, C>,
+    pub frame: Call<'i, C>,
     pub state: usize,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub struct Call<'id, C> {
+pub struct Call<'i, C> {
     pub callee: C,
-    pub range: Range<'id>,
+    pub range: Range<'i>,
 }
 
-impl<'id, C: fmt::Display> fmt::Display for Call<'id, C> {
+impl<'i, C: fmt::Display> fmt::Display for Call<'i, C> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
@@ -117,24 +117,24 @@ impl<'id, C: fmt::Display> fmt::Display for Call<'id, C> {
     }
 }
 
-impl<'id, C: PartialOrd> PartialOrd for Call<'id, C> {
+impl<'i, C: PartialOrd> PartialOrd for Call<'i, C> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         (Reverse(self.range), &self.callee).partial_cmp(&(Reverse(other.range), &other.callee))
     }
 }
 
-impl<'id, C: Ord> Ord for Call<'id, C> {
+impl<'i, C: Ord> Ord for Call<'i, C> {
     fn cmp(&self, other: &Self) -> Ordering {
         (Reverse(self.range), &self.callee).cmp(&(Reverse(other.range), &other.callee))
     }
 }
 
-pub struct CallNode<'id, C: CodeLabel> {
-    returns: BTreeSet<Continuation<'id, C>>,
+pub struct CallNode<'i, C: CodeLabel> {
+    returns: BTreeSet<Continuation<'i, C>>,
     lengths: BTreeSet<usize>,
 }
 
-impl<'id, C: CodeLabel> CallNode<'id, C> {
+impl<'i, C: CodeLabel> CallNode<'i, C> {
     pub fn new() -> Self {
         CallNode {
             returns: BTreeSet::new(),
@@ -143,12 +143,12 @@ impl<'id, C: CodeLabel> CallNode<'id, C> {
     }
 }
 
-pub struct CallGraph<'id, C: CodeLabel> {
-    pub threads: Threads<'id, C>,
-    pub calls: HashMap<Call<'id, C>, CallNode<'id, C>>,
+pub struct CallGraph<'i, C: CodeLabel> {
+    pub threads: Threads<'i, C>,
+    pub calls: HashMap<Call<'i, C>, CallNode<'i, C>>,
 }
 
-impl<'id, C: CodeLabel> CallGraph<'id, C> {
+impl<'i, C: CodeLabel> CallGraph<'i, C> {
     pub fn print(&self, out: &mut Write) -> io::Result<()> {
         writeln!(out, "digraph gss {{")?;
         writeln!(out, "    graph [rankdir=RL]")?;
@@ -165,18 +165,18 @@ impl<'id, C: CodeLabel> CallGraph<'id, C> {
     }
     pub fn results<'a>(
         &'a self,
-        call: Call<'id, C>,
-    ) -> impl DoubleEndedIterator<Item = Range<'id>> + 'a {
+        call: Call<'i, C>,
+    ) -> impl DoubleEndedIterator<Item = Range<'i>> + 'a {
         self.calls.get(&call).into_iter().flat_map(move |node| {
             node.lengths
                 .iter()
                 .map(move |&len| Range(call.range.split_at(len).0))
         })
     }
-    pub fn longest_result(&self, call: Call<'id, C>) -> Option<Range<'id>> {
+    pub fn longest_result(&self, call: Call<'i, C>) -> Option<Range<'i>> {
         self.results(call).rev().next()
     }
-    pub fn call(&mut self, call: Call<'id, C>, next: Continuation<'id, C>) {
+    pub fn call(&mut self, call: Call<'i, C>, next: Continuation<'i, C>) {
         let node = self.calls.entry(call).or_insert(CallNode::new());
         if node.returns.insert(next) {
             if node.returns.len() > 1 {
@@ -195,7 +195,7 @@ impl<'id, C: CodeLabel> CallGraph<'id, C> {
             }
         }
     }
-    pub fn ret(&mut self, call: Call<'id, C>, remaining: Range<'id>) {
+    pub fn ret(&mut self, call: Call<'i, C>, remaining: Range<'i>) {
         let node = self.calls.entry(call).or_insert(CallNode::new());
         if node.lengths
             .insert(call.range.subtract_suffix(remaining).len())
@@ -207,12 +207,12 @@ impl<'id, C: CodeLabel> CallGraph<'id, C> {
     }
 }
 
-pub struct ParseGraph<'id, P: ParseLabel> {
-    pub children: HashMap<ParseNode<'id, P>, BTreeSet<usize>>,
+pub struct ParseGraph<'i, P: ParseLabel> {
+    pub children: HashMap<ParseNode<'i, P>, BTreeSet<usize>>,
 }
 
-impl<'id, P: ParseLabel> ParseGraph<'id, P> {
-    pub fn add(&mut self, l: P, range: Range<'id>, child: usize) {
+impl<'i, P: ParseLabel> ParseGraph<'i, P> {
+    pub fn add(&mut self, l: P, range: Range<'i>, child: usize) {
         self.children
             .entry(ParseNode { l: Some(l), range })
             .or_insert(BTreeSet::new())
@@ -221,8 +221,8 @@ impl<'id, P: ParseLabel> ParseGraph<'id, P> {
 
     pub fn choice_children<'a>(
         &'a self,
-        node: ParseNode<'id, P>,
-    ) -> impl Iterator<Item = ParseNode<'id, P>> + 'a {
+        node: ParseNode<'i, P>,
+    ) -> impl Iterator<Item = ParseNode<'i, P>> + 'a {
         match node.l.unwrap().kind() {
             ParseLabelKind::Choice => self.children[&node].iter().map(move |&i| ParseNode {
                 l: Some(P::from_usize(i)),
@@ -234,8 +234,8 @@ impl<'id, P: ParseLabel> ParseGraph<'id, P> {
 
     pub fn unary_children<'a>(
         &'a self,
-        node: ParseNode<'id, P>,
-    ) -> impl Iterator<Item = ParseNode<'id, P>> + 'a {
+        node: ParseNode<'i, P>,
+    ) -> impl Iterator<Item = ParseNode<'i, P>> + 'a {
         match node.l.unwrap().kind() {
             ParseLabelKind::Unary(l) => self.children[&node].iter().map(move |&i| {
                 assert_eq!(i, 0);
@@ -250,8 +250,8 @@ impl<'id, P: ParseLabel> ParseGraph<'id, P> {
 
     pub fn binary_children<'a>(
         &'a self,
-        node: ParseNode<'id, P>,
-    ) -> impl Iterator<Item = (ParseNode<'id, P>, ParseNode<'id, P>)> + 'a {
+        node: ParseNode<'i, P>,
+    ) -> impl Iterator<Item = (ParseNode<'i, P>, ParseNode<'i, P>)> + 'a {
         match node.l.unwrap().kind() {
             ParseLabelKind::Binary(left_l, right_l) => self.children[&node].iter().map(move |&i| {
                 let (left, right, _) = node.range.split_at(i);
@@ -324,18 +324,18 @@ impl<'id, P: ParseLabel> ParseGraph<'id, P> {
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ParseNode<'id, P: ParseLabel> {
+pub struct ParseNode<'i, P: ParseLabel> {
     pub l: Option<P>,
-    pub range: Range<'id>,
+    pub range: Range<'i>,
 }
 
-impl<'id, P: ParseLabel> ParseNode<'id, P> {
-    pub fn terminal(range: Range<'id>) -> ParseNode<'id, P> {
+impl<'i, P: ParseLabel> ParseNode<'i, P> {
+    pub fn terminal(range: Range<'i>) -> ParseNode<'i, P> {
         ParseNode { l: None, range }
     }
 }
 
-impl<'id, P: ParseLabel> fmt::Display for ParseNode<'id, P> {
+impl<'i, P: ParseLabel> fmt::Display for ParseNode<'i, P> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         if let Some(l) = self.l {
             write!(f, "{} @ {}..{}", l, self.range.start(), self.range.end())
@@ -348,7 +348,7 @@ impl<'id, P: ParseLabel> fmt::Display for ParseNode<'id, P> {
 impl<'a, P: ParseLabel, C: CodeLabel, I: Trustworthy> Parser<'a, P, C, I> {
     pub fn with<F, R>(input: I, f: F) -> R
     where
-        F: for<'id> FnOnce(Parser<'id, P, C, I>) -> R,
+        F: for<'i> FnOnce(Parser<'i, P, C, I>) -> R,
     {
         scope(input, |input| {
             f(Parser {

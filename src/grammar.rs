@@ -250,36 +250,36 @@ use self::gll::{Call, Continuation, ParseLabel, CodeLabel, ParseLabelKind, Parse
 use std::fmt;
 use std::marker::PhantomData;
 
-pub type Parser<'a, 'id> = gll::Parser<'id, _P, _C, &'a [u8]>;
+pub type Parser<'a, 'i> = gll::Parser<'i, _P, _C, &'a [u8]>;
 
 #[derive(Debug)]
 pub struct Ambiguity;
 
-pub struct Handle<'a, 'b: 'a, 'id: 'a, T> {
-    pub span: Range<'id>,
-    pub parser: &'a Parser<'b, 'id>,
+pub struct Handle<'a, 'b: 'a, 'i: 'a, T> {
+    pub span: Range<'i>,
+    pub parser: &'a Parser<'b, 'i>,
     _marker: PhantomData<T>,
 }
 
-impl<'a, 'b, 'id, T> Copy for Handle<'a, 'b, 'id, T> {}
+impl<'a, 'b, 'i, T> Copy for Handle<'a, 'b, 'i, T> {}
 
-impl<'a, 'b, 'id, T> Clone for Handle<'a, 'b, 'id, T> {
+impl<'a, 'b, 'i, T> Clone for Handle<'a, 'b, 'i, T> {
     fn clone(&self) -> Self {
         *self
     }
 }
 
-pub struct Terminal<'a, 'b: 'a, 'id: 'a> {
-    _marker: PhantomData<(&'a (), &'b (), &'id ())>,
+pub struct Terminal<'a, 'b: 'a, 'i: 'a> {
+    _marker: PhantomData<(&'a (), &'b (), &'i ())>,
 }
 
-impl<'a, 'b, 'id> fmt::Debug for Terminal<'a, 'b, 'id> {
+impl<'a, 'b, 'i> fmt::Debug for Terminal<'a, 'b, 'i> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct(\"\").finish()
     }
 }
 
-impl<'a, 'b, 'id> fmt::Debug for Handle<'a, 'b, 'id, Terminal<'a, 'b, 'id>> {
+impl<'a, 'b, 'i> fmt::Debug for Handle<'a, 'b, 'i, Terminal<'a, 'b, 'i>> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
@@ -293,7 +293,7 @@ impl<'a, 'b, 'id> fmt::Debug for Handle<'a, 'b, 'id, Terminal<'a, 'b, 'id>> {
         for (name, rule) in &self.rules {
             put!("
 
-pub struct ", name, "<'a, 'b: 'a, 'id: 'a> {");
+pub struct ", name, "<'a, 'b: 'a, 'i: 'a> {");
             for (field_name, path) in &rule.fields {
                 let refutable = rule.rule.field_is_refutable(path);
                 put!("
@@ -301,7 +301,7 @@ pub struct ", name, "<'a, 'b: 'a, 'id: 'a> {");
                 if refutable {
                     put!("Option<");
                 }
-                put!("Handle<'a, 'b, 'id, ", rule.rule.field_type(path), "<'a, 'b, 'id>>");
+                put!("Handle<'a, 'b, 'i, ", rule.rule.field_type(path), "<'a, 'b, 'i>>");
                 if refutable {
                     put!(">");
                 }
@@ -309,12 +309,12 @@ pub struct ", name, "<'a, 'b: 'a, 'id: 'a> {");
             }
             if rule.fields.is_empty() {
                 put!("
-    _marker: PhantomData<(&'a (), &'b (), &'id ())>,");
+    _marker: PhantomData<(&'a (), &'b (), &'i ())>,");
             }
             put!("
 }
 
-impl<'a, 'b, 'id> fmt::Debug for ", name, "<'a, 'b, 'id> {
+impl<'a, 'b, 'i> fmt::Debug for ", name, "<'a, 'b, 'i> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let mut d = f.debug_struct(\"", name,"\");");
         for (field_name, path) in &rule.fields {
@@ -333,7 +333,7 @@ impl<'a, 'b, 'id> fmt::Debug for ", name, "<'a, 'b, 'id> {
     }
 }
 
-impl<'a, 'b, 'id> fmt::Debug for Handle<'a, 'b, 'id, ", name, "<'a, 'b, 'id>> {
+impl<'a, 'b, 'i> fmt::Debug for Handle<'a, 'b, 'i, ", name, "<'a, 'b, 'i>> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
@@ -351,8 +351,8 @@ impl<'a, 'b, 'id> fmt::Debug for Handle<'a, 'b, 'id, ", name, "<'a, 'b, 'id>> {
     }
 }
 
-impl<'a, 'b, 'id> Handle<'a, 'b, 'id, ", name, "<'a, 'b, 'id>> {
-    pub fn one(self) -> Result<", name, "<'a, 'b, 'id>, Ambiguity> {
+impl<'a, 'b, 'i> Handle<'a, 'b, 'i, ", name, "<'a, 'b, 'i>> {
+    pub fn one(self) -> Result<", name, "<'a, 'b, 'i>, Ambiguity> {
         let mut iter = self.many();
         let first = iter.next().unwrap();
         if iter.next().is_none() {
@@ -361,7 +361,7 @@ impl<'a, 'b, 'id> Handle<'a, 'b, 'id, ", name, "<'a, 'b, 'id>> {
             Err(Ambiguity)
         }
     }
-    pub fn many(self) -> impl Iterator<Item = ", name, "<'a, 'b, 'id>> {
+    pub fn many(self) -> impl Iterator<Item = ", name, "<'a, 'b, 'i>> {
         let node = ParseNode { l: Some(", ParseLabel(name.clone()), "), range: self.span };
         self.parser.sppf.unary_children(node).flat_map(move |node| {
             ", rule.rule.generate_traverse("node", false, &mut parse_labels), "
@@ -400,8 +400,8 @@ impl<'a, 'b, 'id> Handle<'a, 'b, 'id, ", name, "<'a, 'b, 'id>> {
     }
 }
 
-impl<'a, 'b, 'id> ", name, "<'a, 'b, 'id> {
-    pub fn parse(p: &'a mut Parser<'b, 'id>) -> Result<Handle<'a, 'b, 'id, Self>, ()> {
+impl<'a, 'b, 'i> ", name, "<'a, 'b, 'i> {
+    pub fn parse(p: &'a mut Parser<'b, 'i>) -> Result<Handle<'a, 'b, 'i, Self>, ()> {
         let call = Call {
             callee: ", CodeLabel(name.clone()), ",
             range: Range(p.input.range()),
