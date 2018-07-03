@@ -23,6 +23,15 @@ fn main() {
     };
     gll10_g0.generate(&mut File::create(&out_dir.join("gll10_g0.rs")).unwrap());
 
+    let mut gll10_g0_opaque = grammar!{
+        S = { {a: A} {s0: S} 'd' }
+          | { {b: B} {s1: S} }
+          | {};
+        A = 'a' | 'c';
+        B = 'a' | 'b';
+    };
+    gll10_g0_opaque.generate(&mut File::create(&out_dir.join("gll10_g0_opaque.rs")).unwrap());
+
     let mut gll13_g1 = grammar!{
         S = { {a0: 'a'} {s: S} {b0: 'b'} }
           | {d0: 'd'}

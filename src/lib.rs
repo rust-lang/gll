@@ -214,7 +214,7 @@ pub struct ParseGraph<'i, P: ParseLabel> {
 impl<'i, P: ParseLabel> ParseGraph<'i, P> {
     pub fn add(&mut self, l: P, range: Range<'i>, child: usize) {
         self.children
-            .entry(ParseNode { l: Some(l), range })
+            .entry(ParseNode { l, range })
             .or_insert(BTreeSet::new())
             .insert(child);
     }
@@ -223,9 +223,9 @@ impl<'i, P: ParseLabel> ParseGraph<'i, P> {
         &'a self,
         node: ParseNode<'i, P>,
     ) -> impl Iterator<Item = ParseNode<'i, P>> + 'a {
-        match node.l.unwrap().kind() {
+        match node.l.kind() {
             ParseLabelKind::Choice => self.children[&node].iter().map(move |&i| ParseNode {
-                l: Some(P::from_usize(i)),
+                l: P::from_usize(i),
                 range: node.range,
             }),
             _ => unreachable!(),
@@ -236,7 +236,7 @@ impl<'i, P: ParseLabel> ParseGraph<'i, P> {
         &'a self,
         node: ParseNode<'i, P>,
     ) -> impl Iterator<Item = ParseNode<'i, P>> + 'a {
-        match node.l.unwrap().kind() {
+        match node.l.kind() {
             ParseLabelKind::Unary(l) => self.children[&node].iter().map(move |&i| {
                 assert_eq!(i, 0);
                 ParseNode {
@@ -252,7 +252,7 @@ impl<'i, P: ParseLabel> ParseGraph<'i, P> {
         &'a self,
         node: ParseNode<'i, P>,
     ) -> impl Iterator<Item = (ParseNode<'i, P>, ParseNode<'i, P>)> + 'a {
-        match node.l.unwrap().kind() {
+        match node.l.kind() {
             ParseLabelKind::Binary(left_l, right_l) => self.children[&node].iter().map(move |&i| {
                 let (left, right, _) = node.range.split_at(i);
                 (
@@ -275,10 +275,12 @@ impl<'i, P: ParseLabel> ParseGraph<'i, P> {
         let mut p = 0;
         for (source, children) in &self.children {
             writeln!(out, "    {:?} [shape=box]", source.to_string())?;
-            match source.l.unwrap().kind() {
+            match source.l.kind() {
+                ParseLabelKind::Opaque => {}
+
                 ParseLabelKind::Choice => for &child in children {
                     let child = ParseNode {
-                        l: Some(P::from_usize(child)),
+                        l: P::from_usize(child),
                         range: source.range,
                     };
                     writeln!(out, r#"    p{} [label="" shape=point]"#, p)?;
@@ -325,23 +327,19 @@ impl<'i, P: ParseLabel> ParseGraph<'i, P> {
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ParseNode<'i, P: ParseLabel> {
-    pub l: Option<P>,
+    pub l: P,
     pub range: Range<'i>,
-}
-
-impl<'i, P: ParseLabel> ParseNode<'i, P> {
-    pub fn terminal(range: Range<'i>) -> ParseNode<'i, P> {
-        ParseNode { l: None, range }
-    }
 }
 
 impl<'i, P: ParseLabel> fmt::Display for ParseNode<'i, P> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        if let Some(l) = self.l {
-            write!(f, "{} @ {}..{}", l, self.range.start(), self.range.end())
-        } else {
-            write!(f, "{}..{}", self.range.start(), self.range.end())
-        }
+        write!(
+            f,
+            "{} @ {}..{}",
+            self.l,
+            self.range.start(),
+            self.range.end()
+        )
     }
 }
 
@@ -370,8 +368,9 @@ impl<'a, P: ParseLabel, C: CodeLabel, I: Trustworthy> Parser<'a, P, C, I> {
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ParseLabelKind<P> {
-    Unary(Option<P>),
-    Binary(Option<P>, Option<P>),
+    Opaque,
+    Unary(P),
+    Binary(P, P),
     Choice,
 }
 
