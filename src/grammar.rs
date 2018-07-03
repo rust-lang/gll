@@ -107,17 +107,17 @@ pub enum Rule<A> {
 
 impl<A: Atom + Ord> Rule<A> {
     fn field_type(&self, path: &[usize]) -> &str {
-        match *self {
+        match self {
             Rule::Empty | Rule::Atom(_) => "Terminal",
-            Rule::Call(ref r) => r,
-            Rule::Concat(ref rules) => rules[path[0]].field_type(&path[1..]),
-            Rule::Or(ref rules) => rules[path[0]].field_type(&path[1..]),
+            Rule::Call(r) => r,
+            Rule::Concat(rules) => rules[path[0]].field_type(&path[1..]),
+            Rule::Or(rules) => rules[path[0]].field_type(&path[1..]),
         }
     }
     fn field_is_refutable(&self, path: &[usize]) -> bool {
-        match *self {
+        match self {
             Rule::Empty | Rule::Atom(_) | Rule::Call(_) => false,
-            Rule::Concat(ref rules) => rules[path[0]].field_is_refutable(&path[1..]),
+            Rule::Concat(rules) => rules[path[0]].field_is_refutable(&path[1..]),
             Rule::Or(..) => true,
         }
     }
@@ -125,14 +125,14 @@ impl<A: Atom + Ord> Rule<A> {
         self: &Rc<Self>,
         parse_labels: &RefCell<BTreeMap<Rc<Self>, (ParseLabel, ParseLabelKind<ParseLabel>)>>,
     ) -> ParseLabel {
-        if let Some(&(ref label, _)) = parse_labels.borrow().get(self) {
+        if let Some((label, _)) = parse_labels.borrow().get(self) {
             return label.clone();
         }
-        let (label, kind) = match **self {
+        let (label, kind) = match &**self {
             Rule::Empty => (ParseLabel("()".to_string()), ParseLabelKind::Opaque),
-            Rule::Atom(ref a) => (ParseLabel(a.to_label_description()), ParseLabelKind::Opaque),
-            Rule::Call(ref r) => return ParseLabel(r.clone()),
-            Rule::Concat([ref left, ref right]) => {
+            Rule::Atom(a) => (ParseLabel(a.to_label_description()), ParseLabelKind::Opaque),
+            Rule::Call(r) => return ParseLabel(r.clone()),
+            Rule::Concat([left, right]) => {
                 let left = left.parse_label(parse_labels);
                 let right = right.parse_label(parse_labels);
 
@@ -141,7 +141,7 @@ impl<A: Atom + Ord> Rule<A> {
                     ParseLabelKind::Binary(left, right),
                 )
             }
-            Rule::Or(ref rules) => {
+            Rule::Or(rules) => {
                 assert!(rules.len() > 1);
                 let mut s = String::from("(");
                 for (i, rule) in rules.iter().enumerate() {
@@ -485,7 +485,7 @@ pub enum _P {");
 }
 
 macro P {");
-        for (i, &(ref l, _)) in named_parse_labels.iter().chain(parse_labels.borrow().values()).enumerate() {
+        for (i, (l, _)) in named_parse_labels.iter().chain(parse_labels.borrow().values()).enumerate() {
             if i != 0 {
                 put!(",");
             }
@@ -498,7 +498,7 @@ macro P {");
 impl fmt::Display for _P {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let s = match *self {");
-        for &(ref l, _) in named_parse_labels.iter().chain(parse_labels.borrow().values()) {
+        for (l, _) in named_parse_labels.iter().chain(parse_labels.borrow().values()) {
             put!("
             ", l, " => \"", l.0.escape_default(), "\",");
         }
@@ -511,13 +511,13 @@ impl fmt::Display for _P {
 impl ParseLabel for _P {
     fn kind(self) -> ParseLabelKind<Self> {
         match self {");
-        for &(ref label, ref kind) in named_parse_labels.iter().chain(parse_labels.borrow().values()) {
+        for (label, kind) in named_parse_labels.iter().chain(parse_labels.borrow().values()) {
             put!("
                 ", label, " => ParseLabelKind::");
-            match *kind {
+            match kind {
                 ParseLabelKind::Opaque => put!("Opaque,"),
-                ParseLabelKind::Unary(ref inner) => put!("Unary(", inner, "),"),
-                ParseLabelKind::Binary(ref left, ref right) => put!("Binary(", left, ", ", right, "),"),
+                ParseLabelKind::Unary(inner) => put!("Unary(", inner, "),"),
+                ParseLabelKind::Binary(left, right) => put!("Binary(", left, ", ", right, "),"),
                 ParseLabelKind::Choice => put!("Choice,"),
             }
         }
@@ -773,8 +773,8 @@ impl<A: Atom + Ord> Rule<A> {
         parse_labels: Option<&'a RefCell<BTreeMap<Rc<Rule<A>>, (ParseLabel, ParseLabelKind<ParseLabel>)>>>
     ) -> Thunk<impl FnOnce(Continuation) -> Continuation + 'a> {
         Thunk::new(move |cont| match (&**self, parse_labels) {
-            (&Rule::Empty, _) => cont,
-            (&Rule::Atom(ref a), _) => {
+            (Rule::Empty, _) => cont,
+            (Rule::Atom(a), _) => {
                 let a = a.to_rust_slice();
                 (
                     check(&format!("p.input[_range.0].starts_with({})", a)) +
@@ -782,12 +782,12 @@ impl<A: Atom + Ord> Rule<A> {
                 let _range = Range(_range.split_at(", a, ".len()).1);")
                 )(cont)
             }
-            (&Rule::Call(ref r), _) => call(CodeLabel(r.clone()))(cont),
-            (&Rule::Concat([ref left, ref right]), None) => (
+            (Rule::Call(r), _) => call(CodeLabel(r.clone()))(cont),
+            (Rule::Concat([left, right]), None) => (
                 left.generate_parse(None) +
                 right.generate_parse(None)
             )(cont),
-            (&Rule::Concat([ref left, ref right]), Some(parse_labels)) => (
+            (Rule::Concat([left, right]), Some(parse_labels)) => (
                 thunk!("
                 assert_eq!(_range.start(), c.frame.range.start());") +
                 left.generate_parse(Some(parse_labels)) +
@@ -796,12 +796,12 @@ impl<A: Atom + Ord> Rule<A> {
                 pop_state(|state| thunk!("
                 p.sppf.add(", self.parse_label(parse_labels), ", c.frame.range.subtract_suffix(_range), ", state, ");"))
             )(cont),
-            (&Rule::Or(ref rules), None) => {
+            (Rule::Or(rules), None) => {
                 parallel(rules.iter().map(|rule| {
                     rule.generate_parse(None)
                 }))(cont)
             }
-            (&Rule::Or(ref rules), Some(parse_labels)) => (
+            (Rule::Or(rules), Some(parse_labels)) => (
                 thunk!("
                 assert_eq!(_range.start(), c.frame.range.start());") +
                 parallel(rules.iter().map(|rule| {
@@ -822,7 +822,7 @@ impl<A: Atom + Ord> Rule<A> {
         let mut out = String::new();
         macro put($($x:expr),*) {{ $(write!(out, "{}", $x).unwrap();)* }}
 
-        match *self {
+        match self {
             Rule::Empty | Rule::Atom(_) | Rule::Call(_) => {
                 put!("::std::iter::once(");
                 if refutable {
@@ -833,14 +833,14 @@ impl<A: Atom + Ord> Rule<A> {
                     put!(")");
                 }
             }
-            Rule::Concat([ref left, ref right]) => {
+            Rule::Concat([left, right]) => {
                 put!("self.parser.sppf.binary_children(", node, ").flat_map(move |(left, right)| {
             ", left.generate_traverse("left", refutable, parse_labels), ".flat_map(move |left| {
                 ", right.generate_traverse("right", refutable, parse_labels).replace("\n", "\n    "), ".map(move |right| (left, right))
             })
         })");
             }
-            Rule::Or(ref rules) => {
+            Rule::Or(rules) => {
                 put!("self.parser.sppf.choice_children(", node, ").flat_map(move |node| {
             enum Iter<");
                 for i in 0..rules.len() {
@@ -876,10 +876,10 @@ impl<A: Atom + Ord> Rule<A> {
                 put!(");
                 fn next(&mut self) -> Option<Self::Item> {
                     let mut r = Self::Item::default();
-                    match *self {");
+                    match self {");
                 for i in 0..rules.len() {
                     put!("
-                        Iter::_", i, "(ref mut it) => r.", i, " = it.next()?,");
+                        Iter::_", i, "(it) => r.", i, " = it.next()?,");
                 }
                     put!("
                     }
