@@ -782,40 +782,35 @@ impl<A: Atom + Ord> Rule<A> {
                 let _range = Range(_range.split_at(", a, ".len()).1);")
                 )(cont)
             }
-            (&Rule::Call(ref r), _) => {
-                call(CodeLabel(r.clone()))(cont)
-            }
-            (&Rule::Concat([ref left, ref right]), None) =>
-                (
-                    left.generate_parse(None) +
-                    right.generate_parse(None)
-                )(cont),
-            (&Rule::Concat([ref left, ref right]), Some(parse_labels)) =>
-                (
-                    thunk!("
+            (&Rule::Call(ref r), _) => call(CodeLabel(r.clone()))(cont),
+            (&Rule::Concat([ref left, ref right]), None) => (
+                left.generate_parse(None) +
+                right.generate_parse(None)
+            )(cont),
+            (&Rule::Concat([ref left, ref right]), Some(parse_labels)) => (
+                thunk!("
                 assert_eq!(_range.start(), c.frame.range.start());") +
-                    left.generate_parse(Some(parse_labels)) +
-                    push_state("c.frame.range.subtract_suffix(_range).len()") +
-                    right.generate_parse(Some(parse_labels)) +
-                    pop_state(|state| thunk!("
+                left.generate_parse(Some(parse_labels)) +
+                push_state("c.frame.range.subtract_suffix(_range).len()") +
+                right.generate_parse(Some(parse_labels)) +
+                pop_state(|state| thunk!("
                 p.sppf.add(", self.parse_label(parse_labels), ", c.frame.range.subtract_suffix(_range), ", state, ");"))
-                )(cont),
+            )(cont),
             (&Rule::Or(ref rules), None) => {
                 parallel(rules.iter().map(|rule| {
                     rule.generate_parse(None)
                 }))(cont)
             }
-            (&Rule::Or(ref rules), Some(parse_labels)) =>
-                (
-                    thunk!("
+            (&Rule::Or(ref rules), Some(parse_labels)) => (
+                thunk!("
                 assert_eq!(_range.start(), c.frame.range.start());") +
-                    parallel(rules.iter().map(|rule| {
-                        push_state(&format!("{}.to_usize()", rule.parse_label(parse_labels))) +
-                        rule.generate_parse(Some(parse_labels))
-                    })) +
-                    pop_state(|state| thunk!("
+                parallel(rules.iter().map(|rule| {
+                    push_state(&format!("{}.to_usize()", rule.parse_label(parse_labels))) +
+                    rule.generate_parse(Some(parse_labels))
+                })) +
+                pop_state(|state| thunk!("
                 p.sppf.add(", self.parse_label(parse_labels), ", c.frame.range.subtract_suffix(_range), ", state, ");"))
-                )(cont),
+            )(cont),
         })
     }
     fn generate_traverse(
