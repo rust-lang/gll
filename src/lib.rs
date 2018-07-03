@@ -1,5 +1,7 @@
-#![feature(arbitrary_self_types, conservative_impl_trait, decl_macro, fn_traits, from_ref, nll,
-           slice_patterns, str_escape, unboxed_closures, universal_impl_trait)]
+#![feature(
+    arbitrary_self_types, decl_macro, fn_traits, from_ref, nll, slice_patterns, str_escape,
+    unboxed_closures
+)]
 
 extern crate indexing;
 extern crate ordermap;
@@ -197,7 +199,8 @@ impl<'i, C: CodeLabel> CallGraph<'i, C> {
     }
     pub fn ret(&mut self, call: Call<'i, C>, remaining: Range<'i>) {
         let node = self.calls.entry(call).or_insert(CallNode::new());
-        if node.lengths
+        if node
+            .lengths
             .insert(call.range.subtract_suffix(remaining).len())
         {
             for &next in &node.returns {

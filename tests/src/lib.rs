@@ -1,9 +1,9 @@
-#![feature(conservative_impl_trait, decl_macro)]
+#![feature(decl_macro)]
 
 use std::fs::File;
 
 macro_rules! testcase {
-    ($name: ident:: $rule: ident($input: expr) => $expected: expr) => {
+    ($name:ident:: $rule:ident($input:expr) => $expected:expr) => {
         pub mod $name {
             include!(concat!(env!("OUT_DIR"), "/", stringify!($name), ".rs"));
         }
