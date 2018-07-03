@@ -13,7 +13,7 @@ use std::collections::{BTreeSet, BinaryHeap, HashMap};
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::io::{self, Write};
-use std::ops::Deref;
+use std::ops::{Deref, Index};
 
 pub mod grammar;
 
@@ -53,9 +53,39 @@ impl<'i> Range<'i> {
 }
 
 pub struct Parser<'i, P: ParseLabel, C: CodeLabel, I> {
-    pub input: Container<'i, I>,
+    input: Container<'i, I>,
     pub gss: CallGraph<'i, C>,
     pub sppf: ParseGraph<'i, P>,
+}
+
+impl<'i, P: ParseLabel, C: CodeLabel, I: Trustworthy> Parser<'i, P, C, I> {
+    pub fn with<R>(input: I, f: impl for<'i2> FnOnce(Parser<'i2, P, C, I>, Range<'i2>) -> R) -> R {
+        scope(input, |input| {
+            let range = input.range();
+            f(
+                Parser {
+                    input,
+                    gss: CallGraph {
+                        threads: Threads {
+                            queue: BinaryHeap::new(),
+                            seen: BTreeSet::new(),
+                        },
+                        calls: HashMap::new(),
+                    },
+                    sppf: ParseGraph {
+                        children: HashMap::new(),
+                    },
+                },
+                Range(range),
+            )
+        })
+    }
+    pub fn input<O: ?Sized>(&self, range: Range<'i>) -> &O
+    where
+        Container<'i, I>: Index<indexing::Range<'i>, Output = O>,
+    {
+        &self.input[range.0]
+    }
 }
 
 pub struct Threads<'i, C: CodeLabel> {
@@ -343,29 +373,6 @@ impl<'i, P: ParseLabel> fmt::Display for ParseNode<'i, P> {
             self.range.start(),
             self.range.end()
         )
-    }
-}
-
-impl<'a, P: ParseLabel, C: CodeLabel, I: Trustworthy> Parser<'a, P, C, I> {
-    pub fn with<F, R>(input: I, f: F) -> R
-    where
-        F: for<'i> FnOnce(Parser<'i, P, C, I>) -> R,
-    {
-        scope(input, |input| {
-            f(Parser {
-                input,
-                gss: CallGraph {
-                    threads: Threads {
-                        queue: BinaryHeap::new(),
-                        seen: BTreeSet::new(),
-                    },
-                    calls: HashMap::new(),
-                },
-                sppf: ParseGraph {
-                    children: HashMap::new(),
-                },
-            })
-        })
     }
 }
 

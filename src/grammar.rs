@@ -311,10 +311,10 @@ pub struct ", name, "<'a, 'b: 'a, 'i: 'a> {");
 }
 
 impl<'a, 'b, 'i> ", name, "<'a, 'b, 'i> {
-    pub fn parse(p: &'a mut Parser<'b, 'i>) -> Result<Handle<'a, 'b, 'i, Self>, ()> {
+    pub fn parse(p: &'a mut Parser<'b, 'i>, range: Range<'i>) -> Result<Handle<'a, 'b, 'i, Self>, ()> {
         let call = Call {
             callee: ", CodeLabel(name.clone()), ",
-            range: Range(p.input.range()),
+            range,
         };
         if !p.gss.calls.contains_key(&call) {
             p.gss.threads.spawn(
@@ -777,7 +777,7 @@ impl<A: Atom + Ord> Rule<A> {
             (Rule::Atom(a), _) => {
                 let a = a.to_rust_slice();
                 (
-                    check(&format!("p.input[_range.0].starts_with({})", a)) +
+                    check(&format!("p.input(_range).starts_with({})", a)) +
                     thunk!("
                 let _range = Range(_range.split_at(", a, ".len()).1);")
                 )(cont)
