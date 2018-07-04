@@ -6,14 +6,15 @@
 extern crate indexing;
 extern crate ordermap;
 
-use indexing::container_traits::Trustworthy;
+use indexing::container_traits::{Contiguous, Trustworthy};
 use indexing::{scope, Container};
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BTreeSet, BinaryHeap, HashMap};
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::io::{self, Write};
-use std::ops::{Deref, Index};
+use std::ops::Deref;
+use std::str;
 
 pub mod grammar;
 
@@ -52,6 +53,46 @@ impl<'i> Range<'i> {
     }
 }
 
+pub struct Str(str);
+
+unsafe impl Trustworthy for Str {
+    type Item = u8;
+    fn base_len(&self) -> usize {
+        self.0.len()
+    }
+}
+
+unsafe impl Contiguous for Str {
+    fn begin(&self) -> *const Self::Item {
+        self.0.as_ptr()
+    }
+    fn end(&self) -> *const Self::Item {
+        unsafe { self.begin().offset(self.0.len() as isize) }
+    }
+    fn as_slice(&self) -> &[Self::Item] {
+        self.0.as_bytes()
+    }
+}
+
+pub trait InputSlice: Sized {
+    type Slice: ?Sized;
+    fn slice<'a, 'i>(input: &'a Container<'i, Self>, range: Range<'i>) -> &'a Self::Slice;
+}
+
+impl<'a, T> InputSlice for &'a [T] {
+    type Slice = [T];
+    fn slice<'b, 'i>(input: &'b Container<'i, Self>, range: Range<'i>) -> &'b Self::Slice {
+        &input[range.0]
+    }
+}
+
+impl<'a> InputSlice for &'a Str {
+    type Slice = str;
+    fn slice<'b, 'i>(input: &'b Container<'i, Self>, range: Range<'i>) -> &'b Self::Slice {
+        unsafe { str::from_utf8_unchecked(&input[range.0]) }
+    }
+}
+
 pub struct Parser<'i, P: ParseLabel, C: CodeLabel, I> {
     input: Container<'i, I>,
     pub gss: CallGraph<'i, C>,
@@ -80,11 +121,21 @@ impl<'i, P: ParseLabel, C: CodeLabel, I: Trustworthy> Parser<'i, P, C, I> {
             )
         })
     }
-    pub fn input<O: ?Sized>(&self, range: Range<'i>) -> &O
+    pub fn input(&self, range: Range<'i>) -> &I::Slice
     where
-        Container<'i, I>: Index<indexing::Range<'i>, Output = O>,
+        I: InputSlice,
     {
-        &self.input[range.0]
+        I::slice(&self.input, range)
+    }
+}
+
+impl<'a, 'i, P: ParseLabel, C: CodeLabel> Parser<'i, P, C, &'a Str> {
+    pub fn with_str<R>(
+        input: &'a str,
+        f: impl for<'i2> FnOnce(Parser<'i2, P, C, &'a Str>, Range<'i2>) -> R,
+    ) -> R {
+        let input = unsafe { &*(input as *const _ as *const Str) };
+        Parser::with(input, f)
     }
 }
 

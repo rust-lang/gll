@@ -174,7 +174,7 @@ impl Atom for str {
         format!("\"{}\"", self.escape_default())
     }
     fn to_rust_slice(&self) -> String {
-        format!("{:?}.as_bytes()", self)
+        format!("{:?}", self)
     }
 }
 
@@ -247,7 +247,7 @@ use self::gll::{Call, Continuation, ParseLabel, CodeLabel, ParseLabelKind, Parse
 use std::fmt;
 use std::marker::PhantomData;
 
-pub type Parser<'a, 'i> = gll::Parser<'i, _P, _C, &'a [u8]>;
+pub type Parser<'a, 'i> = gll::Parser<'i, _P, _C, &'a gll::Str>;
 
 #[derive(Debug)]
 pub struct Ambiguity;

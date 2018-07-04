@@ -10,7 +10,7 @@ macro_rules! testcase {
 
         #[test]
         fn $name() {
-            $name::Parser::with($input, |mut parser, range| {
+            $name::Parser::with_str($input, |mut parser, range| {
                 let result = format!("{:#?}", $name::$rule::parse(&mut parser, range).unwrap());
                 assert!(
                     result == $expected,
@@ -37,7 +37,7 @@ macro_rules! testcase {
     };
 }
 
-testcase!(gll10_g0::S(b"aad") => "\
+testcase!(gll10_g0::S("aad") => "\
 0..3 => S {
     b: 0..1 => B {
         a: 0..1
@@ -61,7 +61,7 @@ testcase!(gll10_g0::S(b"aad") => "\
     },
     d: 2..3
 }");
-testcase!(gll10_g0_opaque::S(b"aad") => "\
+testcase!(gll10_g0_opaque::S("aad") => "\
 0..3 => S {
     b: 0..1,
     s1: 1..3 => S {
@@ -75,7 +75,7 @@ testcase!(gll10_g0_opaque::S(b"aad") => "\
         s1: 2..2 => S
     }
 }");
-testcase!(gll13_g1::S(b"adb") => "\
+testcase!(gll13_g1::S("adb") => "\
 0..3 => S {
     a1: 0..1,
     d1: 1..2,
@@ -87,7 +87,7 @@ testcase!(gll13_g1::S(b"adb") => "\
     },
     b0: 2..3
 }");
-testcase!(gll15_g0::A(b"aac") => "\
+testcase!(gll15_g0::A("aac") => "\
 0..3 => A {
     a2: 0..1,
     a3: 1..2 => A {
@@ -95,7 +95,7 @@ testcase!(gll15_g0::A(b"aac") => "\
     },
     c: 2..3
 }");
-testcase!(gll15_g0_nested::A(b"aab") => "\
+testcase!(gll15_g0_nested::A("aab") => "\
 0..3 => A {
     a0: 0..1,
     a1: 1..2 => A {
