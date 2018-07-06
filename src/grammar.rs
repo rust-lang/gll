@@ -5,40 +5,40 @@ use std::fmt;
 use std::fmt::Write as FmtWrite;
 use std::io::Write;
 use std::mem;
-use std::ops::Add;
+use std::ops::{Add, RangeInclusive};
 use std::rc::Rc;
 use ParseLabelKind;
 
-pub struct Grammar<A> {
-    rules: OrderMap<String, RuleWithNamedFields<A>>,
+pub struct Grammar<Pat> {
+    rules: OrderMap<String, RuleWithNamedFields<Pat>>,
 }
 
-impl<A> Grammar<A> {
+impl<Pat> Grammar<Pat> {
     pub fn new() -> Self {
         Grammar {
             rules: OrderMap::new(),
         }
     }
-    pub fn add_rule(&mut self, name: &str, rule: RuleWithNamedFields<A>) {
+    pub fn add_rule(&mut self, name: &str, rule: RuleWithNamedFields<Pat>) {
         self.rules.insert(name.to_string(), rule);
     }
 }
 
-pub struct RuleWithNamedFields<A> {
-    rule: Rc<Rule<A>>,
+pub struct RuleWithNamedFields<Pat> {
+    rule: Rc<Rule<Pat>>,
     fields: OrderMap<String, Vec<usize>>,
 }
 
-impl<A: Clone + fmt::Debug + PartialEq> RuleWithNamedFields<A> {
+impl<Pat: PartialEq> RuleWithNamedFields<Pat> {
     pub fn empty() -> Self {
         RuleWithNamedFields {
             rule: Rc::new(Rule::Empty),
             fields: OrderMap::new(),
         }
     }
-    pub fn atom(atom: A) -> Self {
+    pub fn match_(pat: Pat) -> Self {
         RuleWithNamedFields {
-            rule: Rc::new(Rule::Atom(atom)),
+            rule: Rc::new(Rule::Match(pat)),
             fields: OrderMap::new(),
         }
     }
@@ -70,7 +70,7 @@ impl<A: Clone + fmt::Debug + PartialEq> RuleWithNamedFields<A> {
     }
     pub fn with_field_name(mut self, name: &str) -> Self {
         match *self.rule {
-            Rule::Atom(_) | Rule::Call(_) => {}
+            Rule::Match(_) | Rule::Call(_) => {}
             _ => unimplemented!(),
         }
         self.fields.insert(name.to_string(), vec![]);
@@ -97,18 +97,18 @@ impl<A: Clone + fmt::Debug + PartialEq> RuleWithNamedFields<A> {
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Rule<A> {
+pub enum Rule<Pat> {
     Empty,
-    Atom(A),
+    Match(Pat),
     Call(String),
-    Concat([Rc<Rule<A>>; 2]),
-    Or(Vec<Rc<Rule<A>>>),
+    Concat([Rc<Rule<Pat>>; 2]),
+    Or(Vec<Rc<Rule<Pat>>>),
 }
 
-impl<A: Atom + Ord> Rule<A> {
+impl<Pat: Ord + ToRustSrc> Rule<Pat> {
     fn field_type(&self, path: &[usize]) -> &str {
         match self {
-            Rule::Empty | Rule::Atom(_) => "Terminal",
+            Rule::Empty | Rule::Match(_) => "Terminal",
             Rule::Call(r) => r,
             Rule::Concat(rules) => rules[path[0]].field_type(&path[1..]),
             Rule::Or(rules) => rules[path[0]].field_type(&path[1..]),
@@ -116,7 +116,7 @@ impl<A: Atom + Ord> Rule<A> {
     }
     fn field_is_refutable(&self, path: &[usize]) -> bool {
         match self {
-            Rule::Empty | Rule::Atom(_) | Rule::Call(_) => false,
+            Rule::Empty | Rule::Match(_) | Rule::Call(_) => false,
             Rule::Concat(rules) => rules[path[0]].field_is_refutable(&path[1..]),
             Rule::Or(..) => true,
         }
@@ -130,7 +130,7 @@ impl<A: Atom + Ord> Rule<A> {
         }
         let (label, kind) = match &**self {
             Rule::Empty => (ParseLabel("()".to_string()), ParseLabelKind::Opaque),
-            Rule::Atom(a) => (ParseLabel(a.to_label_description()), ParseLabelKind::Opaque),
+            Rule::Match(pat) => (ParseLabel(pat.to_rust_src()), ParseLabelKind::Opaque),
             Rule::Call(r) => return ParseLabel(r.clone()),
             Rule::Concat([left, right]) => {
                 let left = left.parse_label(parse_labels);
@@ -164,26 +164,34 @@ impl<A: Atom + Ord> Rule<A> {
     }
 }
 
-pub trait Atom {
-    fn to_label_description(&self) -> String;
-    fn to_rust_slice(&self) -> String;
+pub trait ToRustSrc {
+    fn to_rust_src(&self) -> String;
 }
 
-impl Atom for str {
-    fn to_label_description(&self) -> String {
-        format!("\"{}\"", self.escape_default())
-    }
-    fn to_rust_slice(&self) -> String {
-        format!("{:?}", self)
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Pat<S, C> {
+    String(S),
+    Range(C, C),
+}
+
+impl<'a> From<&'a str> for Pat<&'a str, char> {
+    fn from(s: &'a str) -> Self {
+        Pat::String(s)
     }
 }
 
-impl Atom for char {
-    fn to_label_description(&self) -> String {
-        self.to_string().to_label_description()
+impl<'a> From<RangeInclusive<char>> for Pat<&'a str, char> {
+    fn from(range: RangeInclusive<char>) -> Self {
+        Pat::Range(*range.start(), *range.end())
     }
-    fn to_rust_slice(&self) -> String {
-        self.to_string().to_rust_slice()
+}
+
+impl<S: fmt::Debug, C: fmt::Debug> ToRustSrc for Pat<S, C> {
+    fn to_rust_src(&self) -> String {
+        match self {
+            Pat::String(s) => format!("{:?}", s),
+            Pat::Range(start, end) => format!("{:?}", start..=end),
+        }
     }
 }
 
@@ -222,8 +230,8 @@ pub macro grammar {
     (@rule $rule:ident) => {
         RuleWithNamedFields::call(stringify!($rule).to_string())
     },
-    (@rule $atom:expr) => {
-        RuleWithNamedFields::atom($atom)
+    (@rule $pat:expr) => {
+        RuleWithNamedFields::match_(Pat::from($pat))
     },
     ($($rule_name:ident = $($rule:tt)|+;)*) => ({
         let mut grammar = Grammar::new();
@@ -233,7 +241,7 @@ pub macro grammar {
 }
 
 #[cfg_attr(rustfmt, rustfmt_skip)]
-impl<A: Atom + Ord> Grammar<A> {
+impl<Pat: Ord + ToRustSrc> Grammar<Pat> {
     pub fn generate(&mut self, out: &mut Write) {
         macro put($($x:expr),*) {{ $(write!(out, "{}", $x).unwrap();)* }}
 
@@ -767,20 +775,15 @@ fn reify_as(label: CodeLabel) -> Thunk<impl FnOnce(Continuation) -> Continuation
 }
 
 #[cfg_attr(rustfmt, rustfmt_skip)]
-impl<A: Atom + Ord> Rule<A> {
+impl<Pat: Ord + ToRustSrc> Rule<Pat> {
     fn generate_parse<'a>(
         self: &'a Rc<Self>,
-        parse_labels: Option<&'a RefCell<BTreeMap<Rc<Rule<A>>, (ParseLabel, ParseLabelKind<ParseLabel>)>>>
+        parse_labels: Option<&'a RefCell<BTreeMap<Rc<Rule<Pat>>, (ParseLabel, ParseLabelKind<ParseLabel>)>>>
     ) -> Thunk<impl FnOnce(Continuation) -> Continuation + 'a> {
         Thunk::new(move |cont| match (&**self, parse_labels) {
             (Rule::Empty, _) => cont,
-            (Rule::Atom(a), _) => {
-                let a = a.to_rust_slice();
-                (
-                    check(&format!("p.input(_range).starts_with({})", a)) +
-                    thunk!("
-                let _range = Range(_range.split_at(", a, ".len()).1);")
-                )(cont)
+            (Rule::Match(pat), _) => {
+                check(&format!("let Some(_range) = p.input_consume_left(_range, {})",pat.to_rust_src()))(cont)
             }
             (Rule::Call(r), _) => call(CodeLabel(r.clone()))(cont),
             (Rule::Concat([left, right]), None) => (
@@ -817,13 +820,13 @@ impl<A: Atom + Ord> Rule<A> {
         &self,
         node: &str,
         refutable: bool,
-        parse_labels: &RefCell<BTreeMap<Rc<Rule<A>>, (ParseLabel, ParseLabelKind<ParseLabel>)>>,
+        parse_labels: &RefCell<BTreeMap<Rc<Rule<Pat>>, (ParseLabel, ParseLabelKind<ParseLabel>)>>,
     ) -> String {
         let mut out = String::new();
         macro put($($x:expr),*) {{ $(write!(out, "{}", $x).unwrap();)* }}
 
         match self {
-            Rule::Empty | Rule::Atom(_) | Rule::Call(_) => {
+            Rule::Empty | Rule::Match(_) | Rule::Call(_) => {
                 put!("::std::iter::once(");
                 if refutable {
                     put!("Some(")

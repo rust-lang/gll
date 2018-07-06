@@ -1,6 +1,6 @@
 #![feature(
-    arbitrary_self_types, decl_macro, fn_traits, from_ref, nll, slice_patterns, str_escape,
-    unboxed_closures
+    arbitrary_self_types, decl_macro, fn_traits, from_ref, nll, range_contains, slice_patterns,
+    str_escape, unboxed_closures
 )]
 
 extern crate indexing;
@@ -13,7 +13,7 @@ use std::collections::{BTreeSet, BinaryHeap, HashMap};
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::io::{self, Write};
-use std::ops::Deref;
+use std::ops::{Deref, RangeInclusive};
 use std::str;
 
 pub mod grammar;
@@ -93,6 +93,81 @@ impl<'a> InputSlice for &'a Str {
     }
 }
 
+pub trait InputMatch<Pat> {
+    fn match_left(&self, pat: Pat) -> Option<usize>;
+    fn match_right(&self, pat: Pat) -> Option<usize>;
+}
+
+impl<'a, T: PartialEq> InputMatch<&'a [T]> for [T] {
+    fn match_left(&self, pat: &[T]) -> Option<usize> {
+        if self.starts_with(pat) {
+            Some(pat.len())
+        } else {
+            None
+        }
+    }
+    fn match_right(&self, pat: &[T]) -> Option<usize> {
+        if self.ends_with(pat) {
+            Some(pat.len())
+        } else {
+            None
+        }
+    }
+}
+
+impl<T: PartialOrd> InputMatch<RangeInclusive<T>> for [T] {
+    fn match_left(&self, pat: RangeInclusive<T>) -> Option<usize> {
+        if pat.contains(self.first()?) {
+            Some(1)
+        } else {
+            None
+        }
+    }
+    fn match_right(&self, pat: RangeInclusive<T>) -> Option<usize> {
+        if pat.contains(self.last()?) {
+            Some(1)
+        } else {
+            None
+        }
+    }
+}
+
+impl<'a> InputMatch<&'a str> for str {
+    fn match_left(&self, pat: &str) -> Option<usize> {
+        if self.starts_with(pat) {
+            Some(pat.len())
+        } else {
+            None
+        }
+    }
+    fn match_right(&self, pat: &str) -> Option<usize> {
+        if self.ends_with(pat) {
+            Some(pat.len())
+        } else {
+            None
+        }
+    }
+}
+
+impl InputMatch<RangeInclusive<char>> for str {
+    fn match_left(&self, pat: RangeInclusive<char>) -> Option<usize> {
+        let c = self.chars().next()?;
+        if pat.contains(&c) {
+            Some(c.len_utf8())
+        } else {
+            None
+        }
+    }
+    fn match_right(&self, pat: RangeInclusive<char>) -> Option<usize> {
+        let c = self.chars().rev().next()?;
+        if pat.contains(&c) {
+            Some(c.len_utf8())
+        } else {
+            None
+        }
+    }
+}
+
 pub struct Parser<'i, P: ParseLabel, C: CodeLabel, I> {
     input: Container<'i, I>,
     pub gss: CallGraph<'i, C>,
@@ -126,6 +201,24 @@ impl<'i, P: ParseLabel, C: CodeLabel, I: Trustworthy> Parser<'i, P, C, I> {
         I: InputSlice,
     {
         I::slice(&self.input, range)
+    }
+    pub fn input_consume_left<Pat>(&self, range: Range<'i>, pat: Pat) -> Option<Range<'i>>
+    where
+        I: InputSlice,
+        I::Slice: InputMatch<Pat>,
+    {
+        self.input(range)
+            .match_left(pat)
+            .map(|n| Range(range.split_at(n).1))
+    }
+    pub fn input_consume_right<Pat>(&self, range: Range<'i>, pat: Pat) -> Option<Range<'i>>
+    where
+        I: InputSlice,
+        I::Slice: InputMatch<Pat>,
+    {
+        self.input(range)
+            .match_right(pat)
+            .map(|n| Range(range.split_at(range.len() - n).0))
     }
 }
 
