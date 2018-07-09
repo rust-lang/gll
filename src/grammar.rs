@@ -225,28 +225,43 @@ impl fmt::Display for CodeLabel {
 }
 
 pub macro grammar {
-    (@rule { $name:ident : $rule:tt }) => {
-        grammar!(@rule $rule).with_field_name(stringify!($name))
+    (@rule_tok { $($rule:tt)* }) => {
+        grammar!(@rule [$($rule)*] () [])
     },
-    (@rule $rule0:tt | $($rule:tt)|+) => {
-        RuleWithNamedFields::or(vec![
-            grammar!(@rule $rule0),
-            $(grammar!(@rule $rule)),*
-        ])
-    },
-    (@rule { $($rule:tt)* }) => {
-        RuleWithNamedFields::empty()
-            $(.then(grammar!(@rule $rule)))*
-    },
-    (@rule $rule:ident) => {
+    (@rule_tok $rule:ident) => {
         RuleWithNamedFields::call(stringify!($rule).to_string())
     },
-    (@rule $pat:expr) => {
+    (@rule_tok $pat:expr) => {
         RuleWithNamedFields::match_(Pat::from($pat))
     },
-    ($($rule_name:ident = $($rule:tt)|+;)*) => ({
+    (@rule [] ($current:expr) []) => { $current },
+    (@rule [] ($current:expr) [$($rules:expr)+]) => {
+        RuleWithNamedFields::or(vec![$($rules,)+ $current])
+    },
+    (@rule [$($input:tt)*] () [$($rules:expr)*]) => {
+        grammar!(@rule [$($input)*] (RuleWithNamedFields::empty()) [$($rules)*])
+    },
+    (@rule [| $($input:tt)*] ($current:expr) [$($rules:expr)*]) => {
+        grammar!(@rule [$($input)*] () [$($rules)* $current])
+    },
+    (@rule [! $input0:tt $($input:tt)*] ($current:expr) [$($rules:expr)*]) => {
+        grammar!(@rule [$($input)*] ($current.then(
+            RuleWithNamedFields::not_match(Pat::from($input0))
+        )) [$($rules)*])
+    },
+    (@rule [$name:ident : $input0:tt $($input:tt)*] ($current:expr) [$($rules:expr)*]) => {
+        grammar!(@rule [$($input)*] ($current.then(
+            grammar!(@rule_tok $input0).with_field_name(stringify!($name))
+        )) [$($rules)*])
+    },
+    (@rule [$input0:tt $($input:tt)*] ($current:expr) [$($rules:expr)*]) => {
+        grammar!(@rule [$($input)*] ($current.then(
+            grammar!(@rule_tok $input0)
+        )) [$($rules)*])
+    },
+    ($($rule_name:ident = { $($rule:tt)* };)*) => ({
         let mut grammar = Grammar::new();
-        $(grammar.add_rule(stringify!($rule_name), grammar!(@rule $($rule)|+));)*
+        $(grammar.add_rule(stringify!($rule_name), grammar!(@rule_tok { $($rule)* }));)*
         grammar
     })
 }
