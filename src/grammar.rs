@@ -42,6 +42,12 @@ impl<Pat: PartialEq> RuleWithNamedFields<Pat> {
             fields: OrderMap::new(),
         }
     }
+    pub fn not_match(pat: Pat) -> Self {
+        RuleWithNamedFields {
+            rule: Rc::new(Rule::NotMatch(pat)),
+            fields: OrderMap::new(),
+        }
+    }
     pub fn call(call: String) -> Self {
         RuleWithNamedFields {
             rule: Rc::new(Rule::Call(call)),
@@ -100,6 +106,7 @@ impl<Pat: PartialEq> RuleWithNamedFields<Pat> {
 pub enum Rule<Pat> {
     Empty,
     Match(Pat),
+    NotMatch(Pat),
     Call(String),
     Concat([Rc<Rule<Pat>>; 2]),
     Or(Vec<Rc<Rule<Pat>>>),
@@ -108,7 +115,7 @@ pub enum Rule<Pat> {
 impl<Pat: Ord + ToRustSrc> Rule<Pat> {
     fn field_type(&self, path: &[usize]) -> &str {
         match self {
-            Rule::Empty | Rule::Match(_) => "Terminal",
+            Rule::Empty | Rule::Match(_) | Rule::NotMatch(_) => "Terminal",
             Rule::Call(r) => r,
             Rule::Concat(rules) => rules[path[0]].field_type(&path[1..]),
             Rule::Or(rules) => rules[path[0]].field_type(&path[1..]),
@@ -116,7 +123,7 @@ impl<Pat: Ord + ToRustSrc> Rule<Pat> {
     }
     fn field_is_refutable(&self, path: &[usize]) -> bool {
         match self {
-            Rule::Empty | Rule::Match(_) | Rule::Call(_) => false,
+            Rule::Empty | Rule::Match(_) | Rule::NotMatch(_) | Rule::Call(_) => false,
             Rule::Concat(rules) => rules[path[0]].field_is_refutable(&path[1..]),
             Rule::Or(..) => true,
         }
@@ -131,6 +138,10 @@ impl<Pat: Ord + ToRustSrc> Rule<Pat> {
         let (label, kind) = match &**self {
             Rule::Empty => (ParseLabel("()".to_string()), ParseLabelKind::Opaque),
             Rule::Match(pat) => (ParseLabel(pat.to_rust_src()), ParseLabelKind::Opaque),
+            Rule::NotMatch(pat) => (
+                ParseLabel(format!("!{}", pat.to_rust_src())),
+                ParseLabelKind::Opaque,
+            ),
             Rule::Call(r) => return ParseLabel(r.clone()),
             Rule::Concat([left, right]) => {
                 let left = left.parse_label(parse_labels);
@@ -783,7 +794,10 @@ impl<Pat: Ord + ToRustSrc> Rule<Pat> {
         Thunk::new(move |cont| match (&**self, parse_labels) {
             (Rule::Empty, _) => cont,
             (Rule::Match(pat), _) => {
-                check(&format!("let Some(_range) = p.input_consume_left(_range, {})",pat.to_rust_src()))(cont)
+                check(&format!("let Some(_range) = p.input_consume_left(_range, {})", pat.to_rust_src()))(cont)
+            }
+            (Rule::NotMatch(pat), _) => {
+                check(&format!("p.input_consume_left(_range, {}).is_none()", pat.to_rust_src()))(cont)
             }
             (Rule::Call(r), _) => call(CodeLabel(r.clone()))(cont),
             (Rule::Concat([left, right]), None) => (
@@ -826,7 +840,7 @@ impl<Pat: Ord + ToRustSrc> Rule<Pat> {
         macro put($($x:expr),*) {{ $(write!(out, "{}", $x).unwrap();)* }}
 
         match self {
-            Rule::Empty | Rule::Match(_) | Rule::Call(_) => {
+            Rule::Empty | Rule::Match(_) | Rule::NotMatch(_) | Rule::Call(_) => {
                 put!("::std::iter::once(");
                 if refutable {
                     put!("Some(")
