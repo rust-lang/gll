@@ -1,11 +1,13 @@
 use ordermap::OrderMap;
 use std::cell::RefCell;
+use std::char;
 use std::collections::BTreeMap;
+use std::convert::TryFrom;
 use std::fmt;
 use std::fmt::Write as FmtWrite;
 use std::io::Write;
 use std::mem;
-use std::ops::{Add, RangeInclusive};
+use std::ops::{Add, Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive};
 use std::rc::Rc;
 use ParseLabelKind;
 
@@ -194,6 +196,36 @@ impl<'a> From<&'a str> for Pat<&'a str, char> {
 impl<'a> From<RangeInclusive<char>> for Pat<&'a str, char> {
     fn from(range: RangeInclusive<char>) -> Self {
         Pat::Range(*range.start(), *range.end())
+    }
+}
+
+impl<'a> From<RangeToInclusive<char>> for Pat<&'a str, char> {
+    fn from(range: RangeToInclusive<char>) -> Self {
+        Self::from('\0'..=range.end)
+    }
+}
+
+impl<'a> From<Range<char>> for Pat<&'a str, char> {
+    fn from(range: Range<char>) -> Self {
+        Self::from(range.start..=char::try_from(range.end as u32 - 1).unwrap())
+    }
+}
+
+impl<'a> From<RangeFrom<char>> for Pat<&'a str, char> {
+    fn from(range: RangeFrom<char>) -> Self {
+        Self::from(range.start..=char::MAX)
+    }
+}
+
+impl<'a> From<RangeTo<char>> for Pat<&'a str, char> {
+    fn from(range: RangeTo<char>) -> Self {
+        Self::from('\0'..range.end)
+    }
+}
+
+impl<'a> From<RangeFull> for Pat<&'a str, char> {
+    fn from(_: RangeFull) -> Self {
+        Self::from('\0'..)
     }
 }
 
