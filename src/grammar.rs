@@ -102,6 +102,13 @@ impl<Pat: PartialEq> RuleWithNamedFields<Pat> {
         self.rule = Rc::new(Rule::Concat([self.rule, other.rule]));
         self
     }
+    pub fn opt(mut self) -> Self {
+        for path in self.fields.values_mut() {
+            path.insert(0, 0);
+        }
+        self.rule = Rc::new(Rule::Opt(self.rule));
+        self
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -110,8 +117,11 @@ pub enum Rule<Pat> {
     Match(Pat),
     NotMatch(Pat),
     Call(String),
+
     Concat([Rc<Rule<Pat>>; 2]),
     Or(Vec<Rc<Rule<Pat>>>),
+
+    Opt(Rc<Rule<Pat>>),
 }
 
 impl<Pat: Ord + ToRustSrc> Rule<Pat> {
@@ -121,13 +131,14 @@ impl<Pat: Ord + ToRustSrc> Rule<Pat> {
             Rule::Call(r) => r,
             Rule::Concat(rules) => rules[path[0]].field_type(&path[1..]),
             Rule::Or(rules) => rules[path[0]].field_type(&path[1..]),
+            Rule::Opt(rule) => [rule][path[0]].field_type(&path[1..]),
         }
     }
     fn field_is_refutable(&self, path: &[usize]) -> bool {
         match self {
             Rule::Empty | Rule::Match(_) | Rule::NotMatch(_) | Rule::Call(_) => false,
             Rule::Concat(rules) => rules[path[0]].field_is_refutable(&path[1..]),
-            Rule::Or(..) => true,
+            Rule::Or(..) | Rule::Opt(_) => true,
         }
     }
     fn parse_label(
@@ -166,6 +177,10 @@ impl<Pat: Ord + ToRustSrc> Rule<Pat> {
                 s.push(')');
                 (ParseLabel(s), ParseLabelKind::Choice)
             }
+            Rule::Opt(rule) => (
+                ParseLabel(format!("({}?)", rule.parse_label(parse_labels).0)),
+                ParseLabelKind::Choice,
+            ),
         };
         assert!(
             parse_labels
@@ -279,6 +294,16 @@ pub macro grammar {
     (@rule [! $input0:tt $($input:tt)*] ($current:expr) [$($rules:expr)*]) => {
         grammar!(@rule [$($input)*] ($current.then(
             RuleWithNamedFields::not_match(Pat::from($input0))
+        )) [$($rules)*])
+    },
+    (@rule [$name:ident : $input0:tt ? $($input:tt)*] ($current:expr) [$($rules:expr)*]) => {
+        grammar!(@rule [$($input)*] ($current.then(
+            grammar!(@rule_tok $input0).with_field_name(stringify!($name)).opt()
+        )) [$($rules)*])
+    },
+    (@rule [$input0:tt ? $($input:tt)*] ($current:expr) [$($rules:expr)*]) => {
+        grammar!(@rule [$($input)*] ($current.then(
+            grammar!(@rule_tok $input0).opt()
         )) [$($rules)*])
     },
     (@rule [$name:ident : $input0:tt $($input:tt)*] ($current:expr) [$($rules:expr)*]) => {
@@ -875,6 +900,21 @@ impl<Pat: Ord + ToRustSrc> Rule<Pat> {
                 pop_state(|state| thunk!("
                 p.sppf.add(", self.parse_label(parse_labels), ", c.frame.range.subtract_suffix(_range), ", state, ");"))
             )(cont),
+            (Rule::Opt(rule), None) => {
+                parallel([rule, &Rc::new(Rule::Empty)].iter().map(|rule| {
+                    rule.generate_parse(None)
+                }))(cont)
+            }
+            (Rule::Opt(rule), Some(parse_labels)) => (
+                thunk!("
+                assert_eq!(_range.start(), c.frame.range.start());") +
+                parallel([rule, &Rc::new(Rule::Empty)].iter().map(|rule| {
+                    push_state(&format!("{}.to_usize()", rule.parse_label(parse_labels))) +
+                    rule.generate_parse(Some(parse_labels))
+                })) +
+                pop_state(|state| thunk!("
+                p.sppf.add(", self.parse_label(parse_labels), ", c.frame.range.subtract_suffix(_range), ", state, ");"))
+            )(cont),
         })
     }
     fn generate_traverse(
@@ -956,6 +996,20 @@ impl<Pat: Ord + ToRustSrc> Rule<Pat> {
                 ", rule.parse_label(parse_labels), " => Iter::_", i, "(", rule.generate_traverse("node", true, parse_labels).replace("\n", "\n    "), "),");
                 }
                 put!("
+                _ => unreachable!(),
+            }
+        })");
+            }
+            Rule::Opt(rule) => {
+                put!("self.parser.sppf.choice_children(", node, ").flat_map(move |node| {
+            match node.l {
+                ", rule.parse_label(parse_labels), " => {
+                    Some(", rule.generate_traverse("node", true, parse_labels).replace("\n", "\n    "), ".map(|x| (x,)))
+                        .into_iter().flatten().chain(None)
+                }
+                ", Rc::new(Rule::Empty).parse_label(parse_labels), " => {
+                    None.into_iter().flatten().chain(Some(<(_,)>::default()))
+                }
                 _ => unreachable!(),
             }
         })");

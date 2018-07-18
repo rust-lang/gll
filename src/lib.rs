@@ -1,6 +1,14 @@
 #![feature(
-    arbitrary_self_types, decl_macro, fn_traits, from_ref, nll, range_contains, slice_patterns,
-    str_escape, try_from, unboxed_closures
+    arbitrary_self_types,
+    decl_macro,
+    fn_traits,
+    from_ref,
+    nll,
+    range_contains,
+    slice_patterns,
+    str_escape,
+    try_from,
+    unboxed_closures
 )]
 
 extern crate indexing;
