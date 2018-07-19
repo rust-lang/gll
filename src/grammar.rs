@@ -77,7 +77,11 @@ impl<Pat: PartialEq> RuleWithNamedFields<Pat> {
         }
     }
     pub fn with_field_name(mut self, name: &str) -> Self {
-        match *self.rule {
+        match &*self.rule {
+            Rule::RepeatMany(rule) => match **rule {
+                Rule::Match(_) | Rule::Call(_) => {}
+                _ => unimplemented!(),
+            },
             Rule::Match(_) | Rule::Call(_) => {}
             _ => unimplemented!(),
         }
@@ -109,6 +113,13 @@ impl<Pat: PartialEq> RuleWithNamedFields<Pat> {
         self.rule = Rc::new(Rule::Opt(self.rule));
         self
     }
+    pub fn repeat_many(mut self) -> Self {
+        for path in self.fields.values_mut() {
+            path.insert(0, 0);
+        }
+        self.rule = Rc::new(Rule::RepeatMany(self.rule));
+        self
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -122,21 +133,33 @@ pub enum Rule<Pat> {
     Or(Vec<Rc<Rule<Pat>>>),
 
     Opt(Rc<Rule<Pat>>),
+    RepeatMany(Rc<Rule<Pat>>),
 }
 
 impl<Pat: Ord + ToRustSrc> Rule<Pat> {
-    fn field_type(&self, path: &[usize]) -> &str {
+    fn field_type(&self, path: &[usize]) -> String {
         match self {
-            Rule::Empty | Rule::Match(_) | Rule::NotMatch(_) => "Terminal",
-            Rule::Call(r) => r,
+            Rule::Empty | Rule::Match(_) | Rule::NotMatch(_) => {
+                assert_eq!(path, []);
+                "()".to_string()
+            }
+            Rule::Call(r) => format!("{}<'a, 'b, 'i>", r),
             Rule::Concat(rules) => rules[path[0]].field_type(&path[1..]),
             Rule::Or(rules) => rules[path[0]].field_type(&path[1..]),
             Rule::Opt(rule) => [rule][path[0]].field_type(&path[1..]),
+            Rule::RepeatMany(rule) => {
+                assert_eq!(path, []);
+                format!("[{}]", rule.field_type(&[]))
+            }
         }
     }
     fn field_is_refutable(&self, path: &[usize]) -> bool {
         match self {
-            Rule::Empty | Rule::Match(_) | Rule::NotMatch(_) | Rule::Call(_) => false,
+            Rule::Empty
+            | Rule::Match(_)
+            | Rule::NotMatch(_)
+            | Rule::Call(_)
+            | Rule::RepeatMany(_) => false,
             Rule::Concat(rules) => rules[path[0]].field_is_refutable(&path[1..]),
             Rule::Or(..) | Rule::Opt(_) => true,
         }
@@ -177,10 +200,18 @@ impl<Pat: Ord + ToRustSrc> Rule<Pat> {
                 s.push(')');
                 (ParseLabel(s), ParseLabelKind::Choice)
             }
-            Rule::Opt(rule) => (
-                ParseLabel(format!("({}?)", rule.parse_label(parse_labels).0)),
-                ParseLabelKind::Choice,
-            ),
+            Rule::Opt(rule) => {
+                let label = rule.parse_label(parse_labels);
+                (
+                    ParseLabel(format!("({}?)", label.0)),
+                    ParseLabelKind::Unary(label),
+                )
+            }
+            Rule::RepeatMany(element) => {
+                let element_label = element.parse_label(parse_labels);
+                let label = ParseLabel(format!("({}*)", element_label.0));
+                (label.clone(), ParseLabelKind::Binary(element_label, label))
+            }
         };
         assert!(
             parse_labels
@@ -306,6 +337,16 @@ pub macro grammar {
             grammar!(@rule_tok $input0).opt()
         )) [$($rules)*])
     },
+    (@rule [$name:ident : $input0:tt * $($input:tt)*] ($current:expr) [$($rules:expr)*]) => {
+        grammar!(@rule [$($input)*] ($current.then(
+            grammar!(@rule_tok $input0).repeat_many().with_field_name(stringify!($name))
+        )) [$($rules)*])
+    },
+    (@rule [$input0:tt * $($input:tt)*] ($current:expr) [$($rules:expr)*]) => {
+        grammar!(@rule [$($input)*] ($current.then(
+            grammar!(@rule_tok $input0).repeat_many()
+        )) [$($rules)*])
+    },
     (@rule [$name:ident : $input0:tt $($input:tt)*] ($current:expr) [$($rules:expr)*]) => {
         grammar!(@rule [$($input)*] ($current.then(
             grammar!(@rule_tok $input0).with_field_name(stringify!($name))
@@ -343,38 +384,68 @@ pub type Parser<'a, 'i> = gll::Parser<'i, _P, _C, &'a gll::Str>;
 #[derive(Debug)]
 pub struct Ambiguity;
 
-pub struct Handle<'a, 'b: 'a, 'i: 'a, T> {
-    pub span: Range<'i>,
+pub struct Handle<'a, 'b: 'a, 'i: 'a, T: ?Sized> {
+    pub node: ParseNode<'i, _P>,
     pub parser: &'a Parser<'b, 'i>,
     _marker: PhantomData<T>,
 }
 
-impl<'a, 'b, 'i, T> Copy for Handle<'a, 'b, 'i, T> {}
+impl<'a, 'b, 'i, T: ?Sized> Copy for Handle<'a, 'b, 'i, T> {}
 
-impl<'a, 'b, 'i, T> Clone for Handle<'a, 'b, 'i, T> {
+impl<'a, 'b, 'i, T: ?Sized> Clone for Handle<'a, 'b, 'i, T> {
     fn clone(&self) -> Self {
         *self
     }
 }
 
-pub struct Terminal<'a, 'b: 'a, 'i: 'a> {
-    _marker: PhantomData<(&'a (), &'b (), &'i ())>,
-}
-
-impl<'a, 'b, 'i> fmt::Debug for Terminal<'a, 'b, 'i> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct(\"\").finish()
-    }
-}
-
-impl<'a, 'b, 'i> fmt::Debug for Handle<'a, 'b, 'i, Terminal<'a, 'b, 'i>> {
+impl<'a, 'b, 'i> fmt::Debug for Handle<'a, 'b, 'i, ()> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
             \"{}..{}\",
-            self.span.start(),
-            self.span.end()
+            self.node.range.start(),
+            self.node.range.end()
         )
+    }
+}
+
+impl<'a, 'b, 'i, T> fmt::Debug for Handle<'a, 'b, 'i, [T]>
+    where Handle<'a, 'b, 'i, T>: fmt::Debug,
+{
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(
+            f,
+            \"{}..{} => \",
+            self.node.range.start(),
+            self.node.range.end()
+        )?;
+        f.debug_list().entries(*self).finish()
+    }
+}
+
+impl<'a, 'b, 'i, T> Iterator for Handle<'a, 'b, 'i, [T]> {
+    type Item = Result<Handle<'a, 'b, 'i, T>, Ambiguity>;
+    fn next(&mut self) -> Option<Self::Item> {
+        let mut children = self.parser.sppf.binary_children(self.node);
+        if self.node.range.is_empty() {
+            if children.next().is_some() {
+                Some(Err(Ambiguity))
+            } else {
+                None
+            }
+        } else {
+            let (first, rest) = children.next().unwrap();
+            if children.next().is_none() {
+                self.node = rest;
+                Some(Ok(Handle {
+                    node: first,
+                    parser: self.parser,
+                    _marker: PhantomData,
+                }))
+            } else {
+                Some(Err(Ambiguity))
+            }
+        }
     }
 }");
         for (name, rule) in &self.rules {
@@ -388,7 +459,7 @@ pub struct ", name, "<'a, 'b: 'a, 'i: 'a> {");
                 if refutable {
                     put!("Option<");
                 }
-                put!("Handle<'a, 'b, 'i, ", rule.rule.field_type(path), "<'a, 'b, 'i>>");
+                put!("Handle<'a, 'b, 'i, ", rule.rule.field_type(path), ">");
                 if refutable {
                     put!(">");
                 }
@@ -418,9 +489,9 @@ impl<'a, 'b, 'i> ", name, "<'a, 'b, 'i> {
             );
             parse(p);
         }
-        if let Some(r) = p.gss.longest_result(call) {
+        if let Some(range) = p.gss.longest_result(call) {
             return Ok(Handle {
-                span: r,
+                node: ParseNode { l: ", ParseLabel(name.clone()), ", range },
                 parser: p,
                 _marker: PhantomData,
             });
@@ -452,7 +523,7 @@ impl<'a, 'b, 'i> fmt::Debug for ", name, "<'a, 'b, 'i> {
 
 impl<'a, 'b, 'i> fmt::Debug for Handle<'a, 'b, 'i, ", name, "<'a, 'b, 'i>> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, \"{}..{}\", self.span.start(), self.span.end())
+        write!(f, \"{}..{}\", self.node.range.start(), self.node.range.end())
     }
 }");
                 continue;
@@ -464,8 +535,8 @@ impl<'a, 'b, 'i> fmt::Debug for Handle<'a, 'b, 'i, ", name, "<'a, 'b, 'i>> {
         write!(
             f,
             \"{}..{} => \",
-            self.span.start(),
-            self.span.end()
+            self.node.range.start(),
+            self.node.range.end()
         )?;
         for (i, _x) in self.many().enumerate() {
             if i > 0 {
@@ -488,8 +559,7 @@ impl<'a, 'b, 'i> Handle<'a, 'b, 'i, ", name, "<'a, 'b, 'i>> {
         }
     }
     pub fn many(self) -> impl Iterator<Item = ", name, "<'a, 'b, 'i>> {
-        let node = ParseNode { l: ", ParseLabel(name.clone()), ", range: self.span };
-        self.parser.sppf.unary_children(node).flat_map(move |node| {
+        self.parser.sppf.unary_children(self.node).flat_map(move |node| {
             ", rule.rule.generate_traverse("node", false, &parse_labels), "
         }).map(move |_r| ", name, " {");
             for (field_name, path) in &rule.fields {
@@ -499,15 +569,15 @@ impl<'a, 'b, 'i> Handle<'a, 'b, 'i, ", name, "<'a, 'b, 'i>> {
                     for p in path {
                         put!(" .", p);
                     }
-                    put!(".map(|span| Handle {
-                span,
+                    put!(".map(|node| Handle {
+                node,
                 parser: self.parser,
                 _marker: PhantomData,
             }),");
                 } else {
                     put!("
             ", field_name, ": Handle {
-                span: _r");
+                node: _r");
                     for p in path {
                         put!(" .", p);
                     }
@@ -547,9 +617,8 @@ fn parse(p: &mut Parser) {
 
             put!((
                 reify_as(CodeLabel(name.clone())) +
-                rule.rule.generate_parse(parse_labels) +
-                thunk!(&format!("
-                p.sppf.add({}, c.frame.range.subtract_suffix(_range), 0);", parse_label)) +
+                rule.rule.clone().generate_parse(parse_labels) +
+                sppf_add(&parse_label, "0") +
                 ret()
             )(Continuation {
                 code_labels: &mut code_labels,
@@ -663,6 +732,27 @@ enum Code {
 }
 
 impl<'a> Continuation<'a> {
+    fn next_code_label(&mut self) -> CodeLabel {
+        *self.code_label_counter += 1;
+        let label = CodeLabel(format!(
+            "{}__{}",
+            self.code_label_prefix, self.code_label_counter
+        ));
+        self.code_labels.push(label.clone());
+        label
+    }
+
+    fn clone(&mut self) -> Continuation {
+        Continuation {
+            code_labels: self.code_labels,
+            code_label_prefix: self.code_label_prefix,
+            code_label_counter: self.code_label_counter,
+            code_label_arms: self.code_label_arms,
+            code: self.code.clone(),
+            nested_frames: self.nested_frames.clone(),
+        }
+    }
+
     fn to_inline(&mut self) -> &mut String {
         match self.code {
             Code::Inline(ref mut code) => code,
@@ -677,16 +767,12 @@ impl<'a> Continuation<'a> {
             }
         }
     }
+
     fn to_label(&mut self) -> &mut CodeLabel {
         match self.code {
             Code::Label(ref mut label) => label,
             Code::Inline(_) => {
-                *self.code_label_counter += 1;
-                let label = CodeLabel(format!(
-                    "{}__{}",
-                    self.code_label_prefix, self.code_label_counter
-                ));
-                self.code_labels.push(label.clone());
+                let label = self.next_code_label();
                 self.reify_as(label);
                 self.to_label()
             }
@@ -769,7 +855,7 @@ fn push_state(state: &str) -> Thunk<impl FnOnce(Continuation) -> Continuation> {
         ";"
     ) + Thunk::new(move |mut cont| {
         if let Some(ret_label) = cont.nested_frames.pop().unwrap() {
-            cont = call(mem::replace(&mut cont.to_label(), ret_label))(cont);
+            cont = call(mem::replace(cont.to_label(), ret_label))(cont);
         }
         cont
     })
@@ -812,23 +898,65 @@ fn ret() -> Thunk<impl FnOnce(Continuation) -> Continuation> {
     })
 }
 
-fn parallel(
-    thunks: impl Iterator<Item = Thunk<impl FnOnce(Continuation) -> Continuation>>,
+fn sppf_add(
+    parse_label: &ParseLabel,
+    child: &str,
 ) -> Thunk<impl FnOnce(Continuation) -> Continuation> {
+    thunk!(
+        "
+                p.sppf.add(",
+        parse_label,
+        ", c.frame.range.subtract_suffix(_range), ",
+        child,
+        ");"
+    )
+}
+
+trait ForEachThunk {
+    fn for_each_thunk(self, cont: &mut Continuation, f: impl FnMut(Continuation));
+}
+
+impl<F> ForEachThunk for Thunk<F>
+where
+    F: FnOnce(Continuation) -> Continuation,
+{
+    fn for_each_thunk(self, cont: &mut Continuation, mut f: impl FnMut(Continuation)) {
+        f(self(cont.clone()));
+    }
+}
+
+impl<T, U> ForEachThunk for (T, U)
+where
+    T: ForEachThunk,
+    U: ForEachThunk,
+{
+    fn for_each_thunk(self, cont: &mut Continuation, mut f: impl FnMut(Continuation)) {
+        self.0.for_each_thunk(cont, &mut f);
+        self.1.for_each_thunk(cont, &mut f);
+    }
+}
+
+struct ThunkIter<I>(I);
+
+impl<I, T> ForEachThunk for ThunkIter<I>
+where
+    I: Iterator<Item = T>,
+    T: ForEachThunk,
+{
+    fn for_each_thunk(self, cont: &mut Continuation, mut f: impl FnMut(Continuation)) {
+        self.0.for_each(|x| {
+            x.for_each_thunk(cont, &mut f);
+        });
+    }
+}
+
+fn parallel(thunks: impl ForEachThunk) -> Thunk<impl FnOnce(Continuation) -> Continuation> {
     Thunk::new(|mut cont| {
         cont.to_label();
         let mut code = String::new();
         let mut child_nested_frames = None;
-        for thunk in thunks {
-            let mut child_cont = Continuation {
-                code_labels: cont.code_labels,
-                code_label_prefix: cont.code_label_prefix,
-                code_label_counter: cont.code_label_counter,
-                code_label_arms: cont.code_label_arms,
-                code: cont.code.clone(),
-                nested_frames: cont.nested_frames.clone(),
-            };
-            child_cont = thunk(child_cont);
+        let nested_frames = cont.nested_frames.clone();
+        thunks.for_each_thunk(&mut cont, |mut child_cont| {
             code.push_str(child_cont.to_inline());
             if let Some(prev) = child_nested_frames {
                 assert_eq!(child_cont.nested_frames.len(), prev);
@@ -837,15 +965,30 @@ fn parallel(
             }
             assert_eq!(
                 child_cont.nested_frames[..],
-                cont.nested_frames[..child_cont.nested_frames.len()]
+                nested_frames[..child_cont.nested_frames.len()]
             );
-        }
+        });
         cont.code = Code::Inline(code);
         if let Some(child_nested_frames) = child_nested_frames {
             while cont.nested_frames.len() > child_nested_frames {
                 assert_eq!(cont.nested_frames.pop(), Some(None));
             }
         }
+        cont
+    })
+}
+
+fn fix<F: FnOnce(Continuation) -> Continuation>(
+    f: impl FnOnce(CodeLabel) -> Thunk<F>,
+) -> Thunk<impl FnOnce(Continuation) -> Continuation> {
+    Thunk::new(|mut cont| {
+        let nested_frames = mem::replace(&mut cont.nested_frames, vec![]);
+        let ret_label = cont.to_label().clone();
+        cont.code = Code::Inline(String::new());
+        let label = cont.next_code_label();
+        cont = (reify_as(label.clone()) + f(label) + ret())(cont);
+        cont = call(mem::replace(cont.to_label(), ret_label))(cont);
+        cont.nested_frames = nested_frames;
         cont
     })
 }
@@ -882,39 +1025,48 @@ impl<Pat: Ord + ToRustSrc> Rule<Pat> {
                 left.generate_parse(Some(parse_labels)) +
                 push_state("c.frame.range.subtract_suffix(_range).len()") +
                 right.generate_parse(Some(parse_labels)) +
-                pop_state(|state| thunk!("
-                p.sppf.add(", self.parse_label(parse_labels), ", c.frame.range.subtract_suffix(_range), ", state, ");"))
+                pop_state(|state| sppf_add(&self.parse_label(parse_labels), state))
             )(cont),
             (Rule::Or(rules), None) => {
-                parallel(rules.iter().map(|rule| {
+                parallel(ThunkIter(rules.iter().map(|rule| {
                     rule.generate_parse(None)
-                }))(cont)
+                })))(cont)
             }
             (Rule::Or(rules), Some(parse_labels)) => (
                 thunk!("
                 assert_eq!(_range.start(), c.frame.range.start());") +
-                parallel(rules.iter().map(|rule| {
+                parallel(ThunkIter(rules.iter().map(|rule| {
                     push_state(&format!("{}.to_usize()", rule.parse_label(parse_labels))) +
                     rule.generate_parse(Some(parse_labels))
-                })) +
-                pop_state(|state| thunk!("
-                p.sppf.add(", self.parse_label(parse_labels), ", c.frame.range.subtract_suffix(_range), ", state, ");"))
+                }))) +
+                pop_state(|state| sppf_add(&self.parse_label(parse_labels), state))
             )(cont),
             (Rule::Opt(rule), None) => {
-                parallel([rule, &Rc::new(Rule::Empty)].iter().map(|rule| {
-                    rule.generate_parse(None)
-                }))(cont)
+                parallel((rule.generate_parse(None), thunk!("")))(cont)
             }
             (Rule::Opt(rule), Some(parse_labels)) => (
                 thunk!("
                 assert_eq!(_range.start(), c.frame.range.start());") +
-                parallel([rule, &Rc::new(Rule::Empty)].iter().map(|rule| {
-                    push_state(&format!("{}.to_usize()", rule.parse_label(parse_labels))) +
-                    rule.generate_parse(Some(parse_labels))
-                })) +
-                pop_state(|state| thunk!("
-                p.sppf.add(", self.parse_label(parse_labels), ", c.frame.range.subtract_suffix(_range), ", state, ");"))
+                parallel((
+                    rule.generate_parse(Some(parse_labels)) +
+                    sppf_add(&self.parse_label(parse_labels), "0"),
+                    thunk!(""),
+                ))
             )(cont),
+            (Rule::RepeatMany(rule), None) => fix(|label| {
+                parallel((rule.generate_parse(None) + call(label), thunk!("")))
+            })(cont),
+            (Rule::RepeatMany(rule), Some(parse_labels)) => fix(|label| {
+                parallel((
+                    thunk!("
+                assert_eq!(_range.start(), c.frame.range.start());") +
+                    rule.generate_parse(Some(parse_labels)) +
+                    push_state("c.frame.range.subtract_suffix(_range).len()") +
+                    call(label) +
+                    pop_state(|state| sppf_add(&self.parse_label(parse_labels), state)),
+                    thunk!(""),
+                ))
+            })(cont)
         })
     }
     fn generate_traverse(
@@ -927,12 +1079,12 @@ impl<Pat: Ord + ToRustSrc> Rule<Pat> {
         macro put($($x:expr),*) {{ $(write!(out, "{}", $x).unwrap();)* }}
 
         match self {
-            Rule::Empty | Rule::Match(_) | Rule::NotMatch(_) | Rule::Call(_) => {
+            Rule::Empty | Rule::Match(_) | Rule::NotMatch(_) | Rule::Call(_) | Rule::RepeatMany(_) => {
                 put!("::std::iter::once(");
                 if refutable {
                     put!("Some(")
                 }
-                put!(node, ".range)");
+                put!(node, ")");
                 if refutable {
                     put!(")");
                 }
@@ -1001,18 +1153,9 @@ impl<Pat: Ord + ToRustSrc> Rule<Pat> {
         })");
             }
             Rule::Opt(rule) => {
-                put!("self.parser.sppf.choice_children(", node, ").flat_map(move |node| {
-            match node.l {
-                ", rule.parse_label(parse_labels), " => {
-                    Some(", rule.generate_traverse("node", true, parse_labels).replace("\n", "\n    "), ".map(|x| (x,)))
-                        .into_iter().flatten().chain(None)
-                }
-                ", Rc::new(Rule::Empty).parse_label(parse_labels), " => {
-                    None.into_iter().flatten().chain(Some(<(_,)>::default()))
-                }
-                _ => unreachable!(),
-            }
-        })");
+                put!("self.parser.sppf.unary_children(", node, ").flat_map(move |node| {
+            ", rule.generate_traverse("node", true, parse_labels), ".map(|x| (x,))
+        }).chain(if ", node, ".range.is_empty() { Some(<(_,)>::default()) } else { None })");
             }
         }
         out.replace("\n", "\n    ")

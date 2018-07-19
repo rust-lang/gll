@@ -422,13 +422,15 @@ impl<'i, P: ParseLabel> ParseGraph<'i, P> {
         node: ParseNode<'i, P>,
     ) -> impl Iterator<Item = ParseNode<'i, P>> + 'a {
         match node.l.kind() {
-            ParseLabelKind::Unary(l) => self.children[&node].iter().map(move |&i| {
-                assert_eq!(i, 0);
-                ParseNode {
-                    l,
-                    range: node.range,
-                }
-            }),
+            ParseLabelKind::Unary(l) => self.children.get(&node).into_iter().flatten().map(
+                move |&i| {
+                    assert_eq!(i, 0);
+                    ParseNode {
+                        l,
+                        range: node.range,
+                    }
+                },
+            ),
             _ => unreachable!(),
         }
     }
@@ -438,19 +440,24 @@ impl<'i, P: ParseLabel> ParseGraph<'i, P> {
         node: ParseNode<'i, P>,
     ) -> impl Iterator<Item = (ParseNode<'i, P>, ParseNode<'i, P>)> + 'a {
         match node.l.kind() {
-            ParseLabelKind::Binary(left_l, right_l) => self.children[&node].iter().map(move |&i| {
-                let (left, right, _) = node.range.split_at(i);
-                (
-                    ParseNode {
-                        l: left_l,
-                        range: Range(left),
-                    },
-                    ParseNode {
-                        l: right_l,
-                        range: Range(right),
-                    },
-                )
-            }),
+            ParseLabelKind::Binary(left_l, right_l) => self
+                .children
+                .get(&node)
+                .into_iter()
+                .flatten()
+                .map(move |&i| {
+                    let (left, right, _) = node.range.split_at(i);
+                    (
+                        ParseNode {
+                            l: left_l,
+                            range: Range(left),
+                        },
+                        ParseNode {
+                            l: right_l,
+                            range: Range(right),
+                        },
+                    )
+                }),
             _ => unreachable!(),
         }
     }
