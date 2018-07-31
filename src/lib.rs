@@ -17,7 +17,7 @@ extern crate ordermap;
 use indexing::container_traits::{Contiguous, Trustworthy};
 use indexing::{scope, Container};
 use std::cmp::{Ordering, Reverse};
-use std::collections::{BTreeSet, BinaryHeap, HashMap};
+use std::collections::{BTreeSet, BinaryHeap, HashMap, VecDeque};
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::io::{self, Write};
@@ -404,35 +404,52 @@ impl<'i, P: ParseLabel> ParseGraph<'i, P> {
             .insert(child);
     }
 
-    pub fn choice_children<'a>(
-        &'a self,
-        node: ParseNode<'i, P>,
-    ) -> impl Iterator<Item = ParseNode<'i, P>> + 'a {
-        match node.l.kind() {
-            ParseLabelKind::Choice => self.children[&node].iter().map(move |&i| ParseNode {
-                l: P::from_usize(i),
-                range: node.range,
-            }),
-            _ => unreachable!(),
-        }
-    }
-
     pub fn unary_children<'a>(
         &'a self,
         node: ParseNode<'i, P>,
     ) -> impl Iterator<Item = ParseNode<'i, P>> + 'a {
-        match node.l.kind() {
-            ParseLabelKind::Unary(l) => self.children.get(&node).into_iter().flatten().map(
-                move |&i| {
-                    assert_eq!(i, 0);
-                    ParseNode {
-                        l,
-                        range: node.range,
-                    }
-                },
+        let kind = node.l.kind();
+        let (child0, child1, choice_children) = match kind {
+            ParseLabelKind::Alias(l) => (Some(l), None, None),
+            ParseLabelKind::Choice => (
+                None,
+                None,
+                self.children
+                    .get(&node)
+                    .map(|children| children.iter().map(|&i| P::from_usize(i))),
             ),
+            ParseLabelKind::Opt { none, some } => {
+                let has_some = self
+                    .children
+                    .get(&ParseNode {
+                        l: match some.kind() {
+                            ParseLabelKind::Choice | ParseLabelKind::Binary(..) => some,
+                            _ => node.l,
+                        },
+                        range: node.range,
+                    })
+                    .map_or(false, |children| !children.is_empty());
+                (
+                    if node.range.is_empty() {
+                        Some(none)
+                    } else {
+                        None
+                    },
+                    if has_some { Some(some) } else { None },
+                    None,
+                )
+            }
             _ => unreachable!(),
-        }
+        };
+        choice_children
+            .into_iter()
+            .flatten()
+            .chain(child0)
+            .chain(child1)
+            .map(move |l| ParseNode {
+                l,
+                range: node.range,
+            })
     }
 
     pub fn binary_children<'a>(
@@ -464,53 +481,40 @@ impl<'i, P: ParseLabel> ParseGraph<'i, P> {
 
     pub fn print(&self, out: &mut Write) -> io::Result<()> {
         writeln!(out, "digraph sppf {{")?;
+        let mut queue: VecDeque<_> = self.children.keys().cloned().collect();
+        let mut seen: BTreeSet<_> = queue.iter().cloned().collect();
         let mut p = 0;
-        for (source, children) in &self.children {
+        while let Some(source) = queue.pop_front() {
+            let mut enqueue = |child| {
+                if seen.insert(child) {
+                    queue.push_back(child);
+                }
+            };
             writeln!(out, "    {:?} [shape=box]", source.to_string())?;
             match source.l.kind() {
                 ParseLabelKind::Opaque => {}
 
-                ParseLabelKind::Choice => for &child in children {
-                    let child = ParseNode {
-                        l: P::from_usize(child),
-                        range: source.range,
-                    };
-                    writeln!(out, r#"    p{} [label="" shape=point]"#, p)?;
-                    writeln!(out, "    {:?} -> p{}:n", source.to_string(), p)?;
-                    writeln!(out, "    p{}:s -> {:?}:n [dir=none]", p, child.to_string())?;
-                    p += 1;
-                },
+                ParseLabelKind::Alias(_) | ParseLabelKind::Choice | ParseLabelKind::Opt { .. } => {
+                    for child in self.unary_children(source) {
+                        enqueue(child);
+                        writeln!(out, r#"    p{} [label="" shape=point]"#, p)?;
+                        writeln!(out, "    {:?} -> p{}:n", source.to_string(), p)?;
+                        writeln!(out, "    p{}:s -> {:?}:n [dir=none]", p, child.to_string())?;
+                        p += 1;
+                    }
+                }
 
-                ParseLabelKind::Unary(l) => for &child in children {
-                    assert_eq!(child, 0);
-                    let child = ParseNode {
-                        l,
-                        range: source.range,
-                    };
-                    writeln!(out, r#"    p{} [label="" shape=point]"#, p)?;
-                    writeln!(out, "    {:?} -> p{}:n", source.to_string(), p)?;
-                    writeln!(out, "    p{}:s -> {:?}:n [dir=none]", p, child.to_string())?;
-                    p += 1;
-                },
-
-                ParseLabelKind::Binary(left_l, right_l) => for &child in children {
-                    let (left, right, _) = source.range.split_at(child);
-                    let (left, right) = (
-                        ParseNode {
-                            l: left_l,
-                            range: Range(left),
-                        },
-                        ParseNode {
-                            l: right_l,
-                            range: Range(right),
-                        },
-                    );
-                    writeln!(out, r#"    p{} [label="" shape=point]"#, p)?;
-                    writeln!(out, "    {:?} -> p{}:n", source.to_string(), p)?;
-                    writeln!(out, "    p{}:sw -> {:?}:n [dir=none]", p, left.to_string())?;
-                    writeln!(out, "    p{}:se -> {:?}:n [dir=none]", p, right.to_string())?;
-                    p += 1;
-                },
+                ParseLabelKind::Binary(..) => {
+                    for (left, right) in self.binary_children(source) {
+                        enqueue(left);
+                        enqueue(right);
+                        writeln!(out, r#"    p{} [label="" shape=point]"#, p)?;
+                        writeln!(out, "    {:?} -> p{}:n", source.to_string(), p)?;
+                        writeln!(out, "    p{}:sw -> {:?}:n [dir=none]", p, left.to_string())?;
+                        writeln!(out, "    p{}:se -> {:?}:n [dir=none]", p, right.to_string())?;
+                        p += 1;
+                    }
+                }
             }
         }
         writeln!(out, "}}")
@@ -538,9 +542,10 @@ impl<'i, P: ParseLabel> fmt::Display for ParseNode<'i, P> {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ParseLabelKind<P> {
     Opaque,
-    Unary(P),
-    Binary(P, P),
+    Alias(P),
     Choice,
+    Opt { none: P, some: P },
+    Binary(P, P),
 }
 
 pub trait ParseLabel: fmt::Display + Ord + Hash + Copy + 'static {

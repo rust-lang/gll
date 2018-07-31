@@ -204,7 +204,10 @@ impl<Pat: Ord + ToRustSrc> Rule<Pat> {
                 let label = rule.parse_label(parse_labels);
                 (
                     ParseLabel(format!("({}?)", label.0)),
-                    ParseLabelKind::Unary(label),
+                    ParseLabelKind::Opt {
+                        none: Rc::new(Rule::Empty).parse_label(parse_labels),
+                        some: label,
+                    },
                 )
             }
             Rule::RepeatMany(element) => {
@@ -609,7 +612,7 @@ fn parse(p: &mut Parser) {
             code_labels.push(CodeLabel(name.clone()));
             let parse_label = ParseLabel(name.clone());
             let kind = if let Some(parse_labels) = parse_labels {
-                ParseLabelKind::Unary(rule.rule.parse_label(parse_labels))
+                ParseLabelKind::Alias(rule.rule.parse_label(parse_labels))
             } else {
                 ParseLabelKind::Opaque
             };
@@ -618,7 +621,6 @@ fn parse(p: &mut Parser) {
             put!((
                 reify_as(CodeLabel(name.clone())) +
                 rule.rule.clone().generate_parse(parse_labels) +
-                sppf_add(&parse_label, "0") +
                 ret()
             )(Continuation {
                 code_labels: &mut code_labels,
@@ -676,9 +678,10 @@ impl ParseLabel for _P {
                 ", label, " => ParseLabelKind::");
             match kind {
                 ParseLabelKind::Opaque => put!("Opaque,"),
-                ParseLabelKind::Unary(inner) => put!("Unary(", inner, "),"),
-                ParseLabelKind::Binary(left, right) => put!("Binary(", left, ", ", right, "),"),
+                ParseLabelKind::Alias(inner) => put!("Alias(", inner, "),"),
                 ParseLabelKind::Choice => put!("Choice,"),
+                ParseLabelKind::Opt { none, some } => put!("Opt { none: ", none,  ", some: ", some, " },"),
+                ParseLabelKind::Binary(left, right) => put!("Binary(", left, ", ", right, "),"),
             }
         }
         put!("
@@ -1041,18 +1044,28 @@ impl<Pat: Ord + ToRustSrc> Rule<Pat> {
                 }))) +
                 pop_state(|state| sppf_add(&self.parse_label(parse_labels), state))
             )(cont),
-            (Rule::Opt(rule), None) => {
-                parallel((rule.generate_parse(None), thunk!("")))(cont)
-            }
-            (Rule::Opt(rule), Some(parse_labels)) => (
-                thunk!("
+            (Rule::Opt(rule), _) => {
+                let parse_label = parse_labels.and_then(|parse_labels| {
+                    rule.parse_label(parse_labels);
+                    match parse_labels.borrow()[rule].1 {
+                        ParseLabelKind::Choice | ParseLabelKind::Binary(..) => None,
+                        _ => Some(self.parse_label(parse_labels)),
+                    }
+                });
+                if let Some(parse_label) = parse_label {
+                    (
+                        thunk!("
                 assert_eq!(_range.start(), c.frame.range.start());") +
-                parallel((
-                    rule.generate_parse(Some(parse_labels)) +
-                    sppf_add(&self.parse_label(parse_labels), "0"),
-                    thunk!(""),
-                ))
-            )(cont),
+                        parallel((
+                            rule.generate_parse(parse_labels) +
+                            sppf_add(&parse_label, "0"),
+                            thunk!(""),
+                        ))
+                    )(cont)
+                } else {
+                    parallel((rule.generate_parse(parse_labels), thunk!("")))(cont)
+                }
+            }
             (Rule::RepeatMany(rule), None) => fix(|label| {
                 parallel((rule.generate_parse(None) + call(label), thunk!("")))
             })(cont),
@@ -1097,7 +1110,7 @@ impl<Pat: Ord + ToRustSrc> Rule<Pat> {
         })");
             }
             Rule::Or(rules) => {
-                put!("self.parser.sppf.choice_children(", node, ").flat_map(move |node| {
+                put!("self.parser.sppf.unary_children(", node, ").flat_map(move |node| {
             enum Iter<");
                 for i in 0..rules.len() {
                     put!("_", i, ",");
@@ -1154,8 +1167,16 @@ impl<Pat: Ord + ToRustSrc> Rule<Pat> {
             }
             Rule::Opt(rule) => {
                 put!("self.parser.sppf.unary_children(", node, ").flat_map(move |node| {
-            ", rule.generate_traverse("node", true, parse_labels), ".map(|x| (x,))
-        }).chain(if ", node, ".range.is_empty() { Some(<(_,)>::default()) } else { None })");
+            match node.l {
+                ", rule.parse_label(parse_labels), " => {
+                    Some(", rule.generate_traverse("node", true, parse_labels).replace("\n", "\n        "), ".map(|x| (x,)))
+                        .into_iter().flatten().chain(None)
+                }
+                ", Rc::new(Rule::Empty).parse_label(parse_labels), " => {
+                    None.into_iter().flatten().chain(Some(<(_,)>::default()))
+                }
+                _ => unreachable!()
+        })");
             }
         }
         out.replace("\n", "\n    ")
