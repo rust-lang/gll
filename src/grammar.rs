@@ -120,6 +120,13 @@ impl<Pat: PartialEq> RuleWithNamedFields<Pat> {
         self.rule = Rc::new(Rule::RepeatMany(self.rule));
         self
     }
+    pub fn repeat_more(mut self) -> Self {
+        for path in self.fields.values_mut() {
+            path.insert(0, 0);
+        }
+        self.rule = Rc::new(Rule::RepeatMore(self.rule));
+        self
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -134,6 +141,7 @@ pub enum Rule<Pat> {
 
     Opt(Rc<Rule<Pat>>),
     RepeatMany(Rc<Rule<Pat>>),
+    RepeatMore(Rc<Rule<Pat>>),
 }
 
 impl<Pat: Ord + ToRustSrc> Rule<Pat> {
@@ -147,7 +155,7 @@ impl<Pat: Ord + ToRustSrc> Rule<Pat> {
             Rule::Concat(rules) => rules[path[0]].field_type(&path[1..]),
             Rule::Or(rules) => rules[path[0]].field_type(&path[1..]),
             Rule::Opt(rule) => [rule][path[0]].field_type(&path[1..]),
-            Rule::RepeatMany(rule) => {
+            Rule::RepeatMany(rule) | Rule::RepeatMore(rule) => {
                 assert_eq!(path, []);
                 format!("[{}]", rule.field_type(&[]))
             }
@@ -159,7 +167,8 @@ impl<Pat: Ord + ToRustSrc> Rule<Pat> {
             | Rule::Match(_)
             | Rule::NotMatch(_)
             | Rule::Call(_)
-            | Rule::RepeatMany(_) => false,
+            | Rule::RepeatMany(_)
+            | Rule::RepeatMore(_) => false,
             Rule::Concat(rules) => rules[path[0]].field_is_refutable(&path[1..]),
             Rule::Or(..) | Rule::Opt(_) => true,
         }
@@ -210,10 +219,34 @@ impl<Pat: Ord + ToRustSrc> Rule<Pat> {
                     },
                 )
             }
-            Rule::RepeatMany(element) => {
+            Rule::RepeatMany(element) | Rule::RepeatMore(element) => {
                 let element_label = element.parse_label(parse_labels);
-                let label = ParseLabel(format!("({}*)", element_label.0));
-                (label.clone(), ParseLabelKind::Binary(element_label, label))
+                let label_many = ParseLabel(format!("({}*)", element_label.0));
+                let label_more = ParseLabel(format!("({}+)", element_label.0));
+                let kind_many = ParseLabelKind::Opt {
+                    none: Rc::new(Rule::Empty).parse_label(parse_labels),
+                    some: label_more.clone(),
+                };
+                let kind_more = ParseLabelKind::Binary(element_label, label_many.clone());
+                assert!(
+                    parse_labels
+                        .borrow_mut()
+                        .insert(
+                            Rc::new(Rule::RepeatMany(element.clone())),
+                            (label_many, kind_many)
+                        )
+                        .is_none()
+                );
+                assert!(
+                    parse_labels
+                        .borrow_mut()
+                        .insert(
+                            Rc::new(Rule::RepeatMore(element.clone())),
+                            (label_more, kind_more)
+                        )
+                        .is_none()
+                );
+                return self.parse_label(parse_labels);
             }
         };
         assert!(
@@ -350,6 +383,16 @@ pub macro grammar {
             grammar!(@rule_tok $input0).repeat_many()
         )) [$($rules)*])
     },
+    (@rule [$name:ident : $input0:tt + $($input:tt)*] ($current:expr) [$($rules:expr)*]) => {
+        grammar!(@rule [$($input)*] ($current.then(
+            grammar!(@rule_tok $input0).repeat_more().with_field_name(stringify!($name))
+        )) [$($rules)*])
+    },
+    (@rule [$input0:tt + $($input:tt)*] ($current:expr) [$($rules:expr)*]) => {
+        grammar!(@rule [$($input)*] ($current.then(
+            grammar!(@rule_tok $input0).repeat_more()
+        )) [$($rules)*])
+    },
     (@rule [$name:ident : $input0:tt $($input:tt)*] ($current:expr) [$($rules:expr)*]) => {
         grammar!(@rule [$($input)*] ($current.then(
             grammar!(@rule_tok $input0).with_field_name(stringify!($name))
@@ -429,25 +472,28 @@ impl<'a, 'b, 'i, T> fmt::Debug for Handle<'a, 'b, 'i, [T]>
 impl<'a, 'b, 'i, T> Iterator for Handle<'a, 'b, 'i, [T]> {
     type Item = Result<Handle<'a, 'b, 'i, T>, Ambiguity>;
     fn next(&mut self) -> Option<Self::Item> {
+        if let ParseLabelKind::Opt { none, .. } = self.node.l.kind() {
+            let mut opt_children = self.parser.sppf.unary_children(self.node);
+            let opt_child = opt_children.next().unwrap();
+            if opt_children.next().is_some() {
+                return Some(Err(Ambiguity));
+            }
+            if opt_child.l == none {
+                return None;
+            }
+            self.node = opt_child;
+        }
         let mut children = self.parser.sppf.binary_children(self.node);
-        if self.node.range.is_empty() {
-            if children.next().is_some() {
-                Some(Err(Ambiguity))
-            } else {
-                None
-            }
+        let (first, rest) = children.next().unwrap();
+        if children.next().is_none() {
+            self.node = rest;
+            Some(Ok(Handle {
+                node: first,
+                parser: self.parser,
+                _marker: PhantomData,
+            }))
         } else {
-            let (first, rest) = children.next().unwrap();
-            if children.next().is_none() {
-                self.node = rest;
-                Some(Ok(Handle {
-                    node: first,
-                    parser: self.parser,
-                    _marker: PhantomData,
-                }))
-            } else {
-                Some(Err(Ambiguity))
-            }
+            Some(Err(Ambiguity))
         }
     }
 }");
@@ -675,14 +721,7 @@ impl ParseLabel for _P {
         match self {");
         for (label, kind) in named_parse_labels.iter().chain(parse_labels.borrow().values()) {
             put!("
-                ", label, " => ParseLabelKind::");
-            match kind {
-                ParseLabelKind::Opaque => put!("Opaque,"),
-                ParseLabelKind::Alias(inner) => put!("Alias(", inner, "),"),
-                ParseLabelKind::Choice => put!("Choice,"),
-                ParseLabelKind::Opt { none, some } => put!("Opt { none: ", none,  ", some: ", some, " },"),
-                ParseLabelKind::Binary(left, right) => put!("Binary(", left, ", ", right, "),"),
-            }
+                ", label, " => ParseLabelKind::", kind, ",");
         }
         put!("
         }
@@ -981,6 +1020,12 @@ fn parallel(thunks: impl ForEachThunk) -> Thunk<impl FnOnce(Continuation) -> Con
     })
 }
 
+fn opt(
+    thunk: Thunk<impl FnOnce(Continuation) -> Continuation>,
+) -> Thunk<impl FnOnce(Continuation) -> Continuation> {
+    parallel((thunk, thunk!("")))
+}
+
 fn fix<F: FnOnce(Continuation) -> Continuation>(
     f: impl FnOnce(CodeLabel) -> Thunk<F>,
 ) -> Thunk<impl FnOnce(Continuation) -> Continuation> {
@@ -1048,6 +1093,7 @@ impl<Pat: Ord + ToRustSrc> Rule<Pat> {
                 let parse_label = parse_labels.and_then(|parse_labels| {
                     rule.parse_label(parse_labels);
                     match parse_labels.borrow()[rule].1 {
+                        // TODO: unpack aliases?
                         ParseLabelKind::Choice | ParseLabelKind::Binary(..) => None,
                         _ => Some(self.parse_label(parse_labels)),
                     }
@@ -1056,30 +1102,40 @@ impl<Pat: Ord + ToRustSrc> Rule<Pat> {
                     (
                         thunk!("
                 assert_eq!(_range.start(), c.frame.range.start());") +
-                        parallel((
+                        opt(
                             rule.generate_parse(parse_labels) +
                             sppf_add(&parse_label, "0"),
-                            thunk!(""),
-                        ))
+                            )
                     )(cont)
                 } else {
-                    parallel((rule.generate_parse(parse_labels), thunk!("")))(cont)
+                    opt(rule.generate_parse(parse_labels))(cont)
                 }
             }
             (Rule::RepeatMany(rule), None) => fix(|label| {
-                parallel((rule.generate_parse(None) + call(label), thunk!("")))
+                opt(rule.generate_parse(None) + call(label))
             })(cont),
             (Rule::RepeatMany(rule), Some(parse_labels)) => fix(|label| {
-                parallel((
+                let more = Rc::new(Rule::RepeatMore(rule.clone()));
+                opt(
                     thunk!("
                 assert_eq!(_range.start(), c.frame.range.start());") +
                     rule.generate_parse(Some(parse_labels)) +
                     push_state("c.frame.range.subtract_suffix(_range).len()") +
                     call(label) +
-                    pop_state(|state| sppf_add(&self.parse_label(parse_labels), state)),
-                    thunk!(""),
-                ))
-            })(cont)
+                    pop_state(move |state| sppf_add(&more.parse_label(parse_labels), state))
+                )
+            })(cont),
+            (Rule::RepeatMore(rule), None) => fix(|label| {
+                rule.generate_parse(None) + opt(call(label))
+            })(cont),
+            (Rule::RepeatMore(rule), Some(parse_labels)) => fix(|label| {
+                thunk!("
+                assert_eq!(_range.start(), c.frame.range.start());") +
+                rule.generate_parse(Some(parse_labels)) +
+                push_state("c.frame.range.subtract_suffix(_range).len()") +
+                opt(call(label)) +
+                pop_state(|state| sppf_add(&self.parse_label(parse_labels), state))
+            })(cont),
         })
     }
     fn generate_traverse(
@@ -1092,7 +1148,7 @@ impl<Pat: Ord + ToRustSrc> Rule<Pat> {
         macro put($($x:expr),*) {{ $(write!(out, "{}", $x).unwrap();)* }}
 
         match self {
-            Rule::Empty | Rule::Match(_) | Rule::NotMatch(_) | Rule::Call(_) | Rule::RepeatMany(_) => {
+            Rule::Empty | Rule::Match(_) | Rule::NotMatch(_) | Rule::Call(_) | Rule::RepeatMany(_) | Rule::RepeatMore(_) => {
                 put!("::std::iter::once(");
                 if refutable {
                     put!("Some(")

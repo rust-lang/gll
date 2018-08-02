@@ -408,8 +408,7 @@ impl<'i, P: ParseLabel> ParseGraph<'i, P> {
         &'a self,
         node: ParseNode<'i, P>,
     ) -> impl Iterator<Item = ParseNode<'i, P>> + 'a {
-        let kind = node.l.kind();
-        let (child0, child1, choice_children) = match kind {
+        let (child0, child1, choice_children) = match node.l.kind() {
             ParseLabelKind::Alias(l) => (Some(l), None, None),
             ParseLabelKind::Choice => (
                 None,
@@ -423,6 +422,7 @@ impl<'i, P: ParseLabel> ParseGraph<'i, P> {
                     .children
                     .get(&ParseNode {
                         l: match some.kind() {
+                            // TODO: unpack aliases?
                             ParseLabelKind::Choice | ParseLabelKind::Binary(..) => some,
                             _ => node.l,
                         },
@@ -439,7 +439,7 @@ impl<'i, P: ParseLabel> ParseGraph<'i, P> {
                     None,
                 )
             }
-            _ => unreachable!(),
+            kind => unreachable!("unary_children({}): non-unary kind {}", node, kind),
         };
         choice_children
             .into_iter()
@@ -475,7 +475,7 @@ impl<'i, P: ParseLabel> ParseGraph<'i, P> {
                         },
                     )
                 }),
-            _ => unreachable!(),
+            kind => unreachable!("binary_children({}): non-binary kind {}", node, kind),
         }
     }
 
@@ -546,6 +546,20 @@ pub enum ParseLabelKind<P> {
     Choice,
     Opt { none: P, some: P },
     Binary(P, P),
+}
+
+impl<P: fmt::Display> fmt::Display for ParseLabelKind<P> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            ParseLabelKind::Opaque => write!(f, "Opaque"),
+            ParseLabelKind::Alias(inner) => write!(f, "Alias({})", inner),
+            ParseLabelKind::Choice => write!(f, "Choice"),
+            ParseLabelKind::Opt { none, some } => {
+                write!(f, "Opt {{ none: {}, some: {} }}", none, some)
+            }
+            ParseLabelKind::Binary(left, right) => write!(f, "Binary({}, {})", left, right),
+        }
+    }
 }
 
 pub trait ParseLabel: fmt::Display + Ord + Hash + Copy + 'static {
