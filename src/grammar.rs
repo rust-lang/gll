@@ -1,10 +1,10 @@
 use ordermap::OrderMap;
 use std::cell::RefCell;
 use std::char;
-use std::collections::BTreeMap;
 use std::convert::TryFrom;
 use std::fmt;
 use std::fmt::Write as FmtWrite;
+use std::hash::Hash;
 use std::io::Write;
 use std::mem;
 use std::ops::{Add, Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive};
@@ -129,7 +129,7 @@ impl<Pat: PartialEq> RuleWithNamedFields<Pat> {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Rule<Pat> {
     Empty,
     Match(Pat),
@@ -144,7 +144,7 @@ pub enum Rule<Pat> {
     RepeatMore(Rc<Rule<Pat>>),
 }
 
-impl<Pat: Ord + ToRustSrc> Rule<Pat> {
+impl<Pat: Ord + Hash + ToRustSrc> Rule<Pat> {
     fn field_type(&self, path: &[usize]) -> String {
         match self {
             Rule::Empty | Rule::Match(_) | Rule::NotMatch(_) => {
@@ -175,28 +175,23 @@ impl<Pat: Ord + ToRustSrc> Rule<Pat> {
     }
     fn parse_label(
         self: &Rc<Self>,
-        parse_labels: &RefCell<BTreeMap<Rc<Self>, (ParseLabel, ParseLabelKind<ParseLabel>)>>,
+        parse_labels: &RefCell<
+            OrderMap<Rc<Self>, (ParseLabel, Option<ParseLabelKind<ParseLabel>>)>,
+        >,
     ) -> ParseLabel {
         if let Some((label, _)) = parse_labels.borrow().get(self) {
             return label.clone();
         }
-        let (label, kind) = match &**self {
-            Rule::Empty => (ParseLabel("()".to_string()), ParseLabelKind::Opaque),
-            Rule::Match(pat) => (ParseLabel(pat.to_rust_src()), ParseLabelKind::Opaque),
-            Rule::NotMatch(pat) => (
-                ParseLabel(format!("!{}", pat.to_rust_src())),
-                ParseLabelKind::Opaque,
-            ),
+        let label = match &**self {
+            Rule::Empty => ParseLabel("()".to_string()),
+            Rule::Match(pat) => ParseLabel(pat.to_rust_src()),
+            Rule::NotMatch(pat) => ParseLabel(format!("!{}", pat.to_rust_src())),
             Rule::Call(r) => return ParseLabel(r.clone()),
-            Rule::Concat([left, right]) => {
-                let left = left.parse_label(parse_labels);
-                let right = right.parse_label(parse_labels);
-
-                (
-                    ParseLabel(format!("({} {})", left.0, right.0)),
-                    ParseLabelKind::Binary(left, right),
-                )
-            }
+            Rule::Concat([left, right]) => ParseLabel(format!(
+                "({} {})",
+                left.parse_label(parse_labels).0,
+                right.parse_label(parse_labels).0
+            )),
             Rule::Or(rules) => {
                 assert!(rules.len() > 1);
                 let mut s = String::from("(");
@@ -207,55 +202,56 @@ impl<Pat: Ord + ToRustSrc> Rule<Pat> {
                     s.push_str(&rule.parse_label(parse_labels).0);
                 }
                 s.push(')');
-                (ParseLabel(s), ParseLabelKind::Choice)
+                ParseLabel(s)
             }
-            Rule::Opt(rule) => {
-                let label = rule.parse_label(parse_labels);
-                (
-                    ParseLabel(format!("({}?)", label.0)),
-                    ParseLabelKind::Opt {
-                        none: Rc::new(Rule::Empty).parse_label(parse_labels),
-                        some: label,
-                    },
-                )
+            Rule::Opt(rule) => ParseLabel(format!("({}?)", rule.parse_label(parse_labels).0)),
+            Rule::RepeatMany(rule) => {
+                ParseLabel(format!("({}*)", rule.parse_label(parse_labels).0))
             }
-            Rule::RepeatMany(element) | Rule::RepeatMore(element) => {
-                let element_label = element.parse_label(parse_labels);
-                let label_many = ParseLabel(format!("({}*)", element_label.0));
-                let label_more = ParseLabel(format!("({}+)", element_label.0));
-                let kind_many = ParseLabelKind::Opt {
-                    none: Rc::new(Rule::Empty).parse_label(parse_labels),
-                    some: label_more.clone(),
-                };
-                let kind_more = ParseLabelKind::Binary(element_label, label_many.clone());
-                assert!(
-                    parse_labels
-                        .borrow_mut()
-                        .insert(
-                            Rc::new(Rule::RepeatMany(element.clone())),
-                            (label_many, kind_many)
-                        )
-                        .is_none()
-                );
-                assert!(
-                    parse_labels
-                        .borrow_mut()
-                        .insert(
-                            Rc::new(Rule::RepeatMore(element.clone())),
-                            (label_more, kind_more)
-                        )
-                        .is_none()
-                );
-                return self.parse_label(parse_labels);
+            Rule::RepeatMore(rule) => {
+                ParseLabel(format!("({}+)", rule.parse_label(parse_labels).0))
             }
         };
         assert!(
             parse_labels
                 .borrow_mut()
-                .insert(self.clone(), (label.clone(), kind))
+                .insert(self.clone(), (label.clone(), None))
                 .is_none()
         );
         label
+    }
+
+    fn fill_parse_label_kind(
+        self: &Rc<Self>,
+        parse_labels: &RefCell<
+            OrderMap<Rc<Self>, (ParseLabel, Option<ParseLabelKind<ParseLabel>>)>,
+        >,
+    ) {
+        if parse_labels.borrow()[self].1.is_some() {
+            return;
+        }
+        let kind = match &**self {
+            Rule::Empty | Rule::Match(_) | Rule::NotMatch(_) => ParseLabelKind::Opaque,
+            Rule::Call(_) => unreachable!(),
+            Rule::Concat([left, right]) => ParseLabelKind::Binary(
+                left.parse_label(parse_labels),
+                right.parse_label(parse_labels),
+            ),
+            Rule::Or(_) => ParseLabelKind::Choice,
+            Rule::Opt(rule) => ParseLabelKind::Opt {
+                none: Rc::new(Rule::Empty).parse_label(parse_labels),
+                some: rule.parse_label(parse_labels),
+            },
+            Rule::RepeatMany(rule) => ParseLabelKind::Opt {
+                none: Rc::new(Rule::Empty).parse_label(parse_labels),
+                some: Rc::new(Rule::RepeatMore(rule.clone())).parse_label(parse_labels),
+            },
+            Rule::RepeatMore(rule) => ParseLabelKind::Binary(
+                rule.parse_label(parse_labels),
+                Rc::new(Rule::RepeatMany(rule.clone())).parse_label(parse_labels),
+            ),
+        };
+        parse_labels.borrow_mut().get_mut(self).unwrap().1 = Some(kind);
     }
 }
 
@@ -263,7 +259,7 @@ pub trait ToRustSrc {
     fn to_rust_src(&self) -> String;
 }
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Pat<S, C> {
     String(S),
     Range(C, C),
@@ -411,11 +407,11 @@ pub macro grammar {
 }
 
 #[cfg_attr(rustfmt, rustfmt_skip)]
-impl<Pat: Ord + ToRustSrc> Grammar<Pat> {
+impl<Pat: Ord + Hash + ToRustSrc> Grammar<Pat> {
     pub fn generate(&mut self, out: &mut Write) {
         macro put($($x:expr),*) {{ $(write!(out, "{}", $x).unwrap();)* }}
 
-        let parse_labels = RefCell::new(BTreeMap::new());
+        let parse_labels = RefCell::new(OrderMap::new());
         let mut named_parse_labels = vec![];
         let mut code_labels = vec![];
 
@@ -681,10 +677,21 @@ fn parse(p: &mut Parser) {
         }
     }
 }
-
+");
+        let mut i = 0;
+        while i < parse_labels.borrow().len() {
+            let rule = parse_labels.borrow().get_index(i).unwrap().0.clone();
+            rule.fill_parse_label_kind(&parse_labels);
+            i += 1;
+        }
+        let mut all_parse_labels: Vec<_> = named_parse_labels.into_iter()
+            .chain(parse_labels.into_inner().into_iter().map(|(_, (l, k))| (l, k.unwrap())))
+            .collect();
+        all_parse_labels.sort();
+        put!("
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
 pub enum _P {");
-        for i in 0..named_parse_labels.len() + parse_labels.borrow().len() {
+        for i in 0..all_parse_labels.len() {
             put!(
                 "
     _", i, ",");
@@ -693,7 +700,7 @@ pub enum _P {");
 }
 
 macro P {");
-        for (i, (l, _)) in named_parse_labels.iter().chain(parse_labels.borrow().values()).enumerate() {
+        for (i, (l, _)) in all_parse_labels.iter().enumerate() {
             if i != 0 {
                 put!(",");
             }
@@ -706,7 +713,7 @@ macro P {");
 impl fmt::Display for _P {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let s = match *self {");
-        for (l, _) in named_parse_labels.iter().chain(parse_labels.borrow().values()) {
+        for (l, _) in &all_parse_labels {
             put!("
             ", l, " => \"", l.0.escape_default(), "\",");
         }
@@ -719,7 +726,7 @@ impl fmt::Display for _P {
 impl ParseLabel for _P {
     fn kind(self) -> ParseLabelKind<Self> {
         match self {");
-        for (label, kind) in named_parse_labels.iter().chain(parse_labels.borrow().values()) {
+        for (label, kind) in &all_parse_labels {
             put!("
                 ", label, " => ParseLabelKind::", kind, ",");
         }
@@ -729,7 +736,7 @@ impl ParseLabel for _P {
     fn from_usize(i: usize) -> Self {
         match i {");
 
-        for i in 0..named_parse_labels.len() + parse_labels.into_inner().len() {
+        for i in 0..all_parse_labels.len() {
             put!("
             ", i, " => _P::_", i, ",");
         }
@@ -1049,10 +1056,10 @@ fn reify_as(label: CodeLabel) -> Thunk<impl FnOnce(Continuation) -> Continuation
 }
 
 #[cfg_attr(rustfmt, rustfmt_skip)]
-impl<Pat: Ord + ToRustSrc> Rule<Pat> {
+impl<Pat: Ord + Hash + ToRustSrc> Rule<Pat> {
     fn generate_parse<'a>(
         self: &'a Rc<Self>,
-        parse_labels: Option<&'a RefCell<BTreeMap<Rc<Rule<Pat>>, (ParseLabel, ParseLabelKind<ParseLabel>)>>>
+        parse_labels: Option<&'a RefCell<OrderMap<Rc<Rule<Pat>>, (ParseLabel, Option<ParseLabelKind<ParseLabel>>)>>>
     ) -> Thunk<impl FnOnce(Continuation) -> Continuation + 'a> {
         Thunk::new(move |cont| match (&**self, parse_labels) {
             (Rule::Empty, _) => cont,
@@ -1092,7 +1099,8 @@ impl<Pat: Ord + ToRustSrc> Rule<Pat> {
             (Rule::Opt(rule), _) => {
                 let parse_label = parse_labels.and_then(|parse_labels| {
                     rule.parse_label(parse_labels);
-                    match parse_labels.borrow()[rule].1 {
+                    rule.fill_parse_label_kind(parse_labels);
+                    match parse_labels.borrow()[rule].1.as_ref().unwrap() {
                         // TODO: unpack aliases?
                         ParseLabelKind::Choice | ParseLabelKind::Binary(..) => None,
                         _ => Some(self.parse_label(parse_labels)),
@@ -1142,7 +1150,7 @@ impl<Pat: Ord + ToRustSrc> Rule<Pat> {
         &self,
         node: &str,
         refutable: bool,
-        parse_labels: &RefCell<BTreeMap<Rc<Rule<Pat>>, (ParseLabel, ParseLabelKind<ParseLabel>)>>,
+        parse_labels: &RefCell<OrderMap<Rc<Rule<Pat>>, (ParseLabel, Option<ParseLabelKind<ParseLabel>>)>>,
     ) -> String {
         let mut out = String::new();
         macro put($($x:expr),*) {{ $(write!(out, "{}", $x).unwrap();)* }}
