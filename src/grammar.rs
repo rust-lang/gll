@@ -78,7 +78,7 @@ impl<Pat: PartialEq> RuleWithNamedFields<Pat> {
     }
     pub fn with_field_name(mut self, name: &str) -> Self {
         match &*self.rule {
-            Rule::RepeatMany(rule) => match **rule {
+            Rule::RepeatMany(rule, _) | Rule::RepeatMore(rule, _) => match **rule {
                 Rule::Match(_) | Rule::Call(_) => {}
                 _ => unimplemented!(),
             },
@@ -113,18 +113,24 @@ impl<Pat: PartialEq> RuleWithNamedFields<Pat> {
         self.rule = Rc::new(Rule::Opt(self.rule));
         self
     }
-    pub fn repeat_many(mut self) -> Self {
+    pub fn repeat_many(mut self, sep: Option<Self>) -> Self {
         for path in self.fields.values_mut() {
             path.insert(0, 0);
         }
-        self.rule = Rc::new(Rule::RepeatMany(self.rule));
+        if let Some(sep) = &sep {
+            assert!(sep.fields.is_empty());
+        }
+        self.rule = Rc::new(Rule::RepeatMany(self.rule, sep.map(|sep| sep.rule)));
         self
     }
-    pub fn repeat_more(mut self) -> Self {
+    pub fn repeat_more(mut self, sep: Option<Self>) -> Self {
         for path in self.fields.values_mut() {
             path.insert(0, 0);
         }
-        self.rule = Rc::new(Rule::RepeatMore(self.rule));
+        if let Some(sep) = &sep {
+            assert!(sep.fields.is_empty());
+        }
+        self.rule = Rc::new(Rule::RepeatMore(self.rule, sep.map(|sep| sep.rule)));
         self
     }
 }
@@ -140,8 +146,8 @@ pub enum Rule<Pat> {
     Or(Vec<Rc<Rule<Pat>>>),
 
     Opt(Rc<Rule<Pat>>),
-    RepeatMany(Rc<Rule<Pat>>),
-    RepeatMore(Rc<Rule<Pat>>),
+    RepeatMany(Rc<Rule<Pat>>, Option<Rc<Rule<Pat>>>),
+    RepeatMore(Rc<Rule<Pat>>, Option<Rc<Rule<Pat>>>),
 }
 
 impl<Pat: Ord + Hash + ToRustSrc> Rule<Pat> {
@@ -155,7 +161,7 @@ impl<Pat: Ord + Hash + ToRustSrc> Rule<Pat> {
             Rule::Concat(rules) => rules[path[0]].field_type(&path[1..]),
             Rule::Or(rules) => rules[path[0]].field_type(&path[1..]),
             Rule::Opt(rule) => [rule][path[0]].field_type(&path[1..]),
-            Rule::RepeatMany(rule) | Rule::RepeatMore(rule) => {
+            Rule::RepeatMany(rule, _) | Rule::RepeatMore(rule, _) => {
                 assert_eq!(path, []);
                 format!("[{}]", rule.field_type(&[]))
             }
@@ -167,8 +173,8 @@ impl<Pat: Ord + Hash + ToRustSrc> Rule<Pat> {
             | Rule::Match(_)
             | Rule::NotMatch(_)
             | Rule::Call(_)
-            | Rule::RepeatMany(_)
-            | Rule::RepeatMore(_) => false,
+            | Rule::RepeatMany(..)
+            | Rule::RepeatMore(..) => false,
             Rule::Concat(rules) => rules[path[0]].field_is_refutable(&path[1..]),
             Rule::Or(..) | Rule::Opt(_) => true,
         }
@@ -205,12 +211,22 @@ impl<Pat: Ord + Hash + ToRustSrc> Rule<Pat> {
                 ParseLabel(s)
             }
             Rule::Opt(rule) => ParseLabel(format!("({}?)", rule.parse_label(parse_labels).0)),
-            Rule::RepeatMany(rule) => {
+            Rule::RepeatMany(rule, None) => {
                 ParseLabel(format!("({}*)", rule.parse_label(parse_labels).0))
             }
-            Rule::RepeatMore(rule) => {
+            Rule::RepeatMany(elem, Some(sep)) => ParseLabel(format!(
+                "({}* % {})",
+                elem.parse_label(parse_labels).0,
+                sep.parse_label(parse_labels).0
+            )),
+            Rule::RepeatMore(rule, None) => {
                 ParseLabel(format!("({}+)", rule.parse_label(parse_labels).0))
             }
+            Rule::RepeatMore(elem, Some(sep)) => ParseLabel(format!(
+                "({}+ % {})",
+                elem.parse_label(parse_labels).0,
+                sep.parse_label(parse_labels).0
+            )),
         };
         assert!(
             parse_labels
@@ -242,13 +258,21 @@ impl<Pat: Ord + Hash + ToRustSrc> Rule<Pat> {
                 none: Rc::new(Rule::Empty).parse_label(parse_labels),
                 some: rule.parse_label(parse_labels),
             },
-            Rule::RepeatMany(rule) => ParseLabelKind::Opt {
+            Rule::RepeatMany(elem, sep) => ParseLabelKind::Opt {
                 none: Rc::new(Rule::Empty).parse_label(parse_labels),
-                some: Rc::new(Rule::RepeatMore(rule.clone())).parse_label(parse_labels),
+                some: Rc::new(Rule::RepeatMore(elem.clone(), sep.clone()))
+                    .parse_label(parse_labels),
             },
-            Rule::RepeatMore(rule) => ParseLabelKind::Binary(
+            Rule::RepeatMore(rule, None) => ParseLabelKind::Binary(
                 rule.parse_label(parse_labels),
-                Rc::new(Rule::RepeatMany(rule.clone())).parse_label(parse_labels),
+                Rc::new(Rule::RepeatMany(rule.clone(), None)).parse_label(parse_labels),
+            ),
+            Rule::RepeatMore(elem, Some(sep)) => ParseLabelKind::Binary(
+                elem.parse_label(parse_labels),
+                Rc::new(Rule::Opt(Rc::new(Rule::Concat([
+                    sep.clone(),
+                    self.clone(),
+                ])))).parse_label(parse_labels),
             ),
         };
         parse_labels.borrow_mut().get_mut(self).unwrap().1 = Some(kind);
@@ -369,24 +393,44 @@ pub macro grammar {
             grammar!(@rule_tok $input0).opt()
         )) [$($rules)*])
     },
+    (@rule [$name:ident : $input0:tt * % $input1:tt $($input:tt)*] ($current:expr) [$($rules:expr)*]) => {
+        grammar!(@rule [$($input)*] ($current.then(
+            grammar!(@rule_tok $input0).repeat_many(Some(grammar!(@rule_tok $input1))).with_field_name(stringify!($name))
+        )) [$($rules)*])
+    },
+    (@rule [$input0:tt * % $input1:tt $($input:tt)*] ($current:expr) [$($rules:expr)*]) => {
+        grammar!(@rule [$($input)*] ($current.then(
+            grammar!(@rule_tok $input0).repeat_many(Some(grammar!(@rule_tok $input1)))
+        )) [$($rules)*])
+    },
     (@rule [$name:ident : $input0:tt * $($input:tt)*] ($current:expr) [$($rules:expr)*]) => {
         grammar!(@rule [$($input)*] ($current.then(
-            grammar!(@rule_tok $input0).repeat_many().with_field_name(stringify!($name))
+            grammar!(@rule_tok $input0).repeat_many(None).with_field_name(stringify!($name))
         )) [$($rules)*])
     },
     (@rule [$input0:tt * $($input:tt)*] ($current:expr) [$($rules:expr)*]) => {
         grammar!(@rule [$($input)*] ($current.then(
-            grammar!(@rule_tok $input0).repeat_many()
+            grammar!(@rule_tok $input0).repeat_many(None)
+        )) [$($rules)*])
+    },
+    (@rule [$name:ident : $input0:tt + % $input1:tt $($input:tt)*] ($current:expr) [$($rules:expr)*]) => {
+        grammar!(@rule [$($input)*] ($current.then(
+            grammar!(@rule_tok $input0).repeat_more(Some(grammar!(@rule_tok $input1))).with_field_name(stringify!($name))
+        )) [$($rules)*])
+    },
+    (@rule [$input0:tt + % $input1:tt $($input:tt)*] ($current:expr) [$($rules:expr)*]) => {
+        grammar!(@rule [$($input)*] ($current.then(
+            grammar!(@rule_tok $input0).repeat_more(Some(grammar!(@rule_tok $input1)))
         )) [$($rules)*])
     },
     (@rule [$name:ident : $input0:tt + $($input:tt)*] ($current:expr) [$($rules:expr)*]) => {
         grammar!(@rule [$($input)*] ($current.then(
-            grammar!(@rule_tok $input0).repeat_more().with_field_name(stringify!($name))
+            grammar!(@rule_tok $input0).repeat_more(None).with_field_name(stringify!($name))
         )) [$($rules)*])
     },
     (@rule [$input0:tt + $($input:tt)*] ($current:expr) [$($rules:expr)*]) => {
         grammar!(@rule [$($input)*] ($current.then(
-            grammar!(@rule_tok $input0).repeat_more()
+            grammar!(@rule_tok $input0).repeat_more(None)
         )) [$($rules)*])
     },
     (@rule [$name:ident : $input0:tt $($input:tt)*] ($current:expr) [$($rules:expr)*]) => {
@@ -481,16 +525,25 @@ impl<'a, 'b, 'i, T> Iterator for Handle<'a, 'b, 'i, [T]> {
         }
         let mut children = self.parser.sppf.binary_children(self.node);
         let (first, rest) = children.next().unwrap();
-        if children.next().is_none() {
-            self.node = rest;
-            Some(Ok(Handle {
-                node: first,
-                parser: self.parser,
-                _marker: PhantomData,
-            }))
-        } else {
-            Some(Err(Ambiguity))
+        if children.next().is_some() {
+            return Some(Err(Ambiguity));
         }
+        self.node = rest;
+        let mut handle = Handle {
+            node: first,
+            parser: self.parser,
+            _marker: PhantomData,
+        };
+        if let ParseLabelKind::Binary(..) = self.node.l.kind() {
+            let mut children = self.parser.sppf.binary_children(self.node);
+            let (first, rest) = children.next().unwrap();
+            if children.next().is_some() {
+                return Some(Err(Ambiguity));
+            }
+            self.node = rest;
+            handle.node = first;
+        }
+        Some(Ok(handle))
     }
 }");
         for (name, rule) in &self.rules {
@@ -1006,16 +1059,22 @@ fn parallel(thunks: impl ForEachThunk) -> Thunk<impl FnOnce(Continuation) -> Con
         let mut child_nested_frames = None;
         let nested_frames = cont.nested_frames.clone();
         thunks.for_each_thunk(&mut cont, |mut child_cont| {
-            code.push_str(child_cont.to_inline());
             if let Some(prev) = child_nested_frames {
                 assert_eq!(child_cont.nested_frames.len(), prev);
             } else {
                 child_nested_frames = Some(child_cont.nested_frames.len());
             }
+            if let Some(Some(ret_label)) = child_cont.nested_frames.last().cloned() {
+                if let None = nested_frames[child_cont.nested_frames.len() - 1] {
+                    child_cont = call(mem::replace(child_cont.to_label(), ret_label))(child_cont);
+                    *child_cont.nested_frames.last_mut().unwrap() = None;
+                }
+            }
             assert_eq!(
                 child_cont.nested_frames[..],
                 nested_frames[..child_cont.nested_frames.len()]
             );
+            code.push_str(child_cont.to_inline());
         });
         cont.code = Code::Inline(code);
         if let Some(child_nested_frames) = child_nested_frames {
@@ -1119,11 +1178,11 @@ impl<Pat: Ord + Hash + ToRustSrc> Rule<Pat> {
                     opt(rule.generate_parse(parse_labels))(cont)
                 }
             }
-            (Rule::RepeatMany(rule), None) => fix(|label| {
+            (Rule::RepeatMany(rule, None), None) => fix(|label| {
                 opt(rule.generate_parse(None) + call(label))
             })(cont),
-            (Rule::RepeatMany(rule), Some(parse_labels)) => fix(|label| {
-                let more = Rc::new(Rule::RepeatMore(rule.clone()));
+            (Rule::RepeatMany(rule, None), Some(parse_labels)) => fix(|label| {
+                let more = Rc::new(Rule::RepeatMore(rule.clone(), None));
                 opt(
                     thunk!("
                 assert_eq!(_range.start(), c.frame.range.start());") +
@@ -1133,15 +1192,41 @@ impl<Pat: Ord + Hash + ToRustSrc> Rule<Pat> {
                     pop_state(move |state| sppf_add(&more.parse_label(parse_labels), state))
                 )
             })(cont),
-            (Rule::RepeatMore(rule), None) => fix(|label| {
+            (Rule::RepeatMany(elem, Some(sep)), parse_labels) => {
+                opt(Rc::new(Rule::RepeatMore(elem.clone(), Some(sep.clone()))).generate_parse(parse_labels))(cont)
+            }
+            (Rule::RepeatMore(rule, None), None) => fix(|label| {
                 rule.generate_parse(None) + opt(call(label))
             })(cont),
-            (Rule::RepeatMore(rule), Some(parse_labels)) => fix(|label| {
+            (Rule::RepeatMore(elem, Some(sep)), None) => fix(|label| {
+                elem.generate_parse(None) + opt(sep.generate_parse(None) + call(label))
+            })(cont),
+            (Rule::RepeatMore(rule, None), Some(parse_labels)) => fix(|label| {
                 thunk!("
                 assert_eq!(_range.start(), c.frame.range.start());") +
                 rule.generate_parse(Some(parse_labels)) +
                 push_state("c.frame.range.subtract_suffix(_range).len()") +
                 opt(call(label)) +
+                pop_state(|state| sppf_add(&self.parse_label(parse_labels), state))
+            })(cont),
+            (Rule::RepeatMore(elem, Some(sep)), Some(parse_labels)) => fix(|label| {
+                thunk!("
+                assert_eq!(_range.start(), c.frame.range.start());") +
+                elem.generate_parse(Some(parse_labels)) +
+                push_state("c.frame.range.subtract_suffix(_range).len()") +
+                opt(
+                    thunk!("
+                assert_eq!(_range.start(), c.frame.range.start());") +
+                    sep.generate_parse(None) +
+                    push_state("c.frame.range.subtract_suffix(_range).len()") +
+                    call(label) +
+                    pop_state(|state| {
+                        sppf_add(&Rc::new(Rule::Concat([
+                            sep.clone(),
+                            self.clone(),
+                        ])).parse_label(parse_labels), state)
+                    })
+                ) +
                 pop_state(|state| sppf_add(&self.parse_label(parse_labels), state))
             })(cont),
         })
@@ -1156,7 +1241,7 @@ impl<Pat: Ord + Hash + ToRustSrc> Rule<Pat> {
         macro put($($x:expr),*) {{ $(write!(out, "{}", $x).unwrap();)* }}
 
         match self {
-            Rule::Empty | Rule::Match(_) | Rule::NotMatch(_) | Rule::Call(_) | Rule::RepeatMany(_) | Rule::RepeatMore(_) => {
+            Rule::Empty | Rule::Match(_) | Rule::NotMatch(_) | Rule::Call(_) | Rule::RepeatMany(..) | Rule::RepeatMore(..) => {
                 put!("::std::iter::once(");
                 if refutable {
                     put!("Some(")
@@ -1240,6 +1325,7 @@ impl<Pat: Ord + Hash + ToRustSrc> Rule<Pat> {
                     None.into_iter().flatten().chain(Some(<(_,)>::default()))
                 }
                 _ => unreachable!()
+            }
         })");
             }
         }
