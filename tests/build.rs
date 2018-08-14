@@ -12,8 +12,8 @@ fn main() {
 
     let mut gll10_g0 = grammar!{
         S = {
-            X:{ a:A s0:S d:"d" } |
-            Y:{ b:B s1:S } |
+            X:{ a:A s:S d:"d" } |
+            Y:{ b:B s:S } |
             Z:{}
         };
 
@@ -31,8 +31,8 @@ fn main() {
 
     let mut gll10_g0_opaque = grammar!{
         S = {
-            X:{ a:A s0:S "d" } |
-            Y:{ b:B s1:S } |
+            X:{ a:A s:S "d" } |
+            Y:{ b:B s:S } |
             Z:{}
         };
         A = { "a" | "c" };
@@ -42,17 +42,17 @@ fn main() {
 
     let mut gll13_g1 = grammar!{
         S = {
-            X:{ a0:"a" s:S b0:"b" } |
+            X:{ a:"a" s:S b:"b" } |
             Y:{ "d" } |
-            Z:{ a1:"a" d1:"d" b1:"b" }
+            Z:{ a:"a" d:"d" b:"b" }
         };
     };
     gll13_g1.generate(&mut File::create(&out_dir.join("gll13_g1.rs")).unwrap());
 
     let mut gll15_g0 = grammar!{
         A = {
-            X:{ a0:"a" a1:A b:"b" } |
-            Y:{ a2:"a" a3:A c:"c" } |
+            X:{ a:"a" x:A b:"b" } |
+            Y:{ a:"a" x:A c:"c" } |
             Z:{ "a" }
         };
     };
@@ -60,8 +60,8 @@ fn main() {
 
     let mut gll15_g0_nested = grammar!{
         A = {
-            X:{ a0:"a" { a1:A b:"b" } } |
-            Y:{ a2:"a" a3:A c:"c" } |
+            X:{ a:"a" { x:A b:"b" } } |
+            Y:{ a:"a" x:A c:"c" } |
             Z:{ "a" }
         };
     };

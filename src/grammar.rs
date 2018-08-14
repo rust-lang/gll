@@ -1,5 +1,4 @@
-use ordermap::set::OrderSet;
-use ordermap::OrderMap;
+use ordermap::{orderset, OrderMap, OrderSet};
 use std::cell::RefCell;
 use std::char;
 use std::convert::TryFrom;
@@ -29,7 +28,7 @@ impl<Pat> Grammar<Pat> {
 
 pub struct RuleWithNamedFields<Pat> {
     rule: Rc<Rule<Pat>>,
-    fields: OrderMap<String, Vec<usize>>,
+    fields: OrderMap<String, OrderSet<Vec<usize>>>,
 }
 
 impl<Pat: PartialEq> RuleWithNamedFields<Pat> {
@@ -62,12 +61,16 @@ impl<Pat: PartialEq> RuleWithNamedFields<Pat> {
         let rules = rules
             .into_iter()
             .enumerate()
-            .map(|(i, mut rule)| {
-                for (name, path) in &mut rule.fields {
-                    assert!(!fields.contains_key(name), "duplicate field {}", name);
-                    path.insert(0, i);
+            .map(|(i, rule)| {
+                for (name, paths) in rule.fields {
+                    fields
+                        .entry(name)
+                        .or_insert_with(OrderSet::new)
+                        .extend(paths.into_iter().map(|mut path| {
+                            path.insert(0, i);
+                            path
+                        }));
                 }
-                fields.extend(rule.fields);
 
                 rule.rule
             })
@@ -85,38 +88,85 @@ impl<Pat: PartialEq> RuleWithNamedFields<Pat> {
             },
             _ => {}
         }
-        self.fields.insert(name.to_string(), vec![]);
+        self.fields.insert(name.to_string(), orderset![vec![]]);
         self
     }
-    pub fn then(mut self, mut other: Self) -> Self {
+    pub fn then(mut self, other: Self) -> Self {
         if *self.rule == Rule::Empty && self.fields.is_empty() {
             return other;
         }
         if *other.rule == Rule::Empty && other.fields.is_empty() {
             return self;
         }
-        for path in self.fields.values_mut() {
-            path.insert(0, 0);
+        self.fields = self
+            .fields
+            .into_iter()
+            .map(|(name, paths)| {
+                (
+                    name,
+                    paths
+                        .into_iter()
+                        .map(|mut path| {
+                            path.insert(0, 0);
+                            path
+                        })
+                        .collect(),
+                )
+            })
+            .collect();
+        for (name, paths) in other.fields {
+            assert!(!self.fields.contains_key(&name), "duplicate field {}", name);
+            self.fields.insert(
+                name,
+                paths
+                    .into_iter()
+                    .map(|mut path| {
+                        path.insert(0, 1);
+                        path
+                    })
+                    .collect(),
+            );
         }
-        for (name, path) in &mut other.fields {
-            assert!(!self.fields.contains_key(name), "duplicate field {}", name);
-            path.insert(0, 1);
-        }
-        self.fields.extend(other.fields);
         self.rule = Rc::new(Rule::Concat([self.rule, other.rule]));
         self
     }
     pub fn opt(mut self) -> Self {
-        for path in self.fields.values_mut() {
-            path.insert(0, 0);
-        }
+        self.fields = self
+            .fields
+            .into_iter()
+            .map(|(name, paths)| {
+                (
+                    name,
+                    paths
+                        .into_iter()
+                        .map(|mut path| {
+                            path.insert(0, 0);
+                            path
+                        })
+                        .collect(),
+                )
+            })
+            .collect();
         self.rule = Rc::new(Rule::Opt(self.rule));
         self
     }
     pub fn repeat_many(mut self, sep: Option<Self>) -> Self {
-        for path in self.fields.values_mut() {
-            path.insert(0, 0);
-        }
+        self.fields = self
+            .fields
+            .into_iter()
+            .map(|(name, paths)| {
+                (
+                    name,
+                    paths
+                        .into_iter()
+                        .map(|mut path| {
+                            path.insert(0, 0);
+                            path
+                        })
+                        .collect(),
+                )
+            })
+            .collect();
         if let Some(sep) = &sep {
             assert!(sep.fields.is_empty());
         }
@@ -124,35 +174,56 @@ impl<Pat: PartialEq> RuleWithNamedFields<Pat> {
         self
     }
     pub fn repeat_more(mut self, sep: Option<Self>) -> Self {
-        for path in self.fields.values_mut() {
-            path.insert(0, 0);
-        }
+        self.fields = self
+            .fields
+            .into_iter()
+            .map(|(name, paths)| {
+                (
+                    name,
+                    paths
+                        .into_iter()
+                        .map(|mut path| {
+                            path.insert(0, 0);
+                            path
+                        })
+                        .collect(),
+                )
+            })
+            .collect();
         if let Some(sep) = &sep {
             assert!(sep.fields.is_empty());
         }
         self.rule = Rc::new(Rule::RepeatMore(self.rule, sep.map(|sep| sep.rule)));
         self
     }
-    fn find_variant_fields(&self) -> Option<Vec<(Rc<Rule<Pat>>, &str, OrderSet<&str>)>> {
+    fn find_variant_fields(
+        &self,
+    ) -> Option<Vec<(Rc<Rule<Pat>>, &str, OrderMap<&str, OrderSet<Vec<usize>>>)>> {
         if let Rule::Or(rules) = &*self.rule {
             if self.fields.is_empty() {
                 return None;
             }
             let mut variants: Vec<_> = rules
                 .iter()
-                .map(|rule| (rule.clone(), "", OrderSet::new()))
+                .map(|rule| (rule.clone(), "", OrderMap::new()))
                 .collect();
-            for (field, path) in &self.fields {
-                if path.len() == 0 {
-                    return None;
-                }
-                if path.len() == 1 {
-                    if variants[path[0]].1 != "" {
+            for (field, paths) in &self.fields {
+                for path in paths {
+                    if path.len() == 0 {
                         return None;
                     }
-                    variants[path[0]].1 = field;
-                } else {
-                    variants[path[0]].2.insert(&field[..]);
+                    if path.len() == 1 {
+                        if variants[path[0]].1 != "" {
+                            return None;
+                        }
+                        variants[path[0]].1 = field;
+                    } else {
+                        variants[path[0]]
+                            .2
+                            .entry(&field[..])
+                            .or_insert_with(OrderSet::new)
+                            .insert(path[1..].to_vec());
+                    }
                 }
             }
             if variants.iter().any(|x| x.1 == "") {
@@ -181,6 +252,15 @@ pub enum Rule<Pat> {
 }
 
 impl<Pat: Ord + Hash + ToRustSrc> Rule<Pat> {
+    fn field_pathset_type(&self, paths: &OrderSet<Vec<usize>>) -> String {
+        let ty = self.field_type(paths.get_index(0).unwrap());
+        for path in paths.iter().skip(1) {
+            if self.field_type(path) != ty {
+                return "()".to_string();
+            }
+        }
+        ty
+    }
     fn field_type(&self, path: &[usize]) -> String {
         match self {
             Rule::Empty | Rule::Match(_) | Rule::NotMatch(_) => {
@@ -195,6 +275,13 @@ impl<Pat: Ord + Hash + ToRustSrc> Rule<Pat> {
                 assert_eq!(path, []);
                 format!("[{}]", rule.field_type(&[]))
             }
+        }
+    }
+    fn field_pathset_is_refutable(&self, paths: &OrderSet<Vec<usize>>) -> bool {
+        if paths.len() > 1 {
+            true
+        } else {
+            self.field_is_refutable(paths.get_index(0).unwrap())
         }
     }
     fn field_is_refutable(&self, path: &[usize]) -> bool {
@@ -582,22 +669,21 @@ impl<'a, 'b, 'i, T> Iterator for Handle<'a, 'b, 'i, [T]> {
                 put!("
 
 pub enum ", name, "<'a, 'b: 'a, 'i: 'a> {");
-                for (sub_rule, variant, fields) in variants {
+                for (rule, variant, fields) in variants {
                     if fields.is_empty() {
                         put!("
-    ", variant, "(Handle<'a, 'b, 'i, ", sub_rule.field_type(&[]), ">),");
+    ", variant, "(Handle<'a, 'b, 'i, ", rule.field_type(&[]), ">),");
                     } else {
                         put!("
     ", variant, " {");
-                        for &field_name in fields {
-                            let path = &rule.fields[field_name][1..];
-                            let refutable = sub_rule.field_is_refutable(path);
+                        for (field_name, paths) in fields {
+                            let refutable = rule.field_pathset_is_refutable(paths);
                             put!("
         ", field_name, ": ");
                             if refutable {
                                 put!("Option<");
                             }
-                            put!("Handle<'a, 'b, 'i, ", sub_rule.field_type(path), ">");
+                            put!("Handle<'a, 'b, 'i, ", rule.field_pathset_type(paths), ">");
                             if refutable {
                                 put!(">");
                             }
@@ -613,14 +699,14 @@ pub enum ", name, "<'a, 'b: 'a, 'i: 'a> {");
                 put!("
 
 pub struct ", name, "<'a, 'b: 'a, 'i: 'a> {");
-                for (field_name, path) in &rule.fields {
-                    let refutable = rule.rule.field_is_refutable(path);
+                for (field_name, paths) in &rule.fields {
+                    let refutable = rule.rule.field_pathset_is_refutable(paths);
                     put!("
     pub ", field_name, ": ");
                     if refutable {
                         put!("Option<");
                     }
-                    put!("Handle<'a, 'b, 'i, ", rule.rule.field_type(path), ">");
+                    put!("Handle<'a, 'b, 'i, ", rule.rule.field_pathset_type(paths), ">");
                     if refutable {
                         put!(">");
                     }
@@ -669,32 +755,31 @@ impl<'a, 'b, 'i> fmt::Debug for ", name, "<'a, 'b, 'i> {
                 put!("
         match self {
         ");
-                for (sub_rule, variant, fields) in variants {
+                for (rule, variant, fields) in variants {
                     if fields.is_empty() {
                         put!("
             ", name, "::", variant, "(x) => f.debug_tuple(\"", name, "::", variant, "\").field(x).finish(),");
                     } else {
                         put!("
             ", name, "::", variant, " { ");
-                        for f in fields {
-                            put!(f, ", ");
+                        for field_name in fields.keys() {
+                            put!(field_name, ": f_", field_name, ", ");
                         }
                         put!(" } => {
-                let mut _dbg = f.debug_struct(\"", name, "::", variant, "\");");
-                        for &field_name in fields {
-                            let path = &rule.fields[field_name][1..];
-                            if sub_rule.field_is_refutable(path) {
+                let mut d = f.debug_struct(\"", name, "::", variant, "\");");
+                        for (field_name, paths) in fields {
+                            if rule.field_pathset_is_refutable(paths) {
                                 put!("
-                if let Some(field) = ", field_name, " {
+                if let Some(field) = f_", field_name, " {
                     d.field(\"", field_name,"\", field);
                 }");
                             } else {
                             put!("
-                _dbg.field(\"", field_name,"\", ", field_name, ");");
+                d.field(\"", field_name,"\", f_", field_name, ");");
                             }
                         }
                 put!("
-                _dbg.finish()
+                d.finish()
             }");
                     }
                 }
@@ -703,8 +788,8 @@ impl<'a, 'b, 'i> fmt::Debug for ", name, "<'a, 'b, 'i> {
             } else {
                 put!("
         let mut d = f.debug_struct(\"", name, "\");");
-                for (field_name, path) in &rule.fields {
-                    if rule.rule.field_is_refutable(path) {
+                for (field_name, paths) in &rule.fields {
+                    if rule.rule.field_pathset_is_refutable(paths) {
                         put!("
         if let Some(ref field) = self.", field_name, " {
             d.field(\"", field_name,"\", field);
@@ -797,9 +882,9 @@ impl<'a, 'b, 'i> Handle<'a, 'b, 'i, ", name, "<'a, 'b, 'i>> {
                 }
             }
                 match node.l {");
-                for (i, (sub_rule, variant, fields)) in variants.iter().enumerate() {
+                for (i, (rule, variant, fields)) in variants.iter().enumerate() {
                     put!("
-                    ", sub_rule.parse_label(&parse_labels), " => Iter::_", i, "(");
+                    ", rule.parse_label(&parse_labels), " => Iter::_", i, "(");
                     if fields.is_empty() {
                         put!("::std::iter::once(", name, "::", variant, "(Handle {
                         node,
@@ -807,17 +892,18 @@ impl<'a, 'b, 'i> Handle<'a, 'b, 'i, ", name, "<'a, 'b, 'i>> {
                         _marker: PhantomData,
                     }))");
                     } else {
-                        put!(sub_rule.generate_traverse("node", false, &parse_labels).replace("\n", "\n        "),
+                        put!(rule.generate_traverse("node", false, &parse_labels).replace("\n", "\n        "),
                             ".map(move |_r| ", name, "::", variant, " {");
-                        for &field_name in fields {
-                            let path = &rule.fields[field_name][1..];
-                            if sub_rule.field_is_refutable(path) {
+                        for (field_name, paths) in fields {
+                            if rule.field_pathset_is_refutable(paths) {
                                 put!("
-                                ", field_name, ": _r");
-                                for p in path {
-                                    put!(" .", p);
+                                ", field_name, ": None.or(_r");
+                                for path in paths {
+                                    for p in path {
+                                        put!(" .", p);
+                                    }
                                 }
-                                put!(".map(|node| Handle {
+                                put!(").map(|node| Handle {
                                     node,
                                     parser: self.parser,
                                     _marker: PhantomData,
@@ -826,7 +912,8 @@ impl<'a, 'b, 'i> Handle<'a, 'b, 'i, ", name, "<'a, 'b, 'i>> {
                                 put!("
                                 ", field_name, ": Handle {
                                     node: _r");
-                                for p in path {
+                                assert_eq!(paths.len(), 1);
+                                for p in paths.get_index(0).unwrap() {
                                     put!(" .", p);
                                 }
                                 put!(",
@@ -848,14 +935,16 @@ impl<'a, 'b, 'i> Handle<'a, 'b, 'i, ", name, "<'a, 'b, 'i>> {
                 put!("
             ", rule.rule.generate_traverse("node", false, &parse_labels), "
         }).map(move |_r| ", name, " {");
-                for (field_name, path) in &rule.fields {
-                    if rule.rule.field_is_refutable(path) {
+                for (field_name, paths) in &rule.fields {
+                    if rule.rule.field_pathset_is_refutable(paths) {
                         put!("
-            ", field_name, ": _r");
-                        for p in path {
-                            put!(" .", p);
+            ", field_name, ": None.or(_r");
+                        for path in paths {
+                            for p in path {
+                                put!(" .", p);
+                            }
                         }
-                        put!(".map(|node| Handle {
+                        put!(").map(|node| Handle {
                 node,
                 parser: self.parser,
                 _marker: PhantomData,
@@ -864,7 +953,8 @@ impl<'a, 'b, 'i> Handle<'a, 'b, 'i, ", name, "<'a, 'b, 'i>> {
                         put!("
             ", field_name, ": Handle {
                 node: _r");
-                        for p in path {
+                        assert_eq!(paths.len(), 1);
+                        for p in paths.get_index(0).unwrap() {
                             put!(" .", p);
                         }
                     put!(",
