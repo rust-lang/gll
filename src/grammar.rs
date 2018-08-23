@@ -73,8 +73,7 @@ impl<Pat: PartialEq> RuleWithNamedFields<Pat> {
                 }
 
                 rule.rule
-            })
-            .collect();
+            }).collect();
         RuleWithNamedFields {
             rule: Rc::new(Rule::Or(rules)),
             fields,
@@ -109,11 +108,9 @@ impl<Pat: PartialEq> RuleWithNamedFields<Pat> {
                         .map(|mut path| {
                             path.insert(0, 0);
                             path
-                        })
-                        .collect(),
+                        }).collect(),
                 )
-            })
-            .collect();
+            }).collect();
         for (name, paths) in other.fields {
             assert!(!self.fields.contains_key(&name), "duplicate field {}", name);
             self.fields.insert(
@@ -123,8 +120,7 @@ impl<Pat: PartialEq> RuleWithNamedFields<Pat> {
                     .map(|mut path| {
                         path.insert(0, 1);
                         path
-                    })
-                    .collect(),
+                    }).collect(),
             );
         }
         self.rule = Rc::new(Rule::Concat([self.rule, other.rule]));
@@ -142,11 +138,9 @@ impl<Pat: PartialEq> RuleWithNamedFields<Pat> {
                         .map(|mut path| {
                             path.insert(0, 0);
                             path
-                        })
-                        .collect(),
+                        }).collect(),
                 )
-            })
-            .collect();
+            }).collect();
         self.rule = Rc::new(Rule::Opt(self.rule));
         self
     }
@@ -162,11 +156,9 @@ impl<Pat: PartialEq> RuleWithNamedFields<Pat> {
                         .map(|mut path| {
                             path.insert(0, 0);
                             path
-                        })
-                        .collect(),
+                        }).collect(),
                 )
-            })
-            .collect();
+            }).collect();
         if let Some(sep) = &sep {
             assert!(sep.fields.is_empty());
         }
@@ -185,11 +177,9 @@ impl<Pat: PartialEq> RuleWithNamedFields<Pat> {
                         .map(|mut path| {
                             path.insert(0, 0);
                             path
-                        })
-                        .collect(),
+                        }).collect(),
                 )
-            })
-            .collect();
+            }).collect();
         if let Some(sep) = &sep {
             assert!(sep.fields.is_empty());
         }
@@ -579,13 +569,16 @@ impl<Pat: Ord + Hash + ToRustSrc> Grammar<Pat> {
         put!("extern crate gll;
 
 use self::gll::{Call, Continuation, ParseLabel, CodeLabel, ParseLabelKind, ParseNode, Range};
+use std::any;
 use std::fmt;
 use std::marker::PhantomData;
 
 pub type Parser<'a, 'i> = gll::Parser<'i, _P, _C, &'a gll::Str>;
 
+pub type Any = dyn any::Any;
+
 #[derive(Debug)]
-pub struct Ambiguity;
+pub struct Ambiguity<T>(T);
 
 pub struct Handle<'a, 'b: 'a, 'i: 'a, T: ?Sized> {
     pub node: ParseNode<'i, _P>,
@@ -601,6 +594,26 @@ impl<'a, 'b, 'i, T: ?Sized> Clone for Handle<'a, 'b, 'i, T> {
     }
 }
 
+impl<'a, 'b, 'i, T> From<Ambiguity<Handle<'a, 'b, 'i, T>>> for Ambiguity<Handle<'a, 'b, 'i, Any>> {
+    fn from(x: Ambiguity<Handle<'a, 'b, 'i, T>>) -> Self {
+        Ambiguity(Handle {
+            node: x.0.node,
+            parser: x.0.parser,
+            _marker: PhantomData,
+        })
+    }
+}
+
+impl<'a, 'b, 'i, T> From<Ambiguity<Handle<'a, 'b, 'i, [T]>>> for Ambiguity<Handle<'a, 'b, 'i, Any>> {
+    fn from(x: Ambiguity<Handle<'a, 'b, 'i, [T]>>) -> Self {
+        Ambiguity(Handle {
+            node: x.0.node,
+            parser: x.0.parser,
+            _marker: PhantomData,
+        })
+    }
+}
+
 impl<'a, 'b, 'i> fmt::Debug for Handle<'a, 'b, 'i, ()> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
@@ -609,6 +622,12 @@ impl<'a, 'b, 'i> fmt::Debug for Handle<'a, 'b, 'i, ()> {
             self.node.range.start(),
             self.node.range.end()
         )
+    }
+}
+
+impl<'a, 'b, 'i> fmt::Debug for Handle<'a, 'b, 'i, Any> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        handle_any_match_type!(self, |handle| write!(f, \"{:?}\", handle))
     }
 }
 
@@ -622,45 +641,121 @@ impl<'a, 'b, 'i, T> fmt::Debug for Handle<'a, 'b, 'i, [T]>
             self.node.range.start(),
             self.node.range.end()
         )?;
-        f.debug_list().entries(*self).finish()
+        for (i, x) in self.list_head_many().enumerate() {
+            if i > 0 {
+                write!(f, \" | \")?;
+            }
+            match x {
+                ListHead::Cons(elem, rest) => {
+                    enum Elem<T, L> {
+                        One(T),
+                        Spread(L),
+                    }
+                    impl<T: fmt::Debug, L: fmt::Debug> fmt::Debug for Elem<T, L> {
+                        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                            match self {
+                                Elem::One(x) => write!(f, \"{:?}\", x),
+                                Elem::Spread(xs) => write!(f, \"..({:?})\", xs),
+                            }
+                        }
+                    }
+                    f.debug_list().entries(::std::iter::once(Elem::One(elem)).chain(rest.map(|r| {
+                        match r {
+                            Ok(x) => Elem::One(x),
+                            Err(Ambiguity(xs)) => Elem::Spread(xs),
+                        }
+                    }))).finish()?;
+                }
+                ListHead::Nil => {
+                    f.debug_list().entries(None::<()>).finish()?;
+                }
+            }
+        }
+        Ok(())
     }
 }
 
 impl<'a, 'b, 'i, T> Iterator for Handle<'a, 'b, 'i, [T]> {
-    type Item = Result<Handle<'a, 'b, 'i, T>, Ambiguity>;
+    type Item = Result<Handle<'a, 'b, 'i, T>, Ambiguity<Self>>;
     fn next(&mut self) -> Option<Self::Item> {
+        let mut iter = self.list_head_many();
+        let first = iter.next().unwrap();
+        if let Some(second) = iter.next() {
+            let original = *self;
+            match (first, second) {
+                (ListHead::Cons(_, rest), _) |
+                (_, ListHead::Cons(_, rest)) => {
+                    match rest.node.l.kind() {
+                        ParseLabelKind::Opt { .. } => {
+                            self.node.l = rest.node.l;
+                            self.node.range = Range(self.node.range.split_at(0).0);
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+                _ => unreachable!(),
+            }
+            match self.list_head_one() {
+                Ok(ListHead::Nil) => {}
+                _ => unreachable!(),
+            }
+            Some(Err(Ambiguity(original)))
+        } else {
+            match first {
+                ListHead::Cons(elem, rest) => {
+                    *self = rest;
+                    Some(Ok(elem))
+                }
+                ListHead::Nil => None,
+            }
+        }
+    }
+}
+
+pub enum ListHead<'a, 'b: 'a, 'i: 'a, T> {
+    Cons(Handle<'a, 'b, 'i, T>, Handle<'a, 'b, 'i, [T]>),
+    Nil,
+}
+
+impl<'a, 'b, 'i, T> Handle<'a, 'b, 'i, [T]> {
+    fn list_head_one(self) -> Result<ListHead<'a, 'b, 'i, T>, Ambiguity<Self>> {
+        let mut iter = self.list_head_many();
+        let first = iter.next().unwrap();
+        if iter.next().is_none() {
+            Ok(first)
+        } else {
+            Err(Ambiguity(self))
+        }
+    }
+    fn list_head_many(self) -> impl Iterator<Item = ListHead<'a, 'b, 'i, T>> {
+        let mut maybe_cons = None;
+        let mut maybe_nil = None;
         if let ParseLabelKind::Opt { none, .. } = self.node.l.kind() {
-            let mut opt_children = self.parser.sppf.unary_children(self.node);
-            let opt_child = opt_children.next().unwrap();
-            if opt_children.next().is_some() {
-                return Some(Err(Ambiguity));
+            for opt_child in self.parser.sppf.unary_children(self.node) {
+                if opt_child.l == none {
+                    maybe_nil = Some(ListHead::Nil);
+                } else {
+                    maybe_cons = Some(opt_child);
+                }
             }
-            if opt_child.l == none {
-                return None;
-            }
-            self.node = opt_child;
+        } else {
+            maybe_cons = Some(self.node);
         }
-        let mut children = self.parser.sppf.binary_children(self.node);
-        let (first, rest) = children.next().unwrap();
-        if children.next().is_some() {
-            return Some(Err(Ambiguity));
-        }
-        self.node = rest;
-        let mut handle = Handle {
-            node: first,
-            parser: self.parser,
-            _marker: PhantomData,
-        };
-        if let ParseLabelKind::Binary(..) = self.node.l.kind() {
-            let mut children = self.parser.sppf.binary_children(self.node);
-            let (first, rest) = children.next().unwrap();
-            if children.next().is_some() {
-                return Some(Err(Ambiguity));
-            }
-            self.node = rest;
-            handle.node = first;
-        }
-        Some(Ok(handle))
+        maybe_cons.into_iter().flat_map(move |node| {
+            self.parser.sppf.binary_children(node).flat_map(move |(elem, rest)| {
+                if let ParseLabelKind::Binary(..) = rest.l.kind() {
+                    Some(self.parser.sppf.binary_children(rest)).into_iter().flatten().chain(None)
+                } else {
+                    None.into_iter().flatten().chain(Some((elem, rest)))
+                }
+            }).map(move |(elem, rest)| {
+                ListHead::Cons(Handle {
+                    node: elem,
+                    parser: self.parser,
+                    _marker: PhantomData,
+                }, Handle { node: rest, ..self })
+            })
+        }).chain(maybe_nil)
     }
 }");
         for (name, rule) in &self.rules {
@@ -825,24 +920,24 @@ impl<'a, 'b, 'i> fmt::Debug for Handle<'a, 'b, 'i, ", name, "<'a, 'b, 'i>> {
             self.node.range.start(),
             self.node.range.end()
         )?;
-        for (i, _x) in self.many().enumerate() {
+        for (i, x) in self.many().enumerate() {
             if i > 0 {
                 write!(f, \" | \")?;
             }
-            fmt::Debug::fmt(&_x, f)?;
+            fmt::Debug::fmt(&x, f)?;
         }
         Ok(())
     }
 }
 
 impl<'a, 'b, 'i> Handle<'a, 'b, 'i, ", name, "<'a, 'b, 'i>> {
-    pub fn one(self) -> Result<", name, "<'a, 'b, 'i>, Ambiguity> {
+    pub fn one(self) -> Result<", name, "<'a, 'b, 'i>, Ambiguity<Self>> {
         let mut iter = self.many();
         let first = iter.next().unwrap();
         if iter.next().is_none() {
             Ok(first)
         } else {
-            Err(Ambiguity)
+            Err(Ambiguity(self))
         }
     }
     pub fn many(self) -> impl Iterator<Item = ", name, "<'a, 'b, 'i>> {
@@ -1016,8 +1111,17 @@ fn parse(p: &mut Parser) {
             rule.fill_parse_label_kind(&parse_labels);
             i += 1;
         }
-        let mut all_parse_labels: Vec<_> = named_parse_labels.into_iter()
-            .chain(parse_labels.into_inner().into_iter().map(|(_, (l, k))| (l, k.unwrap())))
+        let mut all_parse_labels: Vec<_> = named_parse_labels.into_iter().map(|(l, k)| (l.clone(), k, Some(l.0)))
+            .chain(parse_labels.into_inner().into_iter().map(|(r, (l, k))| {
+                (l, k.unwrap(), match &*r {
+                    Rule::RepeatMany(rule, _) | Rule::RepeatMore(rule, _) => match &**rule {
+                        Rule::Match(_) => Some("()".to_string()),
+                        Rule::Call(r) => Some(r.clone()),
+                        _ => None,
+                    },
+                    _ => None,
+                })
+            }))
             .collect();
         all_parse_labels.sort();
         put!("
@@ -1031,8 +1135,29 @@ pub enum _P {");
         put!("
 }
 
+macro handle_any_match_type($handle:expr, $case:expr) {
+    match $handle.node.l {");
+        for (l, _, ty) in &all_parse_labels {
+            if let Some(ty) = ty {
+                put!("
+        ", l, " => $case(Handle::<", ty, "> {
+            node: $handle.node,
+            parser: $handle.parser,
+            _marker: PhantomData,
+        }),");
+            }
+        }
+        put!("
+        _ => $case(Handle::<()> {
+            node: $handle.node,
+            parser: $handle.parser,
+            _marker: PhantomData,
+        }),
+    }
+}
+
 macro P {");
-        for (i, (l, _)) in all_parse_labels.iter().enumerate() {
+        for (i, (l, _, _)) in all_parse_labels.iter().enumerate() {
             if i != 0 {
                 put!(",");
             }
@@ -1045,7 +1170,7 @@ macro P {");
 impl fmt::Display for _P {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let s = match *self {");
-        for (l, _) in &all_parse_labels {
+        for (l, _, _) in &all_parse_labels {
             put!("
             ", l, " => \"", l.0.escape_default(), "\",");
         }
@@ -1058,7 +1183,7 @@ impl fmt::Display for _P {
 impl ParseLabel for _P {
     fn kind(self) -> ParseLabelKind<Self> {
         match self {");
-        for (label, kind) in &all_parse_labels {
+        for (label, kind, _) in &all_parse_labels {
             put!("
                 ", label, " => ParseLabelKind::", kind, ",");
         }
