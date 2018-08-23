@@ -427,8 +427,7 @@ impl<'i, P: ParseLabel> ParseGraph<'i, P> {
                             _ => node.l,
                         },
                         range: node.range,
-                    })
-                    .map_or(false, |children| !children.is_empty());
+                    }).map_or(false, |children| !children.is_empty());
                 (
                     if node.range.is_empty() {
                         Some(none)
@@ -528,6 +527,18 @@ pub struct ParseNode<'i, P: ParseLabel> {
 }
 
 impl<'i, P: ParseLabel> fmt::Display for ParseNode<'i, P> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(
+            f,
+            "{} @ {}..{}",
+            self.l,
+            self.range.start(),
+            self.range.end()
+        )
+    }
+}
+
+impl<'i, P: ParseLabel> fmt::Debug for ParseNode<'i, P> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
