@@ -176,13 +176,13 @@ impl InputMatch<RangeInclusive<char>> for str {
     }
 }
 
-pub struct Parser<'i, P: ParseLabel, C: CodeLabel, I> {
+pub struct Parser<'i, P: ParseNodeKind, C: CodeLabel, I> {
     input: Container<'i, I>,
     pub gss: CallGraph<'i, C>,
     pub sppf: ParseGraph<'i, P>,
 }
 
-impl<'i, P: ParseLabel, C: CodeLabel, I: Trustworthy> Parser<'i, P, C, I> {
+impl<'i, P: ParseNodeKind, C: CodeLabel, I: Trustworthy> Parser<'i, P, C, I> {
     pub fn with<R>(input: I, f: impl for<'i2> FnOnce(Parser<'i2, P, C, I>, Range<'i2>) -> R) -> R {
         scope(input, |input| {
             let range = input.range();
@@ -230,7 +230,7 @@ impl<'i, P: ParseLabel, C: CodeLabel, I: Trustworthy> Parser<'i, P, C, I> {
     }
 }
 
-impl<'a, 'i, P: ParseLabel, C: CodeLabel> Parser<'i, P, C, &'a Str> {
+impl<'a, 'i, P: ParseNodeKind, C: CodeLabel> Parser<'i, P, C, &'a Str> {
     pub fn with_str<R>(
         input: &'a str,
         f: impl for<'i2> FnOnce(Parser<'i2, P, C, &'a Str>, Range<'i2>) -> R,
@@ -392,14 +392,14 @@ impl<'i, C: CodeLabel> CallGraph<'i, C> {
     }
 }
 
-pub struct ParseGraph<'i, P: ParseLabel> {
+pub struct ParseGraph<'i, P: ParseNodeKind> {
     pub children: HashMap<ParseNode<'i, P>, BTreeSet<usize>>,
 }
 
-impl<'i, P: ParseLabel> ParseGraph<'i, P> {
-    pub fn add(&mut self, l: P, range: Range<'i>, child: usize) {
+impl<'i, P: ParseNodeKind> ParseGraph<'i, P> {
+    pub fn add(&mut self, kind: P, range: Range<'i>, child: usize) {
         self.children
-            .entry(ParseNode { l, range })
+            .entry(ParseNode { kind, range })
             .or_insert(BTreeSet::new())
             .insert(child);
     }
@@ -408,23 +408,23 @@ impl<'i, P: ParseLabel> ParseGraph<'i, P> {
         &'a self,
         node: ParseNode<'i, P>,
     ) -> impl Iterator<Item = ParseNode<'i, P>> + 'a {
-        let (child0, child1, choice_children) = match node.l.kind() {
-            ParseLabelKind::Alias(l) => (Some(l), None, None),
-            ParseLabelKind::Choice => (
+        let (child0, child1, choice_children) = match node.kind.shape() {
+            ParseNodeShape::Alias(kind) => (Some(kind), None, None),
+            ParseNodeShape::Choice => (
                 None,
                 None,
                 self.children
                     .get(&node)
                     .map(|children| children.iter().map(|&i| P::from_usize(i))),
             ),
-            ParseLabelKind::Opt { none, some } => {
+            ParseNodeShape::Opt { none, some } => {
                 let has_some = self
                     .children
                     .get(&ParseNode {
-                        l: match some.kind() {
+                        kind: match some.shape() {
                             // TODO: unpack aliases?
-                            ParseLabelKind::Choice | ParseLabelKind::Binary(..) => some,
-                            _ => node.l,
+                            ParseNodeShape::Choice | ParseNodeShape::Binary(..) => some,
+                            _ => node.kind,
                         },
                         range: node.range,
                     }).map_or(false, |children| !children.is_empty());
@@ -438,15 +438,15 @@ impl<'i, P: ParseLabel> ParseGraph<'i, P> {
                     None,
                 )
             }
-            kind => unreachable!("unary_children({}): non-unary kind {}", node, kind),
+            shape => unreachable!("unary_children({}): non-unary shape {}", node, shape),
         };
         choice_children
             .into_iter()
             .flatten()
             .chain(child0)
             .chain(child1)
-            .map(move |l| ParseNode {
-                l,
+            .map(move |kind| ParseNode {
+                kind,
                 range: node.range,
             })
     }
@@ -455,8 +455,8 @@ impl<'i, P: ParseLabel> ParseGraph<'i, P> {
         &'a self,
         node: ParseNode<'i, P>,
     ) -> impl Iterator<Item = (ParseNode<'i, P>, ParseNode<'i, P>)> + 'a {
-        match node.l.kind() {
-            ParseLabelKind::Binary(left_l, right_l) => self
+        match node.kind.shape() {
+            ParseNodeShape::Binary(left_kind, right_kind) => self
                 .children
                 .get(&node)
                 .into_iter()
@@ -465,16 +465,16 @@ impl<'i, P: ParseLabel> ParseGraph<'i, P> {
                     let (left, right, _) = node.range.split_at(i);
                     (
                         ParseNode {
-                            l: left_l,
+                            kind: left_kind,
                             range: Range(left),
                         },
                         ParseNode {
-                            l: right_l,
+                            kind: right_kind,
                             range: Range(right),
                         },
                     )
                 }),
-            kind => unreachable!("binary_children({}): non-binary kind {}", node, kind),
+            shape => unreachable!("binary_children({}): non-binary shape {}", node, shape),
         }
     }
 
@@ -490,10 +490,10 @@ impl<'i, P: ParseLabel> ParseGraph<'i, P> {
                 }
             };
             writeln!(out, "    {:?} [shape=box]", source.to_string())?;
-            match source.l.kind() {
-                ParseLabelKind::Opaque => {}
+            match source.kind.shape() {
+                ParseNodeShape::Opaque => {}
 
-                ParseLabelKind::Alias(_) | ParseLabelKind::Choice | ParseLabelKind::Opt { .. } => {
+                ParseNodeShape::Alias(_) | ParseNodeShape::Choice | ParseNodeShape::Opt { .. } => {
                     for child in self.unary_children(source) {
                         enqueue(child);
                         writeln!(out, r#"    p{} [label="" shape=point]"#, p)?;
@@ -503,7 +503,7 @@ impl<'i, P: ParseLabel> ParseGraph<'i, P> {
                     }
                 }
 
-                ParseLabelKind::Binary(..) => {
+                ParseNodeShape::Binary(..) => {
                     for (left, right) in self.binary_children(source) {
                         enqueue(left);
                         enqueue(right);
@@ -521,29 +521,29 @@ impl<'i, P: ParseLabel> ParseGraph<'i, P> {
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ParseNode<'i, P: ParseLabel> {
-    pub l: P,
+pub struct ParseNode<'i, P: ParseNodeKind> {
+    pub kind: P,
     pub range: Range<'i>,
 }
 
-impl<'i, P: ParseLabel> fmt::Display for ParseNode<'i, P> {
+impl<'i, P: ParseNodeKind> fmt::Display for ParseNode<'i, P> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
             "{} @ {}..{}",
-            self.l,
+            self.kind,
             self.range.start(),
             self.range.end()
         )
     }
 }
 
-impl<'i, P: ParseLabel> fmt::Debug for ParseNode<'i, P> {
+impl<'i, P: ParseNodeKind> fmt::Debug for ParseNode<'i, P> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
             "{} @ {}..{}",
-            self.l,
+            self.kind,
             self.range.start(),
             self.range.end()
         )
@@ -551,7 +551,7 @@ impl<'i, P: ParseLabel> fmt::Debug for ParseNode<'i, P> {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum ParseLabelKind<P> {
+pub enum ParseNodeShape<P> {
     Opaque,
     Alias(P),
     Choice,
@@ -559,22 +559,22 @@ pub enum ParseLabelKind<P> {
     Binary(P, P),
 }
 
-impl<P: fmt::Display> fmt::Display for ParseLabelKind<P> {
+impl<P: fmt::Display> fmt::Display for ParseNodeShape<P> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            ParseLabelKind::Opaque => write!(f, "Opaque"),
-            ParseLabelKind::Alias(inner) => write!(f, "Alias({})", inner),
-            ParseLabelKind::Choice => write!(f, "Choice"),
-            ParseLabelKind::Opt { none, some } => {
+            ParseNodeShape::Opaque => write!(f, "Opaque"),
+            ParseNodeShape::Alias(inner) => write!(f, "Alias({})", inner),
+            ParseNodeShape::Choice => write!(f, "Choice"),
+            ParseNodeShape::Opt { none, some } => {
                 write!(f, "Opt {{ none: {}, some: {} }}", none, some)
             }
-            ParseLabelKind::Binary(left, right) => write!(f, "Binary({}, {})", left, right),
+            ParseNodeShape::Binary(left, right) => write!(f, "Binary({}, {})", left, right),
         }
     }
 }
 
-pub trait ParseLabel: fmt::Display + Ord + Hash + Copy + 'static {
-    fn kind(self) -> ParseLabelKind<Self>;
+pub trait ParseNodeKind: fmt::Display + Ord + Hash + Copy + 'static {
+    fn shape(self) -> ParseNodeShape<Self>;
     fn from_usize(i: usize) -> Self;
     fn to_usize(self) -> usize;
 }
