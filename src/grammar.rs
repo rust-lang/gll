@@ -9,7 +9,7 @@ use std::io::Write;
 use std::mem;
 use std::ops::{Add, Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive};
 use std::rc::Rc;
-use ParseLabelKind;
+use ParseNodeShape;
 
 pub struct Grammar<Pat> {
     rules: OrderMap<String, RuleWithNamedFields<Pat>>,
@@ -286,24 +286,24 @@ impl<Pat: Ord + Hash + ToRustSrc> Rule<Pat> {
             Rule::Or(..) | Rule::Opt(_) => true,
         }
     }
-    fn parse_label(
+    fn parse_node_kind(
         self: &Rc<Self>,
-        parse_labels: &RefCell<
-            OrderMap<Rc<Self>, (ParseLabel, Option<ParseLabelKind<ParseLabel>>)>,
+        parse_nodes: &RefCell<
+            OrderMap<Rc<Self>, (ParseNodeKind, Option<ParseNodeShape<ParseNodeKind>>)>,
         >,
-    ) -> ParseLabel {
-        if let Some((label, _)) = parse_labels.borrow().get(self) {
-            return label.clone();
+    ) -> ParseNodeKind {
+        if let Some((kind, _)) = parse_nodes.borrow().get(self) {
+            return kind.clone();
         }
-        let label = match &**self {
-            Rule::Empty => ParseLabel("()".to_string()),
-            Rule::Match(pat) => ParseLabel(pat.to_rust_src()),
-            Rule::NotMatch(pat) => ParseLabel(format!("!{}", pat.to_rust_src())),
-            Rule::Call(r) => return ParseLabel(r.clone()),
-            Rule::Concat([left, right]) => ParseLabel(format!(
+        let kind = match &**self {
+            Rule::Empty => ParseNodeKind("()".to_string()),
+            Rule::Match(pat) => ParseNodeKind(pat.to_rust_src()),
+            Rule::NotMatch(pat) => ParseNodeKind(format!("!{}", pat.to_rust_src())),
+            Rule::Call(r) => return ParseNodeKind(r.clone()),
+            Rule::Concat([left, right]) => ParseNodeKind(format!(
                 "({} {})",
-                left.parse_label(parse_labels).0,
-                right.parse_label(parse_labels).0
+                left.parse_node_kind(parse_nodes).0,
+                right.parse_node_kind(parse_nodes).0
             )),
             Rule::Or(rules) => {
                 assert!(rules.len() > 1);
@@ -312,77 +312,77 @@ impl<Pat: Ord + Hash + ToRustSrc> Rule<Pat> {
                     if i > 0 {
                         s.push_str(" | ");
                     }
-                    s.push_str(&rule.parse_label(parse_labels).0);
+                    s.push_str(&rule.parse_node_kind(parse_nodes).0);
                 }
                 s.push(')');
-                ParseLabel(s)
+                ParseNodeKind(s)
             }
-            Rule::Opt(rule) => ParseLabel(format!("({}?)", rule.parse_label(parse_labels).0)),
+            Rule::Opt(rule) => ParseNodeKind(format!("({}?)", rule.parse_node_kind(parse_nodes).0)),
             Rule::RepeatMany(rule, None) => {
-                ParseLabel(format!("({}*)", rule.parse_label(parse_labels).0))
+                ParseNodeKind(format!("({}*)", rule.parse_node_kind(parse_nodes).0))
             }
-            Rule::RepeatMany(elem, Some(sep)) => ParseLabel(format!(
+            Rule::RepeatMany(elem, Some(sep)) => ParseNodeKind(format!(
                 "({}* % {})",
-                elem.parse_label(parse_labels).0,
-                sep.parse_label(parse_labels).0
+                elem.parse_node_kind(parse_nodes).0,
+                sep.parse_node_kind(parse_nodes).0
             )),
             Rule::RepeatMore(rule, None) => {
-                ParseLabel(format!("({}+)", rule.parse_label(parse_labels).0))
+                ParseNodeKind(format!("({}+)", rule.parse_node_kind(parse_nodes).0))
             }
-            Rule::RepeatMore(elem, Some(sep)) => ParseLabel(format!(
+            Rule::RepeatMore(elem, Some(sep)) => ParseNodeKind(format!(
                 "({}+ % {})",
-                elem.parse_label(parse_labels).0,
-                sep.parse_label(parse_labels).0
+                elem.parse_node_kind(parse_nodes).0,
+                sep.parse_node_kind(parse_nodes).0
             )),
         };
         assert!(
-            parse_labels
+            parse_nodes
                 .borrow_mut()
-                .insert(self.clone(), (label.clone(), None))
+                .insert(self.clone(), (kind.clone(), None))
                 .is_none()
         );
-        label
+        kind
     }
 
-    fn fill_parse_label_kind(
+    fn fill_parse_node_shape(
         self: &Rc<Self>,
-        parse_labels: &RefCell<
-            OrderMap<Rc<Self>, (ParseLabel, Option<ParseLabelKind<ParseLabel>>)>,
+        parse_nodes: &RefCell<
+            OrderMap<Rc<Self>, (ParseNodeKind, Option<ParseNodeShape<ParseNodeKind>>)>,
         >,
     ) {
-        if parse_labels.borrow()[self].1.is_some() {
+        if parse_nodes.borrow()[self].1.is_some() {
             return;
         }
-        let kind = match &**self {
-            Rule::Empty | Rule::Match(_) | Rule::NotMatch(_) => ParseLabelKind::Opaque,
+        let shape = match &**self {
+            Rule::Empty | Rule::Match(_) | Rule::NotMatch(_) => ParseNodeShape::Opaque,
             Rule::Call(_) => unreachable!(),
-            Rule::Concat([left, right]) => ParseLabelKind::Binary(
-                left.parse_label(parse_labels),
-                right.parse_label(parse_labels),
+            Rule::Concat([left, right]) => ParseNodeShape::Binary(
+                left.parse_node_kind(parse_nodes),
+                right.parse_node_kind(parse_nodes),
             ),
-            Rule::Or(_) => ParseLabelKind::Choice,
-            Rule::Opt(rule) => ParseLabelKind::Opt {
-                none: Rc::new(Rule::Empty).parse_label(parse_labels),
-                some: rule.parse_label(parse_labels),
+            Rule::Or(_) => ParseNodeShape::Choice,
+            Rule::Opt(rule) => ParseNodeShape::Opt {
+                none: Rc::new(Rule::Empty).parse_node_kind(parse_nodes),
+                some: rule.parse_node_kind(parse_nodes),
             },
-            Rule::RepeatMany(elem, sep) => ParseLabelKind::Opt {
-                none: Rc::new(Rule::Empty).parse_label(parse_labels),
+            Rule::RepeatMany(elem, sep) => ParseNodeShape::Opt {
+                none: Rc::new(Rule::Empty).parse_node_kind(parse_nodes),
                 some: Rc::new(Rule::RepeatMore(elem.clone(), sep.clone()))
-                    .parse_label(parse_labels),
+                    .parse_node_kind(parse_nodes),
             },
-            Rule::RepeatMore(rule, None) => ParseLabelKind::Binary(
-                rule.parse_label(parse_labels),
-                Rc::new(Rule::RepeatMany(rule.clone(), None)).parse_label(parse_labels),
+            Rule::RepeatMore(rule, None) => ParseNodeShape::Binary(
+                rule.parse_node_kind(parse_nodes),
+                Rc::new(Rule::RepeatMany(rule.clone(), None)).parse_node_kind(parse_nodes),
             ),
-            Rule::RepeatMore(elem, Some(sep)) => ParseLabelKind::Binary(
-                elem.parse_label(parse_labels),
+            Rule::RepeatMore(elem, Some(sep)) => ParseNodeShape::Binary(
+                elem.parse_node_kind(parse_nodes),
                 Rc::new(Rule::Opt(Rc::new(Rule::Concat([
                     sep.clone(),
                     self.clone(),
-                ])))).parse_label(parse_labels),
+                ])))).parse_node_kind(parse_nodes),
             ),
         };
-        parse_labels.borrow_mut().get_mut(self).unwrap().1 = Some(kind);
+        parse_nodes.borrow_mut().get_mut(self).unwrap().1 = Some(shape);
     }
 }
 
@@ -448,9 +448,9 @@ impl<S: fmt::Debug, C: fmt::Debug> ToRustSrc for Pat<S, C> {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct ParseLabel(String);
+struct ParseNodeKind(String);
 
-impl fmt::Display for ParseLabel {
+impl fmt::Display for ParseNodeKind {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "P!({})", self.0)
     }
@@ -562,13 +562,13 @@ impl<Pat: Ord + Hash + ToRustSrc> Grammar<Pat> {
     pub fn generate(&mut self, out: &mut Write) {
         macro put($($x:expr),*) {{ $(write!(out, "{}", $x).unwrap();)* }}
 
-        let parse_labels = RefCell::new(OrderMap::new());
-        let mut named_parse_labels = vec![];
+        let parse_nodes = RefCell::new(OrderMap::new());
+        let mut named_parse_nodes = vec![];
         let mut code_labels = vec![];
 
         put!("extern crate gll;
 
-use self::gll::{Call, Continuation, ParseLabel, CodeLabel, ParseLabelKind, ParseNode, Range};
+use self::gll::{Call, Continuation, ParseNodeKind, CodeLabel, ParseNodeShape, ParseNode, Range};
 use std::any;
 use std::fmt;
 use std::marker::PhantomData;
@@ -685,9 +685,9 @@ impl<'a, 'i, 's, T> Iterator for Handle<'a, 'i, 's, [T]> {
             match (first, second) {
                 (ListHead::Cons(_, rest), _) |
                 (_, ListHead::Cons(_, rest)) => {
-                    match rest.node.l.kind() {
-                        ParseLabelKind::Opt { .. } => {
-                            self.node.l = rest.node.l;
+                    match rest.node.kind.shape() {
+                        ParseNodeShape::Opt { .. } => {
+                            self.node.kind = rest.node.kind;
                             self.node.range = Range(self.node.range.split_at(0).0);
                         }
                         _ => unreachable!(),
@@ -730,9 +730,9 @@ impl<'a, 'i, 's, T> Handle<'a, 'i, 's, [T]> {
     fn list_head_many(self) -> impl Iterator<Item = ListHead<'a, 'i, 's, T>> {
         let mut maybe_cons = None;
         let mut maybe_nil = None;
-        if let ParseLabelKind::Opt { none, .. } = self.node.l.kind() {
+        if let ParseNodeShape::Opt { none, .. } = self.node.kind.shape() {
             for opt_child in self.parser.sppf.unary_children(self.node) {
-                if opt_child.l == none {
+                if opt_child.kind == none {
                     maybe_nil = Some(ListHead::Nil);
                 } else {
                     maybe_cons = Some(opt_child);
@@ -743,7 +743,7 @@ impl<'a, 'i, 's, T> Handle<'a, 'i, 's, [T]> {
         }
         maybe_cons.into_iter().flat_map(move |node| {
             self.parser.sppf.binary_children(node).flat_map(move |(elem, rest)| {
-                if let ParseLabelKind::Binary(..) = rest.l.kind() {
+                if let ParseNodeShape::Binary(..) = rest.kind.shape() {
                     Some(self.parser.sppf.binary_children(rest)).into_iter().flatten().chain(None)
                 } else {
                     None.into_iter().flatten().chain(Some((elem, rest)))
@@ -835,7 +835,7 @@ impl<'a, 'i, 's> ", name, "<'a, 'i, 's> {
         }
         if let Some(range) = p.gss.longest_result(call) {
             return Ok(Handle {
-                node: ParseNode { l: ", ParseLabel(name.clone()), ", range },
+                node: ParseNode { kind: ", ParseNodeKind(name.clone()), ", range },
                 parser: p,
                 _marker: PhantomData,
             });
@@ -976,10 +976,10 @@ impl<'a, 'i, 's> Handle<'a, 'i, 's, ", name, "<'a, 'i, 's>> {
                     }
                 }
             }
-                match node.l {");
+                match node.kind {");
                 for (i, (rule, variant, fields)) in variants.iter().enumerate() {
                     put!("
-                    ", rule.parse_label(&parse_labels), " => Iter::_", i, "(");
+                    ", rule.parse_node_kind(&parse_nodes), " => Iter::_", i, "(");
                     if fields.is_empty() {
                         put!("::std::iter::once(", name, "::", variant, "(Handle {
                         node,
@@ -987,7 +987,7 @@ impl<'a, 'i, 's> Handle<'a, 'i, 's, ", name, "<'a, 'i, 's>> {
                         _marker: PhantomData,
                     }))");
                     } else {
-                        put!(rule.generate_traverse("node", false, &parse_labels).replace("\n", "\n        "),
+                        put!(rule.generate_traverse("node", false, &parse_nodes).replace("\n", "\n        "),
                             ".map(move |_r| ", name, "::", variant, " {");
                         for (field_name, paths) in fields {
                             if rule.field_pathset_is_refutable(paths) {
@@ -1028,7 +1028,7 @@ impl<'a, 'i, 's> Handle<'a, 'i, 's, ", name, "<'a, 'i, 's>> {
             })");
             } else {
                 put!("
-            ", rule.rule.generate_traverse("node", false, &parse_labels), "
+            ", rule.rule.generate_traverse("node", false, &parse_nodes), "
         }).map(move |_r| ", name, " {");
                 for (field_name, paths) in &rule.fields {
                     if rule.rule.field_pathset_is_refutable(paths) {
@@ -1073,23 +1073,23 @@ fn parse(p: &mut Parser) {
     while let Some(Call { callee: mut c, range: _range }) = p.gss.threads.steal() {
         match c.code {");
         for (name, rule) in &self.rules {
-            let parse_labels = if rule.fields.is_empty() {
+            let parse_nodes = if rule.fields.is_empty() {
                 None
             } else {
-                Some(&parse_labels)
+                Some(&parse_nodes)
             };
             code_labels.push(CodeLabel(name.clone()));
-            let parse_label = ParseLabel(name.clone());
-            let kind = if let Some(parse_labels) = parse_labels {
-                ParseLabelKind::Alias(rule.rule.parse_label(parse_labels))
+            let parse_node_kind = ParseNodeKind(name.clone());
+            let shape = if let Some(parse_nodes) = parse_nodes {
+                ParseNodeShape::Alias(rule.rule.parse_node_kind(parse_nodes))
             } else {
-                ParseLabelKind::Opaque
+                ParseNodeShape::Opaque
             };
-            named_parse_labels.push((parse_label.clone(), kind));
+            named_parse_nodes.push((parse_node_kind.clone(), shape));
 
             put!((
                 reify_as(CodeLabel(name.clone())) +
-                rule.rule.clone().generate_parse(parse_labels) +
+                rule.rule.clone().generate_parse(parse_nodes) +
                 ret()
             )(Continuation {
                 code_labels: &mut code_labels,
@@ -1106,14 +1106,14 @@ fn parse(p: &mut Parser) {
 }
 ");
         let mut i = 0;
-        while i < parse_labels.borrow().len() {
-            let rule = parse_labels.borrow().get_index(i).unwrap().0.clone();
-            rule.fill_parse_label_kind(&parse_labels);
+        while i < parse_nodes.borrow().len() {
+            let rule = parse_nodes.borrow().get_index(i).unwrap().0.clone();
+            rule.fill_parse_node_shape(&parse_nodes);
             i += 1;
         }
-        let mut all_parse_labels: Vec<_> = named_parse_labels.into_iter().map(|(l, k)| (l.clone(), k, Some(l.0)))
-            .chain(parse_labels.into_inner().into_iter().map(|(r, (l, k))| {
-                (l, k.unwrap(), match &*r {
+        let mut all_parse_nodes: Vec<_> = named_parse_nodes.into_iter().map(|(k, s)| (k.clone(), s, Some(k.0)))
+            .chain(parse_nodes.into_inner().into_iter().map(|(r, (k, s))| {
+                (k, s.unwrap(), match &*r {
                     Rule::RepeatMany(rule, _) | Rule::RepeatMore(rule, _) => match &**rule {
                         Rule::Match(_) => Some("()".to_string()),
                         Rule::Call(r) => Some(r.clone()),
@@ -1123,11 +1123,11 @@ fn parse(p: &mut Parser) {
                 })
             }))
             .collect();
-        all_parse_labels.sort();
+        all_parse_nodes.sort();
         put!("
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
 pub enum _P {");
-        for i in 0..all_parse_labels.len() {
+        for i in 0..all_parse_nodes.len() {
             put!(
                 "
     _", i, ",");
@@ -1136,11 +1136,11 @@ pub enum _P {");
 }
 
 macro handle_any_match_type($handle:expr, $case:expr) {
-    match $handle.node.l {");
-        for (l, _, ty) in &all_parse_labels {
+    match $handle.node.kind {");
+        for (kind, _, ty) in &all_parse_nodes {
             if let Some(ty) = ty {
                 put!("
-        ", l, " => $case(Handle::<", ty, "> {
+        ", kind, " => $case(Handle::<", ty, "> {
             node: $handle.node,
             parser: $handle.parser,
             _marker: PhantomData,
@@ -1157,12 +1157,12 @@ macro handle_any_match_type($handle:expr, $case:expr) {
 }
 
 macro P {");
-        for (i, (l, _, _)) in all_parse_labels.iter().enumerate() {
+        for (i, (kind, _, _)) in all_parse_nodes.iter().enumerate() {
             if i != 0 {
                 put!(",");
             }
             put!("
-    (", l.0, ") => (_P::_", i, ")");
+    (", kind.0, ") => (_P::_", i, ")");
         }
         put!("
 }
@@ -1170,9 +1170,9 @@ macro P {");
 impl fmt::Display for _P {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let s = match *self {");
-        for (l, _, _) in &all_parse_labels {
+        for (kind, _, _) in &all_parse_nodes {
             put!("
-            ", l, " => \"", l.0.escape_default(), "\",");
+            ", kind, " => \"", kind.0.escape_default(), "\",");
         }
         put!("
         };
@@ -1180,12 +1180,12 @@ impl fmt::Display for _P {
     }
 }
 
-impl ParseLabel for _P {
-    fn kind(self) -> ParseLabelKind<Self> {
+impl ParseNodeKind for _P {
+    fn shape(self) -> ParseNodeShape<Self> {
         match self {");
-        for (label, kind, _) in &all_parse_labels {
+        for (kind, shape, _) in &all_parse_nodes {
             put!("
-                ", label, " => ParseLabelKind::", kind, ",");
+                ", kind, " => ParseNodeShape::", shape, ",");
         }
         put!("
         }
@@ -1193,7 +1193,7 @@ impl ParseLabel for _P {
     fn from_usize(i: usize) -> Self {
         match i {");
 
-        for i in 0..all_parse_labels.len() {
+        for i in 0..all_parse_nodes.len() {
             put!("
             ", i, " => _P::_", i, ",");
         }
@@ -1405,13 +1405,13 @@ fn ret() -> Thunk<impl FnOnce(Continuation) -> Continuation> {
 }
 
 fn sppf_add(
-    parse_label: &ParseLabel,
+    parse_node_kind: &ParseNodeKind,
     child: &str,
 ) -> Thunk<impl FnOnce(Continuation) -> Continuation> {
     thunk!(
         "
                 p.sppf.add(",
-        parse_label,
+        parse_node_kind,
         ", c.frame.range.subtract_suffix(_range), ",
         child,
         ");"
@@ -1522,9 +1522,9 @@ fn reify_as(label: CodeLabel) -> Thunk<impl FnOnce(Continuation) -> Continuation
 impl<Pat: Ord + Hash + ToRustSrc> Rule<Pat> {
     fn generate_parse<'a>(
         self: &'a Rc<Self>,
-        parse_labels: Option<&'a RefCell<OrderMap<Rc<Rule<Pat>>, (ParseLabel, Option<ParseLabelKind<ParseLabel>>)>>>
+        parse_nodes: Option<&'a RefCell<OrderMap<Rc<Rule<Pat>>, (ParseNodeKind, Option<ParseNodeShape<ParseNodeKind>>)>>>
     ) -> Thunk<impl FnOnce(Continuation) -> Continuation + 'a> {
-        Thunk::new(move |cont| match (&**self, parse_labels) {
+        Thunk::new(move |cont| match (&**self, parse_nodes) {
             (Rule::Empty, _) => cont,
             (Rule::Match(pat), _) => {
                 check(&format!("let Some(_range) = p.input_consume_left(_range, {})", pat.to_rust_src()))(cont)
@@ -1537,67 +1537,67 @@ impl<Pat: Ord + Hash + ToRustSrc> Rule<Pat> {
                 left.generate_parse(None) +
                 right.generate_parse(None)
             )(cont),
-            (Rule::Concat([left, right]), Some(parse_labels)) => (
+            (Rule::Concat([left, right]), Some(parse_nodes)) => (
                 thunk!("
                 assert_eq!(_range.start(), c.frame.range.start());") +
-                left.generate_parse(Some(parse_labels)) +
+                left.generate_parse(Some(parse_nodes)) +
                 push_state("c.frame.range.subtract_suffix(_range).len()") +
-                right.generate_parse(Some(parse_labels)) +
-                pop_state(|state| sppf_add(&self.parse_label(parse_labels), state))
+                right.generate_parse(Some(parse_nodes)) +
+                pop_state(|state| sppf_add(&self.parse_node_kind(parse_nodes), state))
             )(cont),
             (Rule::Or(rules), None) => {
                 parallel(ThunkIter(rules.iter().map(|rule| {
                     rule.generate_parse(None)
                 })))(cont)
             }
-            (Rule::Or(rules), Some(parse_labels)) => (
+            (Rule::Or(rules), Some(parse_nodes)) => (
                 thunk!("
                 assert_eq!(_range.start(), c.frame.range.start());") +
                 parallel(ThunkIter(rules.iter().map(|rule| {
-                    push_state(&format!("{}.to_usize()", rule.parse_label(parse_labels))) +
-                    rule.generate_parse(Some(parse_labels))
+                    push_state(&format!("{}.to_usize()", rule.parse_node_kind(parse_nodes))) +
+                    rule.generate_parse(Some(parse_nodes))
                 }))) +
-                pop_state(|state| sppf_add(&self.parse_label(parse_labels), state))
+                pop_state(|state| sppf_add(&self.parse_node_kind(parse_nodes), state))
             )(cont),
             (Rule::Opt(rule), _) => {
-                let parse_label = parse_labels.and_then(|parse_labels| {
-                    rule.parse_label(parse_labels);
-                    rule.fill_parse_label_kind(parse_labels);
-                    match parse_labels.borrow()[rule].1.as_ref().unwrap() {
+                let parse_node_kind = parse_nodes.and_then(|parse_nodes| {
+                    rule.parse_node_kind(parse_nodes);
+                    rule.fill_parse_node_shape(parse_nodes);
+                    match parse_nodes.borrow()[rule].1.as_ref().unwrap() {
                         // TODO: unpack aliases?
-                        ParseLabelKind::Choice | ParseLabelKind::Binary(..) => None,
-                        _ => Some(self.parse_label(parse_labels)),
+                        ParseNodeShape::Choice | ParseNodeShape::Binary(..) => None,
+                        _ => Some(self.parse_node_kind(parse_nodes)),
                     }
                 });
-                if let Some(parse_label) = parse_label {
+                if let Some(parse_node_kind) = parse_node_kind {
                     (
                         thunk!("
                 assert_eq!(_range.start(), c.frame.range.start());") +
                         opt(
-                            rule.generate_parse(parse_labels) +
-                            sppf_add(&parse_label, "0"),
+                            rule.generate_parse(parse_nodes) +
+                            sppf_add(&parse_node_kind, "0"),
                             )
                     )(cont)
                 } else {
-                    opt(rule.generate_parse(parse_labels))(cont)
+                    opt(rule.generate_parse(parse_nodes))(cont)
                 }
             }
             (Rule::RepeatMany(rule, None), None) => fix(|label| {
                 opt(rule.generate_parse(None) + call(label))
             })(cont),
-            (Rule::RepeatMany(rule, None), Some(parse_labels)) => fix(|label| {
+            (Rule::RepeatMany(rule, None), Some(parse_nodes)) => fix(|label| {
                 let more = Rc::new(Rule::RepeatMore(rule.clone(), None));
                 opt(
                     thunk!("
                 assert_eq!(_range.start(), c.frame.range.start());") +
-                    rule.generate_parse(Some(parse_labels)) +
+                    rule.generate_parse(Some(parse_nodes)) +
                     push_state("c.frame.range.subtract_suffix(_range).len()") +
                     call(label) +
-                    pop_state(move |state| sppf_add(&more.parse_label(parse_labels), state))
+                    pop_state(move |state| sppf_add(&more.parse_node_kind(parse_nodes), state))
                 )
             })(cont),
-            (Rule::RepeatMany(elem, Some(sep)), parse_labels) => {
-                opt(Rc::new(Rule::RepeatMore(elem.clone(), Some(sep.clone()))).generate_parse(parse_labels))(cont)
+            (Rule::RepeatMany(elem, Some(sep)), parse_nodes) => {
+                opt(Rc::new(Rule::RepeatMore(elem.clone(), Some(sep.clone()))).generate_parse(parse_nodes))(cont)
             }
             (Rule::RepeatMore(rule, None), None) => fix(|label| {
                 rule.generate_parse(None) + opt(call(label))
@@ -1605,18 +1605,18 @@ impl<Pat: Ord + Hash + ToRustSrc> Rule<Pat> {
             (Rule::RepeatMore(elem, Some(sep)), None) => fix(|label| {
                 elem.generate_parse(None) + opt(sep.generate_parse(None) + call(label))
             })(cont),
-            (Rule::RepeatMore(rule, None), Some(parse_labels)) => fix(|label| {
+            (Rule::RepeatMore(rule, None), Some(parse_nodes)) => fix(|label| {
                 thunk!("
                 assert_eq!(_range.start(), c.frame.range.start());") +
-                rule.generate_parse(Some(parse_labels)) +
+                rule.generate_parse(Some(parse_nodes)) +
                 push_state("c.frame.range.subtract_suffix(_range).len()") +
                 opt(call(label)) +
-                pop_state(|state| sppf_add(&self.parse_label(parse_labels), state))
+                pop_state(|state| sppf_add(&self.parse_node_kind(parse_nodes), state))
             })(cont),
-            (Rule::RepeatMore(elem, Some(sep)), Some(parse_labels)) => fix(|label| {
+            (Rule::RepeatMore(elem, Some(sep)), Some(parse_nodes)) => fix(|label| {
                 thunk!("
                 assert_eq!(_range.start(), c.frame.range.start());") +
-                elem.generate_parse(Some(parse_labels)) +
+                elem.generate_parse(Some(parse_nodes)) +
                 push_state("c.frame.range.subtract_suffix(_range).len()") +
                 opt(
                     thunk!("
@@ -1628,10 +1628,10 @@ impl<Pat: Ord + Hash + ToRustSrc> Rule<Pat> {
                         sppf_add(&Rc::new(Rule::Concat([
                             sep.clone(),
                             self.clone(),
-                        ])).parse_label(parse_labels), state)
+                        ])).parse_node_kind(parse_nodes), state)
                     })
                 ) +
-                pop_state(|state| sppf_add(&self.parse_label(parse_labels), state))
+                pop_state(|state| sppf_add(&self.parse_node_kind(parse_nodes), state))
             })(cont),
         })
     }
@@ -1639,7 +1639,7 @@ impl<Pat: Ord + Hash + ToRustSrc> Rule<Pat> {
         &self,
         node: &str,
         refutable: bool,
-        parse_labels: &RefCell<OrderMap<Rc<Rule<Pat>>, (ParseLabel, Option<ParseLabelKind<ParseLabel>>)>>,
+        parse_nodes: &RefCell<OrderMap<Rc<Rule<Pat>>, (ParseNodeKind, Option<ParseNodeShape<ParseNodeKind>>)>>,
     ) -> String {
         let mut out = String::new();
         macro put($($x:expr),*) {{ $(write!(out, "{}", $x).unwrap();)* }}
@@ -1657,8 +1657,8 @@ impl<Pat: Ord + Hash + ToRustSrc> Rule<Pat> {
             }
             Rule::Concat([left, right]) => {
                 put!("self.parser.sppf.binary_children(", node, ").flat_map(move |(left, right)| {
-            ", left.generate_traverse("left", refutable, parse_labels), ".flat_map(move |left| {
-                ", right.generate_traverse("right", refutable, parse_labels).replace("\n", "\n    "), ".map(move |right| (left, right))
+            ", left.generate_traverse("left", refutable, parse_nodes), ".flat_map(move |left| {
+                ", right.generate_traverse("right", refutable, parse_nodes).replace("\n", "\n    "), ".map(move |right| (left, right))
             })
         })");
             }
@@ -1708,10 +1708,10 @@ impl<Pat: Ord + Hash + ToRustSrc> Rule<Pat> {
                     Some(r)
                 }
             }
-            match node.l {");
+            match node.kind {");
                 for (i, rule) in rules.iter().enumerate() {
                     put!("
-                ", rule.parse_label(parse_labels), " => Iter::_", i, "(", rule.generate_traverse("node", true, parse_labels).replace("\n", "\n    "), "),");
+                ", rule.parse_node_kind(parse_nodes), " => Iter::_", i, "(", rule.generate_traverse("node", true, parse_nodes).replace("\n", "\n    "), "),");
                 }
                 put!("
                 _ => unreachable!(),
@@ -1720,12 +1720,12 @@ impl<Pat: Ord + Hash + ToRustSrc> Rule<Pat> {
             }
             Rule::Opt(rule) => {
                 put!("self.parser.sppf.unary_children(", node, ").flat_map(move |node| {
-            match node.l {
-                ", rule.parse_label(parse_labels), " => {
-                    Some(", rule.generate_traverse("node", true, parse_labels).replace("\n", "\n        "), ".map(|x| (x,)))
+            match node.kind {
+                ", rule.parse_node_kind(parse_nodes), " => {
+                    Some(", rule.generate_traverse("node", true, parse_nodes).replace("\n", "\n        "), ".map(|x| (x,)))
                         .into_iter().flatten().chain(None)
                 }
-                ", Rc::new(Rule::Empty).parse_label(parse_labels), " => {
+                ", Rc::new(Rule::Empty).parse_node_kind(parse_nodes), " => {
                     None.into_iter().flatten().chain(Some(<(_,)>::default()))
                 }
                 _ => unreachable!()
