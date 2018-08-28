@@ -257,7 +257,7 @@ impl<Pat: Ord + Hash + ToRustSrc> Rule<Pat> {
                 assert_eq!(path, []);
                 "()".to_string()
             }
-            Rule::Call(r) => format!("{}<'a, 'b, 'i>", r),
+            Rule::Call(r) => format!("{}<'a, 'i, 's>", r),
             Rule::Concat(rules) => rules[path[0]].field_type(&path[1..]),
             Rule::Or(rules) => rules[path[0]].field_type(&path[1..]),
             Rule::Opt(rule) => [rule][path[0]].field_type(&path[1..]),
@@ -580,22 +580,22 @@ pub type Any = dyn any::Any;
 #[derive(Debug)]
 pub struct Ambiguity<T>(T);
 
-pub struct Handle<'a, 'b: 'a, 'i: 'a, T: ?Sized> {
+pub struct Handle<'a, 'i: 'a, 's: 'a, T: ?Sized> {
     pub node: ParseNode<'i, _P>,
-    pub parser: &'a Parser<'b, 'i>,
+    pub parser: &'a Parser<'s, 'i>,
     _marker: PhantomData<T>,
 }
 
-impl<'a, 'b, 'i, T: ?Sized> Copy for Handle<'a, 'b, 'i, T> {}
+impl<'a, 'i, 's, T: ?Sized> Copy for Handle<'a, 'i, 's, T> {}
 
-impl<'a, 'b, 'i, T: ?Sized> Clone for Handle<'a, 'b, 'i, T> {
+impl<'a, 'i, 's, T: ?Sized> Clone for Handle<'a, 'i, 's, T> {
     fn clone(&self) -> Self {
         *self
     }
 }
 
-impl<'a, 'b, 'i, T> From<Ambiguity<Handle<'a, 'b, 'i, T>>> for Ambiguity<Handle<'a, 'b, 'i, Any>> {
-    fn from(x: Ambiguity<Handle<'a, 'b, 'i, T>>) -> Self {
+impl<'a, 'i, 's, T> From<Ambiguity<Handle<'a, 'i, 's, T>>> for Ambiguity<Handle<'a, 'i, 's, Any>> {
+    fn from(x: Ambiguity<Handle<'a, 'i, 's, T>>) -> Self {
         Ambiguity(Handle {
             node: x.0.node,
             parser: x.0.parser,
@@ -604,8 +604,8 @@ impl<'a, 'b, 'i, T> From<Ambiguity<Handle<'a, 'b, 'i, T>>> for Ambiguity<Handle<
     }
 }
 
-impl<'a, 'b, 'i, T> From<Ambiguity<Handle<'a, 'b, 'i, [T]>>> for Ambiguity<Handle<'a, 'b, 'i, Any>> {
-    fn from(x: Ambiguity<Handle<'a, 'b, 'i, [T]>>) -> Self {
+impl<'a, 'i, 's, T> From<Ambiguity<Handle<'a, 'i, 's, [T]>>> for Ambiguity<Handle<'a, 'i, 's, Any>> {
+    fn from(x: Ambiguity<Handle<'a, 'i, 's, [T]>>) -> Self {
         Ambiguity(Handle {
             node: x.0.node,
             parser: x.0.parser,
@@ -614,7 +614,7 @@ impl<'a, 'b, 'i, T> From<Ambiguity<Handle<'a, 'b, 'i, [T]>>> for Ambiguity<Handl
     }
 }
 
-impl<'a, 'b, 'i> fmt::Debug for Handle<'a, 'b, 'i, ()> {
+impl<'a, 'i, 's> fmt::Debug for Handle<'a, 'i, 's, ()> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
@@ -625,14 +625,14 @@ impl<'a, 'b, 'i> fmt::Debug for Handle<'a, 'b, 'i, ()> {
     }
 }
 
-impl<'a, 'b, 'i> fmt::Debug for Handle<'a, 'b, 'i, Any> {
+impl<'a, 'i, 's> fmt::Debug for Handle<'a, 'i, 's, Any> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         handle_any_match_type!(self, |handle| write!(f, \"{:?}\", handle))
     }
 }
 
-impl<'a, 'b, 'i, T> fmt::Debug for Handle<'a, 'b, 'i, [T]>
-    where Handle<'a, 'b, 'i, T>: fmt::Debug,
+impl<'a, 'i, 's, T> fmt::Debug for Handle<'a, 'i, 's, [T]>
+    where Handle<'a, 'i, 's, T>: fmt::Debug,
 {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
@@ -675,8 +675,8 @@ impl<'a, 'b, 'i, T> fmt::Debug for Handle<'a, 'b, 'i, [T]>
     }
 }
 
-impl<'a, 'b, 'i, T> Iterator for Handle<'a, 'b, 'i, [T]> {
-    type Item = Result<Handle<'a, 'b, 'i, T>, Ambiguity<Self>>;
+impl<'a, 'i, 's, T> Iterator for Handle<'a, 'i, 's, [T]> {
+    type Item = Result<Handle<'a, 'i, 's, T>, Ambiguity<Self>>;
     fn next(&mut self) -> Option<Self::Item> {
         let mut iter = self.list_head_many();
         let first = iter.next().unwrap();
@@ -712,13 +712,13 @@ impl<'a, 'b, 'i, T> Iterator for Handle<'a, 'b, 'i, [T]> {
     }
 }
 
-pub enum ListHead<'a, 'b: 'a, 'i: 'a, T> {
-    Cons(Handle<'a, 'b, 'i, T>, Handle<'a, 'b, 'i, [T]>),
+pub enum ListHead<'a, 'i: 'a, 's: 'a, T> {
+    Cons(Handle<'a, 'i, 's, T>, Handle<'a, 'i, 's, [T]>),
     Nil,
 }
 
-impl<'a, 'b, 'i, T> Handle<'a, 'b, 'i, [T]> {
-    fn list_head_one(self) -> Result<ListHead<'a, 'b, 'i, T>, Ambiguity<Self>> {
+impl<'a, 'i, 's, T> Handle<'a, 'i, 's, [T]> {
+    fn list_head_one(self) -> Result<ListHead<'a, 'i, 's, T>, Ambiguity<Self>> {
         let mut iter = self.list_head_many();
         let first = iter.next().unwrap();
         if iter.next().is_none() {
@@ -727,7 +727,7 @@ impl<'a, 'b, 'i, T> Handle<'a, 'b, 'i, [T]> {
             Err(Ambiguity(self))
         }
     }
-    fn list_head_many(self) -> impl Iterator<Item = ListHead<'a, 'b, 'i, T>> {
+    fn list_head_many(self) -> impl Iterator<Item = ListHead<'a, 'i, 's, T>> {
         let mut maybe_cons = None;
         let mut maybe_nil = None;
         if let ParseLabelKind::Opt { none, .. } = self.node.l.kind() {
@@ -763,11 +763,11 @@ impl<'a, 'b, 'i, T> Handle<'a, 'b, 'i, [T]> {
             if let Some(variants) = &variants {
                 put!("
 
-pub enum ", name, "<'a, 'b: 'a, 'i: 'a> {");
+pub enum ", name, "<'a, 'i: 'a, 's: 'a> {");
                 for (rule, variant, fields) in variants {
                     if fields.is_empty() {
                         put!("
-    ", variant, "(Handle<'a, 'b, 'i, ", rule.field_type(&[]), ">),");
+    ", variant, "(Handle<'a, 'i, 's, ", rule.field_type(&[]), ">),");
                     } else {
                         put!("
     ", variant, " {");
@@ -778,7 +778,7 @@ pub enum ", name, "<'a, 'b: 'a, 'i: 'a> {");
                             if refutable {
                                 put!("Option<");
                             }
-                            put!("Handle<'a, 'b, 'i, ", rule.field_pathset_type(paths), ">");
+                            put!("Handle<'a, 'i, 's, ", rule.field_pathset_type(paths), ">");
                             if refutable {
                                 put!(">");
                             }
@@ -793,7 +793,7 @@ pub enum ", name, "<'a, 'b: 'a, 'i: 'a> {");
             } else {
                 put!("
 
-pub struct ", name, "<'a, 'b: 'a, 'i: 'a> {");
+pub struct ", name, "<'a, 'i: 'a, 's: 'a> {");
                 for (field_name, paths) in &rule.fields {
                     let refutable = rule.rule.field_pathset_is_refutable(paths);
                     put!("
@@ -801,7 +801,7 @@ pub struct ", name, "<'a, 'b: 'a, 'i: 'a> {");
                     if refutable {
                         put!("Option<");
                     }
-                    put!("Handle<'a, 'b, 'i, ", rule.rule.field_pathset_type(paths), ">");
+                    put!("Handle<'a, 'i, 's, ", rule.rule.field_pathset_type(paths), ">");
                     if refutable {
                         put!(">");
                     }
@@ -809,15 +809,15 @@ pub struct ", name, "<'a, 'b: 'a, 'i: 'a> {");
                 }
                 if rule.fields.is_empty() {
                     put!("
-    _marker: PhantomData<(&'a (), &'b (), &'i ())>,");
+    _marker: PhantomData<(&'a (), &'i (), &'s ())>,");
                 }
                 put!("
 }");
             }
             put!("
 
-impl<'a, 'b, 'i> ", name, "<'a, 'b, 'i> {
-    pub fn parse(p: &'a mut Parser<'b, 'i>, range: Range<'i>) -> Result<Handle<'a, 'b, 'i, Self>, ()> {
+impl<'a, 'i, 's> ", name, "<'a, 'i, 's> {
+    pub fn parse(p: &'a mut Parser<'s, 'i>, range: Range<'i>) -> Result<Handle<'a, 'i, 's, Self>, ()> {
         let call = Call {
             callee: ", CodeLabel(name.clone()), ",
             range,
@@ -844,7 +844,7 @@ impl<'a, 'b, 'i> ", name, "<'a, 'b, 'i> {
     }
 }
 
-impl<'a, 'b, 'i> fmt::Debug for ", name, "<'a, 'b, 'i> {
+impl<'a, 'i, 's> fmt::Debug for ", name, "<'a, 'i, 's> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {");
             if let Some(variants) = &variants {
                 put!("
@@ -903,7 +903,7 @@ impl<'a, 'b, 'i> fmt::Debug for ", name, "<'a, 'b, 'i> {
             if rule.fields.is_empty() {
                 put!("
 
-impl<'a, 'b, 'i> fmt::Debug for Handle<'a, 'b, 'i, ", name, "<'a, 'b, 'i>> {
+impl<'a, 'i, 's> fmt::Debug for Handle<'a, 'i, 's, ", name, "<'a, 'i, 's>> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, \"{}..{}\", self.node.range.start(), self.node.range.end())
     }
@@ -912,7 +912,7 @@ impl<'a, 'b, 'i> fmt::Debug for Handle<'a, 'b, 'i, ", name, "<'a, 'b, 'i>> {
             }
             put!("
 
-impl<'a, 'b, 'i> fmt::Debug for Handle<'a, 'b, 'i, ", name, "<'a, 'b, 'i>> {
+impl<'a, 'i, 's> fmt::Debug for Handle<'a, 'i, 's, ", name, "<'a, 'i, 's>> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
@@ -930,8 +930,8 @@ impl<'a, 'b, 'i> fmt::Debug for Handle<'a, 'b, 'i, ", name, "<'a, 'b, 'i>> {
     }
 }
 
-impl<'a, 'b, 'i> Handle<'a, 'b, 'i, ", name, "<'a, 'b, 'i>> {
-    pub fn one(self) -> Result<", name, "<'a, 'b, 'i>, Ambiguity<Self>> {
+impl<'a, 'i, 's> Handle<'a, 'i, 's, ", name, "<'a, 'i, 's>> {
+    pub fn one(self) -> Result<", name, "<'a, 'i, 's>, Ambiguity<Self>> {
         let mut iter = self.many();
         let first = iter.next().unwrap();
         if iter.next().is_none() {
@@ -940,7 +940,7 @@ impl<'a, 'b, 'i> Handle<'a, 'b, 'i, ", name, "<'a, 'b, 'i>> {
             Err(Ambiguity(self))
         }
     }
-    pub fn many(self) -> impl Iterator<Item = ", name, "<'a, 'b, 'i>> {
+    pub fn many(self) -> impl Iterator<Item = ", name, "<'a, 'i, 's>> {
         self.parser.sppf.unary_children(self.node).flat_map(move |node| {");
             if let Some(variants) = variants {
                 put!("
