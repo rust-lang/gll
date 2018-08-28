@@ -4,7 +4,7 @@ extern crate gll;
 
 use gll::grammar::grammar;
 use std::env;
-use std::fs::File;
+use std::fs;
 use std::path::PathBuf;
 
 fn main() {
@@ -27,7 +27,7 @@ fn main() {
             B:"b"
         };
     };
-    gll10_g0.generate(&mut File::create(&out_dir.join("gll10_g0.rs")).unwrap());
+    fs::write(&out_dir.join("gll10_g0.rs"), gll10_g0.generate()).unwrap();
 
     let mut gll10_g0_opaque = grammar!{
         S = {
@@ -38,7 +38,10 @@ fn main() {
         A = { "a" | "c" };
         B = { "a" | "b" };
     };
-    gll10_g0_opaque.generate(&mut File::create(&out_dir.join("gll10_g0_opaque.rs")).unwrap());
+    fs::write(
+        &out_dir.join("gll10_g0_opaque.rs"),
+        gll10_g0_opaque.generate(),
+    ).unwrap();
 
     let mut gll13_g1 = grammar!{
         S = {
@@ -47,7 +50,7 @@ fn main() {
             Z:{ a:"a" d:"d" b:"b" }
         };
     };
-    gll13_g1.generate(&mut File::create(&out_dir.join("gll13_g1.rs")).unwrap());
+    fs::write(&out_dir.join("gll13_g1.rs"), gll13_g1.generate()).unwrap();
 
     let mut gll15_g0 = grammar!{
         A = {
@@ -56,7 +59,7 @@ fn main() {
             Z:{ "a" }
         };
     };
-    gll15_g0.generate(&mut File::create(&out_dir.join("gll15_g0.rs")).unwrap());
+    fs::write(&out_dir.join("gll15_g0.rs"), gll15_g0.generate()).unwrap();
 
     let mut gll15_g0_nested = grammar!{
         A = {
@@ -65,5 +68,8 @@ fn main() {
             Z:{ "a" }
         };
     };
-    gll15_g0_nested.generate(&mut File::create(&out_dir.join("gll15_g0_nested.rs")).unwrap());
+    fs::write(
+        &out_dir.join("gll15_g0_nested.rs"),
+        gll15_g0_nested.generate(),
+    ).unwrap();
 }
