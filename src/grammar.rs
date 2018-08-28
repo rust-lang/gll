@@ -8,6 +8,7 @@ use std::hash::Hash;
 use std::io::Write;
 use std::mem;
 use std::ops::{Add, Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive};
+use std::process::{Command, Stdio};
 use std::rc::Rc;
 use ParseNodeShape;
 
@@ -559,7 +560,8 @@ pub macro grammar {
 
 #[cfg_attr(rustfmt, rustfmt_skip)]
 impl<Pat: Ord + Hash + ToRustSrc> Grammar<Pat> {
-    pub fn generate(&mut self, out: &mut Write) {
+    pub fn generate(&mut self) -> String {
+        let mut out = String::new();
         macro put($($x:expr),*) {{ $(write!(out, "{}", $x).unwrap();)* }}
 
         let parse_nodes = RefCell::new(OrderMap::new());
@@ -1218,6 +1220,25 @@ pub enum _C {");
 
 impl CodeLabel for _C {}
 ");
+        let rustfmt = Command::new("rustfmt")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn();
+
+        if let Ok(mut rustfmt) = rustfmt {
+            let stdin_result = {
+                let stdin = rustfmt.stdin.as_mut().unwrap();
+                stdin.write_all(out.as_bytes())
+            };
+
+            if let Ok(output) = rustfmt.wait_with_output() {
+                if output.status.success() {
+                    stdin_result.unwrap();
+                    out = String::from_utf8_lossy(&output.stdout).to_string();
+                }
+            }
+        }
+        out
     }
 }
 
