@@ -408,47 +408,38 @@ impl<'i, P: ParseNodeKind> ParseGraph<'i, P> {
         &'a self,
         node: ParseNode<'i, P>,
     ) -> impl Iterator<Item = ParseNode<'i, P>> + 'a {
-        let (child0, child1, choice_children) = match node.kind.shape() {
-            ParseNodeShape::Alias(kind) => (Some(kind), None, None),
+        let (alias_child, choice_children) = match node.kind.shape() {
+            ParseNodeShape::Alias(kind) => (Some(kind), None),
             ParseNodeShape::Choice => (
-                None,
                 None,
                 self.children
                     .get(&node)
                     .map(|children| children.iter().map(|&i| P::from_usize(i))),
             ),
-            ParseNodeShape::Opt { none, some } => {
-                let has_some = self
-                    .children
-                    .get(&ParseNode {
-                        kind: match some.shape() {
-                            // TODO: unpack aliases?
-                            ParseNodeShape::Choice | ParseNodeShape::Binary(..) => some,
-                            _ => node.kind,
-                        },
-                        range: node.range,
-                    }).map_or(false, |children| !children.is_empty());
-                (
-                    if node.range.is_empty() {
-                        Some(none)
-                    } else {
-                        None
-                    },
-                    if has_some { Some(some) } else { None },
-                    None,
-                )
-            }
             shape => unreachable!("unary_children({}): non-unary shape {}", node, shape),
         };
         choice_children
             .into_iter()
             .flatten()
-            .chain(child0)
-            .chain(child1)
+            .chain(alias_child)
             .map(move |kind| ParseNode {
                 kind,
                 range: node.range,
             })
+    }
+
+    pub fn opt_child(&self, node: ParseNode<'i, P>) -> Option<ParseNode<'i, P>> {
+        match node.kind.shape() {
+            ParseNodeShape::Opt(inner) => if node.range.is_empty() {
+                None
+            } else {
+                Some(ParseNode {
+                    kind: inner,
+                    range: node.range,
+                })
+            },
+            shape => unreachable!("opt_child({}): non-opt shape {}", node, shape),
+        }
     }
 
     pub fn binary_children<'a>(
@@ -493,8 +484,18 @@ impl<'i, P: ParseNodeKind> ParseGraph<'i, P> {
             match source.kind.shape() {
                 ParseNodeShape::Opaque => {}
 
-                ParseNodeShape::Alias(_) | ParseNodeShape::Choice | ParseNodeShape::Opt { .. } => {
+                ParseNodeShape::Alias(_) | ParseNodeShape::Choice => {
                     for child in self.unary_children(source) {
+                        enqueue(child);
+                        writeln!(out, r#"    p{} [label="" shape=point]"#, p)?;
+                        writeln!(out, "    {:?} -> p{}:n", source.to_string(), p)?;
+                        writeln!(out, "    p{}:s -> {:?}:n [dir=none]", p, child.to_string())?;
+                        p += 1;
+                    }
+                }
+
+                ParseNodeShape::Opt(_) => {
+                    if let Some(child) = self.opt_child(source) {
                         enqueue(child);
                         writeln!(out, r#"    p{} [label="" shape=point]"#, p)?;
                         writeln!(out, "    {:?} -> p{}:n", source.to_string(), p)?;
@@ -555,7 +556,7 @@ pub enum ParseNodeShape<P> {
     Opaque,
     Alias(P),
     Choice,
-    Opt { none: P, some: P },
+    Opt(P),
     Binary(P, P),
 }
 
@@ -565,9 +566,7 @@ impl<P: fmt::Display> fmt::Display for ParseNodeShape<P> {
             ParseNodeShape::Opaque => write!(f, "Opaque"),
             ParseNodeShape::Alias(inner) => write!(f, "Alias({})", inner),
             ParseNodeShape::Choice => write!(f, "Choice"),
-            ParseNodeShape::Opt { none, some } => {
-                write!(f, "Opt {{ none: {}, some: {} }}", none, some)
-            }
+            ParseNodeShape::Opt(inner) => write!(f, "Opt({})", inner),
             ParseNodeShape::Binary(left, right) => write!(f, "Binary({}, {})", left, right),
         }
     }

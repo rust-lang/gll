@@ -1,6 +1,7 @@
 use ordermap::{orderset, OrderMap, OrderSet};
 use std::cell::RefCell;
 use std::char;
+use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::fmt;
 use std::fmt::Write as FmtWrite;
@@ -242,7 +243,7 @@ pub enum Rule<Pat> {
     RepeatMore(Rc<Rule<Pat>>, Option<Rc<Rule<Pat>>>),
 }
 
-impl<Pat: Ord + Hash + ToRustSrc> Rule<Pat> {
+impl<Pat: Ord + Hash + MatchesEmpty + ToRustSrc> Rule<Pat> {
     fn field_pathset_type(&self, paths: &OrderSet<Vec<usize>>) -> String {
         let ty = self.field_type(paths.get_index(0).unwrap());
         for path in paths.iter().skip(1) {
@@ -285,6 +286,70 @@ impl<Pat: Ord + Hash + ToRustSrc> Rule<Pat> {
             | Rule::RepeatMore(..) => false,
             Rule::Concat(rules) => rules[path[0]].field_is_refutable(&path[1..]),
             Rule::Or(..) | Rule::Opt(_) => true,
+        }
+    }
+    fn can_be_empty(
+        self: &Rc<Self>,
+        cache: &mut HashMap<Rc<Self>, Result<bool, ()>>,
+        grammar: &Grammar<Pat>,
+    ) -> Result<bool, ()> {
+        if let Some(r) = cache.get(self).cloned() {
+            return r;
+        }
+        cache.insert(self.clone(), Err(()));
+        let r = match &**self {
+            Rule::Empty => true,
+            Rule::Match(pat) => pat.matches_empty(),
+            Rule::NotMatch(_) => true,
+            Rule::Call(rule) => grammar.rules[rule].rule.can_be_empty(cache, grammar)?,
+            Rule::Concat([left, right]) => match (
+                left.can_be_empty(cache, grammar),
+                right.can_be_empty(cache, grammar),
+            ) {
+                (Ok(false), _) | (_, Ok(false)) => false,
+                (left, right) => left? && right?,
+            },
+            Rule::Or(rules) => rules.iter().fold(Ok(false), |prev, rule| {
+                Ok(match (prev, rule.can_be_empty(cache, grammar)) {
+                    (Ok(true), _) | (_, Ok(true)) => true,
+                    (prev, rule) => prev? || rule?,
+                })
+            })?,
+            Rule::Opt(_) => true,
+            Rule::RepeatMany(..) => true,
+            Rule::RepeatMore(elem, _) => elem.can_be_empty(cache, grammar)?,
+        };
+        *cache.get_mut(self).unwrap() = Ok(r);
+        Ok(r)
+    }
+
+    fn check_non_empty_opt(
+        self: &Rc<Self>,
+        cache: &mut HashMap<Rc<Self>, Result<bool, ()>>,
+        grammar: &Grammar<Pat>,
+    ) {
+        match &**self {
+            Rule::Empty | Rule::Match(_) | Rule::NotMatch(_) | Rule::Call(_) => {}
+            Rule::Concat([left, right]) => {
+                left.check_non_empty_opt(cache, grammar);
+                right.check_non_empty_opt(cache, grammar);
+            }
+            Rule::Or(rules) => {
+                for rule in rules {
+                    rule.check_non_empty_opt(cache, grammar);
+                }
+            }
+            Rule::Opt(rule) => {
+                assert_eq!(rule.can_be_empty(cache, grammar), Ok(false));
+                rule.check_non_empty_opt(cache, grammar)
+            }
+            Rule::RepeatMany(elem, sep) | Rule::RepeatMore(elem, sep) => {
+                assert_eq!(elem.can_be_empty(cache, grammar), Ok(false));
+                elem.check_non_empty_opt(cache, grammar);
+                if let Some(sep) = sep {
+                    sep.check_non_empty_opt(cache, grammar);
+                }
+            }
         }
     }
     fn parse_node_kind(
@@ -362,15 +427,10 @@ impl<Pat: Ord + Hash + ToRustSrc> Rule<Pat> {
                 right.parse_node_kind(parse_nodes),
             ),
             Rule::Or(_) => ParseNodeShape::Choice,
-            Rule::Opt(rule) => ParseNodeShape::Opt {
-                none: Rc::new(Rule::Empty).parse_node_kind(parse_nodes),
-                some: rule.parse_node_kind(parse_nodes),
-            },
-            Rule::RepeatMany(elem, sep) => ParseNodeShape::Opt {
-                none: Rc::new(Rule::Empty).parse_node_kind(parse_nodes),
-                some: Rc::new(Rule::RepeatMore(elem.clone(), sep.clone()))
-                    .parse_node_kind(parse_nodes),
-            },
+            Rule::Opt(rule) => ParseNodeShape::Opt(rule.parse_node_kind(parse_nodes)),
+            Rule::RepeatMany(elem, sep) => ParseNodeShape::Opt(
+                Rc::new(Rule::RepeatMore(elem.clone(), sep.clone())).parse_node_kind(parse_nodes),
+            ),
             Rule::RepeatMore(rule, None) => ParseNodeShape::Binary(
                 rule.parse_node_kind(parse_nodes),
                 Rc::new(Rule::RepeatMany(rule.clone(), None)).parse_node_kind(parse_nodes),
@@ -389,6 +449,10 @@ impl<Pat: Ord + Hash + ToRustSrc> Rule<Pat> {
 
 pub trait ToRustSrc {
     fn to_rust_src(&self) -> String;
+}
+
+pub trait MatchesEmpty {
+    fn matches_empty(&self) -> bool;
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -445,6 +509,27 @@ impl<S: fmt::Debug, C: fmt::Debug> ToRustSrc for Pat<S, C> {
             Pat::String(s) => format!("{:?}", s),
             Pat::Range(start, end) => format!("{:?}", start..=end),
         }
+    }
+}
+
+impl<S: MatchesEmpty, C: MatchesEmpty> MatchesEmpty for Pat<S, C> {
+    fn matches_empty(&self) -> bool {
+        match self {
+            Pat::String(s) => s.matches_empty(),
+            Pat::Range(start, end) => start.matches_empty() || end.matches_empty(),
+        }
+    }
+}
+
+impl<'a> MatchesEmpty for &'a str {
+    fn matches_empty(&self) -> bool {
+        self.is_empty()
+    }
+}
+
+impl MatchesEmpty for char {
+    fn matches_empty(&self) -> bool {
+        false
     }
 }
 
@@ -559,8 +644,16 @@ pub macro grammar {
 }
 
 #[cfg_attr(rustfmt, rustfmt_skip)]
-impl<Pat: Ord + Hash + ToRustSrc> Grammar<Pat> {
-    pub fn generate(&mut self) -> String {
+impl<Pat: Ord + Hash + MatchesEmpty + ToRustSrc> Grammar<Pat> {
+    fn check(&self) {
+        let mut can_be_empty_cache = HashMap::new();
+        for rule in self.rules.values() {
+            rule.rule.check_non_empty_opt(&mut can_be_empty_cache, self);
+        }
+    }
+    pub fn generate(&self) -> String {
+        self.check();
+
         let mut out = String::new();
         macro put($($x:expr),*) {{ $(write!(out, "{}", $x).unwrap();)* }}
 
@@ -643,12 +736,12 @@ impl<'a, 'i, 's, T> fmt::Debug for Handle<'a, 'i, 's, [T]>
             self.node.range.start(),
             self.node.range.end()
         )?;
-        for (i, x) in self.list_head_many().enumerate() {
-            if i > 0 {
-                write!(f, \" | \")?;
-            }
-            match x {
-                ListHead::Cons(elem, rest) => {
+        match self.list_head_many() {
+            ListHead::Cons(cons) => {
+                for (i, (elem, rest)) in cons.enumerate() {
+                    if i > 0 {
+                        write!(f, \" | \")?;
+                    }
                     enum Elem<T, L> {
                         One(T),
                         Spread(L),
@@ -668,9 +761,9 @@ impl<'a, 'i, 's, T> fmt::Debug for Handle<'a, 'i, 's, [T]>
                         }
                     }))).finish()?;
                 }
-                ListHead::Nil => {
-                    f.debug_list().entries(None::<()>).finish()?;
-                }
+            }
+            ListHead::Nil => {
+                f.debug_list().entries(None::<()>).finish()?;
             }
         }
         Ok(())
@@ -680,84 +773,72 @@ impl<'a, 'i, 's, T> fmt::Debug for Handle<'a, 'i, 's, [T]>
 impl<'a, 'i, 's, T> Iterator for Handle<'a, 'i, 's, [T]> {
     type Item = Result<Handle<'a, 'i, 's, T>, Ambiguity<Self>>;
     fn next(&mut self) -> Option<Self::Item> {
-        let mut iter = self.list_head_many();
-        let first = iter.next().unwrap();
-        if let Some(second) = iter.next() {
-            let original = *self;
-            match (first, second) {
-                (ListHead::Cons(_, rest), _) |
-                (_, ListHead::Cons(_, rest)) => {
-                    match rest.node.kind.shape() {
-                        ParseNodeShape::Opt { .. } => {
-                            self.node.kind = rest.node.kind;
-                            self.node.range = Range(self.node.range.split_at(0).0);
+        match self.list_head_many() {
+            ListHead::Cons(mut iter) => {
+                let (elem, rest) = iter.next().unwrap();
+                let original = *self;
+                *self = rest;
+                if iter.next().is_none() {
+                    Some(Ok(elem))
+                } else {
+                    match self.node.kind.shape() {
+                        ParseNodeShape::Opt(_) => {
+                            self.node.range = Range(original.node.range.split_at(0).0);
                         }
                         _ => unreachable!(),
                     }
+                    match self.list_head_one() {
+                        ListHead::Nil => {}
+                        _ => unreachable!(),
+                    }
+                    Some(Err(Ambiguity(original)))
                 }
-                _ => unreachable!(),
             }
-            match self.list_head_one() {
-                Ok(ListHead::Nil) => {}
-                _ => unreachable!(),
-            }
-            Some(Err(Ambiguity(original)))
-        } else {
-            match first {
-                ListHead::Cons(elem, rest) => {
-                    *self = rest;
-                    Some(Ok(elem))
-                }
-                ListHead::Nil => None,
-            }
+            ListHead::Nil => None,
         }
     }
 }
 
-pub enum ListHead<'a, 'i: 'a, 's: 'a, T> {
-    Cons(Handle<'a, 'i, 's, T>, Handle<'a, 'i, 's, [T]>),
+pub enum ListHead<C> {
+    Cons(C),
     Nil,
 }
 
 impl<'a, 'i, 's, T> Handle<'a, 'i, 's, [T]> {
-    fn list_head_one(self) -> Result<ListHead<'a, 'i, 's, T>, Ambiguity<Self>> {
-        let mut iter = self.list_head_many();
-        let first = iter.next().unwrap();
-        if iter.next().is_none() {
-            Ok(first)
-        } else {
-            Err(Ambiguity(self))
-        }
-    }
-    fn list_head_many(self) -> impl Iterator<Item = ListHead<'a, 'i, 's, T>> {
-        let mut maybe_cons = None;
-        let mut maybe_nil = None;
-        if let ParseNodeShape::Opt { none, .. } = self.node.kind.shape() {
-            for opt_child in self.parser.sppf.unary_children(self.node) {
-                if opt_child.kind == none {
-                    maybe_nil = Some(ListHead::Nil);
+    fn list_head_one(self) -> ListHead<Result<(Handle<'a, 'i, 's, T>, Handle<'a, 'i, 's, [T]>), Ambiguity<Self>>> {
+        match self.list_head_many() {
+            ListHead::Cons(mut iter) => {
+                let first = iter.next().unwrap();
+                if iter.next().is_none() {
+                    ListHead::Cons(Ok(first))
                 } else {
-                    maybe_cons = Some(opt_child);
+                    ListHead::Cons(Err(Ambiguity(self)))
                 }
             }
-        } else {
-            maybe_cons = Some(self.node);
+            ListHead::Nil => ListHead::Nil,
         }
-        maybe_cons.into_iter().flat_map(move |node| {
-            self.parser.sppf.binary_children(node).flat_map(move |(elem, rest)| {
-                if let ParseNodeShape::Binary(..) = rest.kind.shape() {
-                    Some(self.parser.sppf.binary_children(rest)).into_iter().flatten().chain(None)
-                } else {
-                    None.into_iter().flatten().chain(Some((elem, rest)))
-                }
-            }).map(move |(elem, rest)| {
-                ListHead::Cons(Handle {
-                    node: elem,
-                    parser: self.parser,
-                    _marker: PhantomData,
-                }, Handle { node: rest, ..self })
-            })
-        }).chain(maybe_nil)
+    }
+    fn list_head_many(mut self) -> ListHead<impl Iterator<Item = (Handle<'a, 'i, 's, T>, Handle<'a, 'i, 's, [T]>)>> {
+        if let ParseNodeShape::Opt(_) = self.node.kind.shape() {
+            if let Some(opt_child) = self.parser.sppf.opt_child(self.node) {
+                self.node = opt_child;
+            } else {
+                return ListHead::Nil;
+            }
+        }
+        ListHead::Cons(self.parser.sppf.binary_children(self.node).flat_map(move |(elem, rest)| {
+            if let ParseNodeShape::Binary(..) = rest.kind.shape() {
+                Some(self.parser.sppf.binary_children(rest)).into_iter().flatten().chain(None)
+            } else {
+                None.into_iter().flatten().chain(Some((elem, rest)))
+            }
+        }).map(move |(elem, rest)| {
+            (Handle {
+                node: elem,
+                parser: self.parser,
+                _marker: PhantomData,
+            }, Handle { node: rest, ..self })
+        }))
     }
 }");
         for (name, rule) in &self.rules {
@@ -1540,7 +1621,7 @@ fn reify_as(label: CodeLabel) -> Thunk<impl FnOnce(Continuation) -> Continuation
 }
 
 #[cfg_attr(rustfmt, rustfmt_skip)]
-impl<Pat: Ord + Hash + ToRustSrc> Rule<Pat> {
+impl<Pat: Ord + Hash + MatchesEmpty + ToRustSrc> Rule<Pat> {
     fn generate_parse<'a>(
         self: &'a Rc<Self>,
         parse_nodes: Option<&'a RefCell<OrderMap<Rc<Rule<Pat>>, (ParseNodeKind, Option<ParseNodeShape<ParseNodeKind>>)>>>
@@ -1580,29 +1661,7 @@ impl<Pat: Ord + Hash + ToRustSrc> Rule<Pat> {
                 }))) +
                 pop_state(|state| sppf_add(&self.parse_node_kind(parse_nodes), state))
             )(cont),
-            (Rule::Opt(rule), _) => {
-                let parse_node_kind = parse_nodes.and_then(|parse_nodes| {
-                    rule.parse_node_kind(parse_nodes);
-                    rule.fill_parse_node_shape(parse_nodes);
-                    match parse_nodes.borrow()[rule].1.as_ref().unwrap() {
-                        // TODO: unpack aliases?
-                        ParseNodeShape::Choice | ParseNodeShape::Binary(..) => None,
-                        _ => Some(self.parse_node_kind(parse_nodes)),
-                    }
-                });
-                if let Some(parse_node_kind) = parse_node_kind {
-                    (
-                        thunk!("
-                assert_eq!(_range.start(), c.frame.range.start());") +
-                        opt(
-                            rule.generate_parse(parse_nodes) +
-                            sppf_add(&parse_node_kind, "0"),
-                            )
-                    )(cont)
-                } else {
-                    opt(rule.generate_parse(parse_nodes))(cont)
-                }
-            }
+            (Rule::Opt(rule), _) => opt(rule.generate_parse(parse_nodes))(cont),
             (Rule::RepeatMany(rule, None), None) => fix(|label| {
                 opt(rule.generate_parse(None) + call(label))
             })(cont),
@@ -1740,18 +1799,15 @@ impl<Pat: Ord + Hash + ToRustSrc> Rule<Pat> {
         })");
             }
             Rule::Opt(rule) => {
-                put!("self.parser.sppf.unary_children(", node, ").flat_map(move |node| {
-            match node.kind {
-                ", rule.parse_node_kind(parse_nodes), " => {
-                    Some(", rule.generate_traverse("node", true, parse_nodes).replace("\n", "\n        "), ".map(|x| (x,)))
-                        .into_iter().flatten().chain(None)
-                }
-                ", Rc::new(Rule::Empty).parse_node_kind(parse_nodes), " => {
-                    None.into_iter().flatten().chain(Some(<(_,)>::default()))
-                }
-                _ => unreachable!()
+                put!("match self.parser.sppf.opt_child(", node, ") {
+            Some(node) => {
+                Some(", rule.generate_traverse("node", true, parse_nodes).replace("\n", "\n    "), ".map(|x| (x,)))
+                    .into_iter().flatten().chain(None)
             }
-        })");
+            None => {
+                None.into_iter().flatten().chain(Some(<(_,)>::default()))
+            }
+        }");
             }
         }
         out.replace("\n", "\n    ")
