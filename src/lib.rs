@@ -2,7 +2,6 @@
     arbitrary_self_types,
     decl_macro,
     fn_traits,
-    from_ref,
     nll,
     range_contains,
     slice_patterns,
