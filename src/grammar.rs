@@ -1,6 +1,7 @@
 use ordermap::{orderset, OrderMap, OrderSet};
 use std::cell::RefCell;
 use std::char;
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::fmt;
@@ -8,7 +9,9 @@ use std::fmt::Write as FmtWrite;
 use std::hash::Hash;
 use std::io::Write;
 use std::mem;
-use std::ops::{Add, Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive};
+use std::ops::{
+    Add, BitAnd, BitOr, Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive,
+};
 use std::process::{Command, Stdio};
 use std::rc::Rc;
 use ParseNodeShape;
@@ -290,42 +293,41 @@ impl<Pat: Ord + Hash + MatchesEmpty + ToRustSrc> Rule<Pat> {
     }
     fn can_be_empty(
         self: &Rc<Self>,
-        cache: &mut HashMap<Rc<Self>, Result<bool, ()>>,
+        cache: &mut HashMap<Rc<Self>, MaybeKnown<bool>>,
         grammar: &Grammar<Pat>,
-    ) -> Result<bool, ()> {
-        if let Some(r) = cache.get(self).cloned() {
-            return r;
+    ) -> MaybeKnown<bool> {
+        match cache.entry(self.clone()) {
+            Entry::Occupied(entry) => return *entry.get(),
+            Entry::Vacant(entry) => {
+                entry.insert(MaybeKnown::Unknown);
+            }
         }
-        cache.insert(self.clone(), Err(()));
         let r = match &**self {
-            Rule::Empty => true,
+            Rule::Empty | Rule::NotMatch(_) | Rule::Opt(_) | Rule::RepeatMany(..) => {
+                MaybeKnown::Known(true)
+            }
             Rule::Match(pat) => pat.matches_empty(),
-            Rule::NotMatch(_) => true,
-            Rule::Call(rule) => grammar.rules[rule].rule.can_be_empty(cache, grammar)?,
-            Rule::Concat([left, right]) => match (
-                left.can_be_empty(cache, grammar),
-                right.can_be_empty(cache, grammar),
-            ) {
-                (Ok(false), _) | (_, Ok(false)) => false,
-                (left, right) => left? && right?,
-            },
-            Rule::Or(rules) => rules.iter().fold(Ok(false), |prev, rule| {
-                Ok(match (prev, rule.can_be_empty(cache, grammar)) {
-                    (Ok(true), _) | (_, Ok(true)) => true,
-                    (prev, rule) => prev? || rule?,
-                })
-            })?,
-            Rule::Opt(_) => true,
-            Rule::RepeatMany(..) => true,
-            Rule::RepeatMore(elem, _) => elem.can_be_empty(cache, grammar)?,
+            Rule::Call(rule) => grammar.rules[rule].rule.can_be_empty(cache, grammar),
+            Rule::Concat([left, right]) => {
+                left.can_be_empty(cache, grammar) & right.can_be_empty(cache, grammar)
+            }
+            Rule::Or(rules) => rules.iter().fold(MaybeKnown::Known(false), |prev, rule| {
+                prev | rule.can_be_empty(cache, grammar)
+            }),
+            Rule::RepeatMore(elem, _) => elem.can_be_empty(cache, grammar),
         };
-        *cache.get_mut(self).unwrap() = Ok(r);
-        Ok(r)
+        match r {
+            MaybeKnown::Known(_) => *cache.get_mut(self).unwrap() = r,
+            MaybeKnown::Unknown => {
+                cache.remove(self);
+            }
+        }
+        r
     }
 
     fn check_non_empty_opt(
         self: &Rc<Self>,
-        cache: &mut HashMap<Rc<Self>, Result<bool, ()>>,
+        cache: &mut HashMap<Rc<Self>, MaybeKnown<bool>>,
         grammar: &Grammar<Pat>,
     ) {
         match &**self {
@@ -340,11 +342,11 @@ impl<Pat: Ord + Hash + MatchesEmpty + ToRustSrc> Rule<Pat> {
                 }
             }
             Rule::Opt(rule) => {
-                assert_eq!(rule.can_be_empty(cache, grammar), Ok(false));
+                assert_eq!(rule.can_be_empty(cache, grammar), MaybeKnown::Known(false));
                 rule.check_non_empty_opt(cache, grammar)
             }
             Rule::RepeatMany(elem, sep) | Rule::RepeatMore(elem, sep) => {
-                assert_eq!(elem.can_be_empty(cache, grammar), Ok(false));
+                assert_eq!(elem.can_be_empty(cache, grammar), MaybeKnown::Known(false));
                 elem.check_non_empty_opt(cache, grammar);
                 if let Some(sep) = sep {
                     sep.check_non_empty_opt(cache, grammar);
@@ -451,8 +453,40 @@ pub trait ToRustSrc {
     fn to_rust_src(&self) -> String;
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum MaybeKnown<T> {
+    Known(T),
+    Unknown,
+}
+
+impl BitOr for MaybeKnown<bool> {
+    type Output = Self;
+
+    fn bitor(self, rhs: Self) -> Self {
+        match (self, rhs) {
+            (MaybeKnown::Known(true), _) | (_, MaybeKnown::Known(true)) => MaybeKnown::Known(true),
+            (MaybeKnown::Known(false), x) | (x, MaybeKnown::Known(false)) => x,
+            (MaybeKnown::Unknown, MaybeKnown::Unknown) => MaybeKnown::Unknown,
+        }
+    }
+}
+
+impl BitAnd for MaybeKnown<bool> {
+    type Output = Self;
+
+    fn bitand(self, rhs: Self) -> Self {
+        match (self, rhs) {
+            (MaybeKnown::Known(false), _) | (_, MaybeKnown::Known(false)) => {
+                MaybeKnown::Known(false)
+            }
+            (MaybeKnown::Known(true), x) | (x, MaybeKnown::Known(true)) => x,
+            (MaybeKnown::Unknown, MaybeKnown::Unknown) => MaybeKnown::Unknown,
+        }
+    }
+}
+
 pub trait MatchesEmpty {
-    fn matches_empty(&self) -> bool;
+    fn matches_empty(&self) -> MaybeKnown<bool>;
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -513,23 +547,23 @@ impl<S: fmt::Debug, C: fmt::Debug> ToRustSrc for Pat<S, C> {
 }
 
 impl<S: MatchesEmpty, C: MatchesEmpty> MatchesEmpty for Pat<S, C> {
-    fn matches_empty(&self) -> bool {
+    fn matches_empty(&self) -> MaybeKnown<bool> {
         match self {
             Pat::String(s) => s.matches_empty(),
-            Pat::Range(start, end) => start.matches_empty() || end.matches_empty(),
+            Pat::Range(start, end) => start.matches_empty() | end.matches_empty(),
         }
     }
 }
 
 impl<'a> MatchesEmpty for &'a str {
-    fn matches_empty(&self) -> bool {
-        self.is_empty()
+    fn matches_empty(&self) -> MaybeKnown<bool> {
+        MaybeKnown::Known(self.is_empty())
     }
 }
 
 impl MatchesEmpty for char {
-    fn matches_empty(&self) -> bool {
-        false
+    fn matches_empty(&self) -> MaybeKnown<bool> {
+        MaybeKnown::Known(false)
     }
 }
 
