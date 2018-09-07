@@ -27,7 +27,7 @@ fn main() {
             B:"b"
         };
     };
-    fs::write(&out_dir.join("gll10_g0.rs"), gll10_g0.generate()).unwrap();
+    fs::write(&out_dir.join("gll10_g0.rs"), gll10_g0.generate_rust()).unwrap();
 
     let gll10_g0_opaque = grammar!{
         S = {
@@ -40,7 +40,7 @@ fn main() {
     };
     fs::write(
         &out_dir.join("gll10_g0_opaque.rs"),
-        gll10_g0_opaque.generate(),
+        gll10_g0_opaque.generate_rust(),
     ).unwrap();
 
     let gll13_g1 = grammar!{
@@ -50,7 +50,7 @@ fn main() {
             Z:{ a:"a" d:"d" b:"b" }
         };
     };
-    fs::write(&out_dir.join("gll13_g1.rs"), gll13_g1.generate()).unwrap();
+    fs::write(&out_dir.join("gll13_g1.rs"), gll13_g1.generate_rust()).unwrap();
 
     let gll15_g0 = grammar!{
         A = {
@@ -59,7 +59,7 @@ fn main() {
             Z:{ "a" }
         };
     };
-    fs::write(&out_dir.join("gll15_g0.rs"), gll15_g0.generate()).unwrap();
+    fs::write(&out_dir.join("gll15_g0.rs"), gll15_g0.generate_rust()).unwrap();
 
     let gll15_g0_nested = grammar!{
         A = {
@@ -70,6 +70,6 @@ fn main() {
     };
     fs::write(
         &out_dir.join("gll15_g0_nested.rs"),
-        gll15_g0_nested.generate(),
+        gll15_g0_nested.generate_rust(),
     ).unwrap();
 }
