@@ -83,7 +83,12 @@ impl<Pat: Ord + Hash + MatchesEmpty + ToRustSrc> Rule<Pat> {
                 "()".to_string()
             }
             Rule::Call(r) => format!("{}<'a, 'i, 's>", r),
-            Rule::Concat(rules) => rules[path[0]].field_type(&path[1..]),
+            Rule::Concat(rules) => {
+                if path.is_empty() {
+                    return "()".to_string();
+                }
+                rules[path[0]].field_type(&path[1..])
+            }
             Rule::Or(rules) => rules[path[0]].field_type(&path[1..]),
             Rule::Opt(rule) => [rule][path[0]].field_type(&path[1..]),
             Rule::RepeatMany(rule, _) | Rule::RepeatMore(rule, _) => {
