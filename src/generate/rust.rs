@@ -132,9 +132,11 @@ impl<Pat: Ord + Hash + MatchesEmpty + ToRustSrc> Rule<Pat> {
                 elem.parse_node_kind(parse_nodes).0,
                 sep.parse_node_kind(parse_nodes).0
             )),
-            Rule::RepeatMore(rule, None) => {
-                ParseNodeKind(format!("({}+)", rule.parse_node_kind(parse_nodes).0))
-            }
+            Rule::RepeatMore(rule, None) => ParseNodeKind(format!(
+                // FIXME(rust-lang-nursery/rustfmt#3004) work around rustfmt removing trailing +.
+                "({}+ HACK)",
+                rule.parse_node_kind(parse_nodes).0
+            )),
             Rule::RepeatMore(elem, Some(sep)) => ParseNodeKind(format!(
                 "({}+ % {})",
                 elem.parse_node_kind(parse_nodes).0,
