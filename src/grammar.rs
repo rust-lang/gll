@@ -284,6 +284,31 @@ impl<Pat: Ord + Hash + MatchesEmpty> Rule<Pat> {
             }
         }
     }
+
+    fn check_call_names(self: &Rc<Self>, grammar: &Grammar<Pat>) {
+        match &**self {
+            Rule::Empty | Rule::Match(_) | Rule::NotMatch(_) => {}
+            Rule::Call(rule) => {
+                assert!(grammar.rules.contains_key(rule), "no rule named `{}`", rule);
+            }
+            Rule::Concat([left, right]) => {
+                left.check_call_names(grammar);
+                right.check_call_names(grammar);
+            }
+            Rule::Or(rules) => {
+                for rule in rules {
+                    rule.check_call_names(grammar);
+                }
+            }
+            Rule::Opt(rule) => rule.check_call_names(grammar),
+            Rule::RepeatMany(elem, sep) | Rule::RepeatMore(elem, sep) => {
+                elem.check_call_names(grammar);
+                if let Some(sep) = sep {
+                    sep.check_call_names(grammar);
+                }
+            }
+        }
+    }
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -485,6 +510,10 @@ pub macro grammar {
 
 impl<Pat: Ord + Hash + MatchesEmpty> Grammar<Pat> {
     pub(crate) fn check(&self) {
+        for rule in self.rules.values() {
+            rule.rule.check_call_names(self);
+        }
+
         let mut can_be_empty_cache = HashMap::new();
         for rule in self.rules.values() {
             rule.rule.check_non_empty_opt(&mut can_be_empty_cache, self);
