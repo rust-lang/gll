@@ -1308,55 +1308,23 @@ impl<Pat: Ord + Hash + MatchesEmpty + ToRustSrc> Rule<Pat> {
         })");
             }
             Rule::Or(rules) => {
-                put!("self.parser.sppf.unary_children(", node, ").flat_map(move |node| {
-            enum Iter<");
-                for i in 0..rules.len() {
-                    put!("_", i, ",");
+                put!("self.parser.sppf.unary_children(", node, ").flat_map(move |node| -> Box<dyn Iterator<Item = _>> {
+            let tuple_template: (");
+                for _ in 0..rules.len() {
+                    put!("_,");
                 }
-                put!("> {");
-                for i in 0..rules.len() {
-                    put!("
-                _", i, "(_", i, "),");
-                }
-                put!("
-            }
-            impl<");
-                for i in 0..rules.len() {
-                    put!("_", i, ": Iterator,");
-                }
-                put!("> Iterator for Iter<");
-                for i in 0..rules.len() {
-                    put!("_", i, ",");
-                }
-                put!(">
-                where");
-                for i in 0..rules.len() {
-                    put!("
-                    _", i, "::Item: Default,");
-                }
-                put!("
-            {
-                type Item = (");
-                for i in 0..rules.len() {
-                    put!("_", i, "::Item,");
-                }
-                put!(");
-                fn next(&mut self) -> Option<Self::Item> {
-                    let mut r = Self::Item::default();
-                    match self {");
-                for i in 0..rules.len() {
-                    put!("
-                        Iter::_", i, "(it) => r.", i, " = it.next()?,");
-                }
-                    put!("
-                    }
-                    Some(r)
-                }
-            }
+                put!(") = Default::default();
             match node.kind {");
                 for (i, rule) in rules.iter().enumerate() {
                     put!("
-                ", rule.parse_node_kind(parse_nodes), " => Iter::_", i, "(", rule.generate_traverse("node", true, parse_nodes).replace("\n", "\n    "), "),");
+                ", rule.parse_node_kind(parse_nodes), " => Box::new(",
+                    rule.generate_traverse("node", true, parse_nodes).replace("\n", "\n    "),
+                    ".map(move |x| {
+                        let mut r = tuple_template;
+                        r.", i," = x;
+                        r
+                    })",
+                "),");
                 }
                 put!("
                 _ => unreachable!(),
