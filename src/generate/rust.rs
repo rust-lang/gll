@@ -230,6 +230,20 @@ use self::gll::runtime::{Call, Continuation, ParseNodeKind, CodeLabel, ParseNode
 use std::any;
 use std::fmt;
 use std::marker::PhantomData;
+use std::ops::{GeneratorState, Generator};
+
+struct GenIter<G>(G);
+
+impl<G: Generator<Return = ()>> Iterator for GenIter<G> {
+    type Item = G::Yield;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match unsafe { self.0.resume() } {
+            GeneratorState::Complete(..) => None,
+            GeneratorState::Yielded(v) => Some(v),
+        }
+    }
+}
 
 pub type Parser<'a, 'i> = gll::runtime::Parser<'i, _P, _C, &'a gll::runtime::Str>;
 
@@ -588,56 +602,25 @@ impl<'a, 'i, 's> Handle<'a, 'i, 's, ", name, "<'a, 'i, 's>> {
     }
     pub fn many(self) -> impl Iterator<Item = ", name, "<'a, 'i, 's>> {
         let _sppf = &self.parser.sppf;
-        self.parser.sppf.unary_children(self.node).flat_map(move |node| {");
+        GenIter(move || ");
             if let Some(variants) = variants {
-                put!("
-            self.parser.sppf.unary_children(node).flat_map(move |node| {
-                enum Iter<");
-                for i in 0..variants.len() {
-                    put!("_", i, ",");
-                }
-                put!("> {");
-                for i in 0..variants.len() {
-                    put!("
-                _", i, "(_", i, "),");
-                }
-                put!("
-            }
-            impl<_0: Iterator,");
-                for i in 1..variants.len() {
-                    put!("_", i, ": Iterator<Item = _0::Item>,");
-                }
-                put!("> Iterator for Iter<");
-                for i in 0..variants.len() {
-                    put!("_", i, ",");
-                }
-                put!("> {
-                type Item = _0::Item;
-                fn next(&mut self) -> Option<Self::Item> {
-                    match self {");
-                for i in 0..variants.len() {
-                    put!("
-                        Iter::_", i, "(it) => it.next(),");
-                }
-                    put!("
-                    }
-                }
-            }
+                put!("for node in self.parser.sppf.unary_children(self.node) {
+            for node in self.parser.sppf.unary_children(node) {
                 match node.kind {");
-                for (i, (rule, variant, fields)) in variants.iter().enumerate() {
+                for (rule, variant, fields) in variants {
                     put!("
-                    ", rule.parse_node_kind(&parse_nodes), " => Iter::_", i, "(");
+                    ", rule.parse_node_kind(&parse_nodes), " => ");
                     if fields.is_empty() {
-                        put!("::std::iter::once(", name, "::", variant, "(Handle {
+                        put!("yield ", name, "::", variant, "(Handle {
                         node,
                         parser: self.parser,
                         _marker: PhantomData,
-                    }))");
+                    })");
                     } else {
                         put!("traverse!(_sppf, node, ", rule.generate_traverse_shape(&parse_nodes),
-                            ").map(move |_r| ", name, "::", variant, " {");
+                        ", _r => yield ", name, "::", variant, " {");
                         for (field_name, paths) in fields {
-                            if rule.field_pathset_is_refutable(paths) {
+                            if rule.field_pathset_is_refutable(&paths) {
                                 put!("
                                 ", field_name, ": None.or(_r");
                                 for path in paths {
@@ -667,16 +650,16 @@ impl<'a, 'i, 's> Handle<'a, 'i, 's, ", name, "<'a, 'i, 's>> {
                         put!("
                     })");
                     }
-                    put!("),");
+                    put!(",");
                 }
                 put!("
                     _ => unreachable!(),
                 }
-            })");
+            }
+        }");
             } else {
-                put!("
-            traverse!(_sppf, node, ", rule.rule.generate_traverse_shape(&parse_nodes), ")
-        }).map(move |_r| ", name, " {");
+                put!("for node in self.parser.sppf.unary_children(self.node) {
+        traverse!(_sppf, node, ", rule.rule.generate_traverse_shape(&parse_nodes), ", _r => yield ", name, " {");
                 for (field_name, paths) in &rule.fields {
                     if rule.rule.field_pathset_is_refutable(paths) {
                         put!("
@@ -711,9 +694,10 @@ impl<'a, 'i, 's> Handle<'a, 'i, 's, ", name, "<'a, 'i, 's>> {
                     put!("
             _marker: PhantomData,");
                 }
-            }
                 put!("
-        })
+        })}");
+            }
+            put!(")
     }
 }");
         }
