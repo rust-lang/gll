@@ -563,3 +563,53 @@ pub trait ParseNodeKind: fmt::Display + Ord + Hash + Copy + 'static {
 }
 
 pub trait CodeLabel: fmt::Debug + Ord + Hash + Copy + 'static {}
+
+pub macro traverse {
+    (@replace $a:tt, $b:tt) => {
+        $b
+    },
+    ($sppf:ident, $node:ident, $shape:tt) => {
+        traverse!(refutable(false), $sppf, $node, $shape)
+    },
+    (refutable(false), $sppf:ident, $node:ident, _) => {
+        ::std::iter::once($node)
+    },
+    (refutable(true), $sppf:ident, $node:ident, _) => {
+        ::std::iter::once(Some($node))
+    },
+    (refutable($refutable:tt), $sppf:ident, $node:ident, ($l_shape:tt, $r_shape:tt)) => {
+        $sppf.binary_children($node).flat_map(move |(left, right)| {
+            traverse!(refutable($refutable), $sppf, left, $l_shape).flat_map(move |left| {
+               traverse!(refutable($refutable), $sppf, right, $r_shape).map(move |right| (left, right))
+            })
+        })
+    },
+    (refutable($refutable:tt), $sppf:ident, $node:ident, { $($i:tt: $kind:pat => $shape:tt,)* }) => {
+        $sppf.unary_children($node).flat_map(move |node| -> Box<dyn Iterator<Item = _>> {
+            let tuple_template: ($(traverse!(@replace $i, _),)*) = Default::default();
+            match node.kind {
+                $($kind => Box::new(
+                    traverse!(refutable(true), $sppf, node, $shape)
+                    .map(move |x| {
+                        let mut r = tuple_template;
+                        r.$i = x;
+                        r
+                    })
+                ),
+                )*
+                _ => unreachable!(),
+            }
+        })
+    },
+    (refutable($refutable:tt), $sppf:ident, $node:ident, [? $shape:tt]) => {
+        match $sppf.opt_child($node) {
+            Some(node) => {
+                Some(traverse!(refutable(true), $sppf, node, $shape).map(|x| (x,)))
+                    .into_iter().flatten().chain(None)
+            }
+            None => {
+                None.into_iter().flatten().chain(Some(<(_,)>::default()))
+            }
+        }
+    }
+}

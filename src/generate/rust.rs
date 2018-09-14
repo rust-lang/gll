@@ -226,7 +226,7 @@ impl<Pat: Ord + Hash + MatchesEmpty + ToRustSrc> Grammar<Pat> {
 
         put!("extern crate gll;
 
-use self::gll::runtime::{Call, Continuation, ParseNodeKind, CodeLabel, ParseNodeShape, ParseNode, Range};
+use self::gll::runtime::{Call, Continuation, ParseNodeKind, CodeLabel, ParseNodeShape, ParseNode, Range, traverse};
 use std::any;
 use std::fmt;
 use std::marker::PhantomData;
@@ -587,6 +587,7 @@ impl<'a, 'i, 's> Handle<'a, 'i, 's, ", name, "<'a, 'i, 's>> {
         }
     }
     pub fn many(self) -> impl Iterator<Item = ", name, "<'a, 'i, 's>> {
+        let _sppf = &self.parser.sppf;
         self.parser.sppf.unary_children(self.node).flat_map(move |node| {");
             if let Some(variants) = variants {
                 put!("
@@ -633,8 +634,8 @@ impl<'a, 'i, 's> Handle<'a, 'i, 's, ", name, "<'a, 'i, 's>> {
                         _marker: PhantomData,
                     }))");
                     } else {
-                        put!(rule.generate_traverse("node", false, &parse_nodes).replace("\n", "\n        "),
-                            ".map(move |_r| ", name, "::", variant, " {");
+                        put!("traverse!(_sppf, node, ", rule.generate_traverse_shape(&parse_nodes),
+                            ").map(move |_r| ", name, "::", variant, " {");
                         for (field_name, paths) in fields {
                             if rule.field_pathset_is_refutable(paths) {
                                 put!("
@@ -674,7 +675,7 @@ impl<'a, 'i, 's> Handle<'a, 'i, 's, ", name, "<'a, 'i, 's>> {
             })");
             } else {
                 put!("
-            ", rule.rule.generate_traverse("node", false, &parse_nodes), "
+            traverse!(_sppf, node, ", rule.rule.generate_traverse_shape(&parse_nodes), ")
         }).map(move |_r| ", name, " {");
                 for (field_name, paths) in &rule.fields {
                     if rule.rule.field_pathset_is_refutable(paths) {
@@ -1185,8 +1186,8 @@ fn reify_as(label: CodeLabel) -> Thunk<impl FnOnce(Continuation) -> Continuation
     })
 }
 
-#[cfg_attr(rustfmt, rustfmt_skip)]
 impl<Pat: Ord + Hash + MatchesEmpty + ToRustSrc> Rule<Pat> {
+    #[cfg_attr(rustfmt, rustfmt_skip)]
     fn generate_parse<'a>(
         self: &'a Rc<Self>,
         parse_nodes: Option<&'a RefCell<OrderMap<Rc<Rule<Pat>>, (ParseNodeKind, Option<ParseNodeShape<ParseNodeKind>>)>>>
@@ -1280,69 +1281,39 @@ impl<Pat: Ord + Hash + MatchesEmpty + ToRustSrc> Rule<Pat> {
             })(cont),
         })
     }
-    fn generate_traverse(
+    fn generate_traverse_shape(
         &self,
-        node: &str,
-        refutable: bool,
-        parse_nodes: &RefCell<OrderMap<Rc<Rule<Pat>>, (ParseNodeKind, Option<ParseNodeShape<ParseNodeKind>>)>>,
+        parse_nodes: &RefCell<
+            OrderMap<Rc<Rule<Pat>>, (ParseNodeKind, Option<ParseNodeShape<ParseNodeKind>>)>,
+        >,
     ) -> String {
-        let mut out = String::new();
-        macro put($($x:expr),*) {{ $(write!(out, "{}", $x).unwrap();)* }}
-
         match self {
-            Rule::Empty | Rule::Match(_) | Rule::NotMatch(_) | Rule::Call(_) | Rule::RepeatMany(..) | Rule::RepeatMore(..) => {
-                put!("::std::iter::once(");
-                if refutable {
-                    put!("Some(")
-                }
-                put!(node, ")");
-                if refutable {
-                    put!(")");
-                }
-            }
-            Rule::Concat([left, right]) => {
-                put!("self.parser.sppf.binary_children(", node, ").flat_map(move |(left, right)| {
-            ", left.generate_traverse("left", refutable, parse_nodes), ".flat_map(move |left| {
-                ", right.generate_traverse("right", refutable, parse_nodes).replace("\n", "\n    "), ".map(move |right| (left, right))
-            })
-        })");
-            }
+            Rule::Empty
+            | Rule::Match(_)
+            | Rule::NotMatch(_)
+            | Rule::Call(_)
+            | Rule::RepeatMany(..)
+            | Rule::RepeatMore(..) => "_".to_string(),
+            Rule::Concat([left, right]) => format!(
+                "({}, {})",
+                left.generate_traverse_shape(parse_nodes),
+                right.generate_traverse_shape(parse_nodes)
+            ),
             Rule::Or(rules) => {
-                put!("self.parser.sppf.unary_children(", node, ").flat_map(move |node| -> Box<dyn Iterator<Item = _>> {
-            let tuple_template: (");
-                for _ in 0..rules.len() {
-                    put!("_,");
-                }
-                put!(") = Default::default();
-            match node.kind {");
+                let mut s = String::from("{ ");
                 for (i, rule) in rules.iter().enumerate() {
-                    put!("
-                ", rule.parse_node_kind(parse_nodes), " => Box::new(",
-                    rule.generate_traverse("node", true, parse_nodes).replace("\n", "\n    "),
-                    ".map(move |x| {
-                        let mut r = tuple_template;
-                        r.", i," = x;
-                        r
-                    })",
-                "),");
+                    write!(
+                        s,
+                        "{}: {} => {},",
+                        i,
+                        rule.parse_node_kind(parse_nodes),
+                        rule.generate_traverse_shape(parse_nodes)
+                    );
                 }
-                put!("
-                _ => unreachable!(),
+                write!(s, " }}");
+                s
             }
-        })");
-            }
-            Rule::Opt(rule) => {
-                put!("match self.parser.sppf.opt_child(", node, ") {
-            Some(node) => {
-                Some(", rule.generate_traverse("node", true, parse_nodes).replace("\n", "\n    "), ".map(|x| (x,)))
-                    .into_iter().flatten().chain(None)
-            }
-            None => {
-                None.into_iter().flatten().chain(Some(<(_,)>::default()))
-            }
-        }");
-            }
+            Rule::Opt(rule) => format!("[? {}]", rule.generate_traverse_shape(parse_nodes)),
         }
-        out.replace("\n", "\n    ")
     }
 }
