@@ -31,9 +31,9 @@ fn main() {
 
     let gll10_g0_opaque = grammar!{
         S = {
-            X:{ a:A s:S "d" } |
-            Y:{ b:B s:S } |
-            Z:{}
+            { a:A s:S "d" } |
+            { b:B s:S } |
+            {}
         };
         A = { "a" | "c" };
         B = { "a" | "b" };
