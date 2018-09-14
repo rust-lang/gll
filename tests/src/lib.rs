@@ -21,17 +21,23 @@ macro_rules! testcase {
                 parser
                     .gss
                     .print(
-                        &mut File::create(concat!(env!("CARGO_MANIFEST_DIR"), "/../target/", stringify!($name), "-gss.dot"))
-                            .unwrap(),
-                    )
-                    .unwrap();
+                        &mut File::create(concat!(
+                            env!("CARGO_MANIFEST_DIR"),
+                            "/../target/",
+                            stringify!($name),
+                            "-gss.dot"
+                        )).unwrap(),
+                    ).unwrap();
                 parser
                     .sppf
                     .print(
-                        &mut File::create(concat!(env!("CARGO_MANIFEST_DIR"), "/../target/", stringify!($name), "-sppf.dot"))
-                            .unwrap(),
-                    )
-                    .unwrap();
+                        &mut File::create(concat!(
+                            env!("CARGO_MANIFEST_DIR"),
+                            "/../target/",
+                            stringify!($name),
+                            "-sppf.dot"
+                        )).unwrap(),
+                    ).unwrap();
             });
         }
     };
@@ -66,20 +72,16 @@ testcase!(gll10_g0::S("aad") => "\
     )
 }");
 testcase!(gll10_g0_opaque::S("aad") => "\
-0..3 => S::X {
+0..3 => S {
     a: 0..1,
-    s: 1..2 => S::Y {
-        s: 2..2 => S::Z(
-            2..2
-        ),
+    s: 1..2 => S {
+        s: 2..2 => S,
         b: 1..2
     }
-} | S::Y {
-    s: 1..3 => S::X {
+} | S {
+    s: 1..3 => S {
         a: 1..2,
-        s: 2..2 => S::Z(
-            2..2
-        )
+        s: 2..2 => S
     },
     b: 0..1
 }");

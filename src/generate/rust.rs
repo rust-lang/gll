@@ -679,13 +679,15 @@ impl<'a, 'i, 's> Handle<'a, 'i, 's, ", name, "<'a, 'i, 's>> {
                 for (field_name, paths) in &rule.fields {
                     if rule.rule.field_pathset_is_refutable(paths) {
                         put!("
-            ", field_name, ": None.or(_r");
+            ", field_name, ": None");
                         for path in paths {
+                            put!(".or(_r");
                             for p in path {
                                 put!(" .", p);
                             }
+                            put!(")");
                         }
-                        put!(").map(|node| Handle {
+                        put!(".map(|node| Handle {
                 node,
                 parser: self.parser,
                 _marker: PhantomData,
