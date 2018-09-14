@@ -1,4 +1,4 @@
-#![feature(decl_macro)]
+#![feature(decl_macro, generators, generator_trait)]
 
 use std::fs::File;
 
