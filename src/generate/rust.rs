@@ -617,7 +617,7 @@ impl<'a, 'i, 's> Handle<'a, 'i, 's, ", name, "<'a, 'i, 's>> {
                         _marker: PhantomData,
                     })");
                     } else {
-                        put!("traverse!(_sppf, node, ", rule.generate_traverse_shape(&parse_nodes),
+                        put!("traverse!(_sppf, node, ", rule.generate_traverse_shape(false, &parse_nodes),
                         ", _r => yield ", name, "::", variant, " {");
                         for (field_name, paths) in fields {
                             if rule.field_pathset_is_refutable(&paths) {
@@ -659,7 +659,7 @@ impl<'a, 'i, 's> Handle<'a, 'i, 's, ", name, "<'a, 'i, 's>> {
         }");
             } else {
                 put!("for node in self.parser.sppf.unary_children(self.node) {
-        traverse!(_sppf, node, ", rule.rule.generate_traverse_shape(&parse_nodes), ", _r => yield ", name, " {");
+        traverse!(_sppf, node, ", rule.rule.generate_traverse_shape(false, &parse_nodes), ", _r => yield ", name, " {");
                 for (field_name, paths) in &rule.fields {
                     if rule.rule.field_pathset_is_refutable(paths) {
                         put!("
@@ -1267,6 +1267,7 @@ impl<Pat: Ord + Hash + MatchesEmpty + ToRustSrc> Rule<Pat> {
     }
     fn generate_traverse_shape(
         &self,
+        refutable: bool,
         parse_nodes: &RefCell<
             OrderMap<Rc<Rule<Pat>>, (ParseNodeKind, Option<ParseNodeShape<ParseNodeKind>>)>,
         >,
@@ -1277,11 +1278,17 @@ impl<Pat: Ord + Hash + MatchesEmpty + ToRustSrc> Rule<Pat> {
             | Rule::NotMatch(_)
             | Rule::Call(_)
             | Rule::RepeatMany(..)
-            | Rule::RepeatMore(..) => "_".to_string(),
+            | Rule::RepeatMore(..) => {
+                if refutable {
+                    "?".to_string()
+                } else {
+                    "_".to_string()
+                }
+            }
             Rule::Concat([left, right]) => format!(
                 "({}, {})",
-                left.generate_traverse_shape(parse_nodes),
-                right.generate_traverse_shape(parse_nodes)
+                left.generate_traverse_shape(refutable, parse_nodes),
+                right.generate_traverse_shape(refutable, parse_nodes)
             ),
             Rule::Or(rules) => {
                 let mut s = String::from("{ ");
@@ -1291,13 +1298,13 @@ impl<Pat: Ord + Hash + MatchesEmpty + ToRustSrc> Rule<Pat> {
                         "{}: {} => {},",
                         i,
                         rule.parse_node_kind(parse_nodes),
-                        rule.generate_traverse_shape(parse_nodes)
+                        rule.generate_traverse_shape(true, parse_nodes)
                     );
                 }
                 write!(s, " }}");
                 s
             }
-            Rule::Opt(rule) => format!("[{}]", rule.generate_traverse_shape(parse_nodes)),
+            Rule::Opt(rule) => format!("[{}]", rule.generate_traverse_shape(true, parse_nodes)),
         }
     }
 }
