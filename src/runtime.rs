@@ -568,7 +568,7 @@ pub macro traverse {
     (@nones _) => {None},
     (@nones ($l_shape:tt, $r_shape:tt)) => { (traverse!(@nones $l_shape), traverse!(@nones $r_shape)) },
     (@nones { $($i:tt: $kind:pat => $shape:tt,)* }) => { ($(traverse!(@nones $shape),)*) },
-    (@nones [? $shape:tt]) => { (traverse!(@nones $shape),) },
+    (@nones [$shape:tt]) => { (traverse!(@nones $shape),) },
 
     ($sppf:ident, $node:ident, $shape:tt, $result:pat => $cont:expr) => {
         traverse!(refutable(false), $sppf, $node, $shape, $result => $cont)
@@ -598,7 +598,7 @@ pub macro traverse {
             }
         }
     },
-    (refutable($refutable:tt), $sppf:ident, $node:ident, [? $shape:tt], $result:pat => $cont:expr) => {
+    (refutable($refutable:tt), $sppf:ident, $node:ident, [$shape:tt], $result:pat => $cont:expr) => {
         {
             let tuple_template = (traverse!(@nones $shape),);
             match $sppf.opt_child($node) {

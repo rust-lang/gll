@@ -1297,7 +1297,7 @@ impl<Pat: Ord + Hash + MatchesEmpty + ToRustSrc> Rule<Pat> {
                 write!(s, " }}");
                 s
             }
-            Rule::Opt(rule) => format!("[? {}]", rule.generate_traverse_shape(parse_nodes)),
+            Rule::Opt(rule) => format!("[{}]", rule.generate_traverse_shape(parse_nodes)),
         }
     }
 }
