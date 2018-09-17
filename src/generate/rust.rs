@@ -313,7 +313,7 @@ impl<'a, 'i, 's, T> fmt::Debug for Handle<'a, 'i, 's, [T]>
             self.node.range.start(),
             self.node.range.end()
         )?;
-        match self.list_head_many() {
+        match self.all_list_heads() {
             ListHead::Cons(cons) => {
                 for (i, (elem, rest)) in cons.enumerate() {
                     if i > 0 {
@@ -350,7 +350,7 @@ impl<'a, 'i, 's, T> fmt::Debug for Handle<'a, 'i, 's, [T]>
 impl<'a, 'i, 's, T> Iterator for Handle<'a, 'i, 's, [T]> {
     type Item = Result<Handle<'a, 'i, 's, T>, Ambiguity<Self>>;
     fn next(&mut self) -> Option<Self::Item> {
-        match self.list_head_many() {
+        match self.all_list_heads() {
             ListHead::Cons(mut iter) => {
                 let (elem, rest) = iter.next().unwrap();
                 let original = *self;
@@ -364,7 +364,7 @@ impl<'a, 'i, 's, T> Iterator for Handle<'a, 'i, 's, [T]> {
                         }
                         _ => unreachable!(),
                     }
-                    match self.list_head_one() {
+                    match self.one_list_head() {
                         ListHead::Nil => {}
                         _ => unreachable!(),
                     }
@@ -382,8 +382,8 @@ pub enum ListHead<C> {
 }
 
 impl<'a, 'i, 's, T> Handle<'a, 'i, 's, [T]> {
-    fn list_head_one(self) -> ListHead<Result<(Handle<'a, 'i, 's, T>, Handle<'a, 'i, 's, [T]>), Ambiguity<Self>>> {
-        match self.list_head_many() {
+    fn one_list_head(self) -> ListHead<Result<(Handle<'a, 'i, 's, T>, Handle<'a, 'i, 's, [T]>), Ambiguity<Self>>> {
+        match self.all_list_heads() {
             ListHead::Cons(mut iter) => {
                 let first = iter.next().unwrap();
                 if iter.next().is_none() {
@@ -395,7 +395,7 @@ impl<'a, 'i, 's, T> Handle<'a, 'i, 's, [T]> {
             ListHead::Nil => ListHead::Nil,
         }
     }
-    fn list_head_many(mut self) -> ListHead<impl Iterator<Item = (Handle<'a, 'i, 's, T>, Handle<'a, 'i, 's, [T]>)>> {
+    fn all_list_heads(mut self) -> ListHead<impl Iterator<Item = (Handle<'a, 'i, 's, T>, Handle<'a, 'i, 's, [T]>)>> {
         if let ParseNodeShape::Opt(_) = self.node.kind.shape() {
             if let Some(opt_child) = self.parser.sppf.opt_child(self.node) {
                 self.node = opt_child;
@@ -580,7 +580,7 @@ impl<'a, 'i, 's> fmt::Debug for Handle<'a, 'i, 's, ", name, "<'a, 'i, 's>> {
             self.node.range.start(),
             self.node.range.end()
         )?;
-        for (i, x) in self.many().enumerate() {
+        for (i, x) in self.all().enumerate() {
             if i > 0 {
                 write!(f, \" | \")?;
             }
@@ -592,7 +592,7 @@ impl<'a, 'i, 's> fmt::Debug for Handle<'a, 'i, 's, ", name, "<'a, 'i, 's>> {
 
 impl<'a, 'i, 's> Handle<'a, 'i, 's, ", name, "<'a, 'i, 's>> {
     pub fn one(self) -> Result<", name, "<'a, 'i, 's>, Ambiguity<Self>> {
-        let mut iter = self.many();
+        let mut iter = self.all();
         let first = iter.next().unwrap();
         if iter.next().is_none() {
             Ok(first)
@@ -600,7 +600,7 @@ impl<'a, 'i, 's> Handle<'a, 'i, 's, ", name, "<'a, 'i, 's>> {
             Err(Ambiguity(self))
         }
     }
-    pub fn many(self) -> impl Iterator<Item = ", name, "<'a, 'i, 's>> {
+    pub fn all(self) -> impl Iterator<Item = ", name, "<'a, 'i, 's>> {
         let _sppf = &self.parser.sppf;
         GenIter(move || ");
             if let Some(variants) = variants {
