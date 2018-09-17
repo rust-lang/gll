@@ -565,10 +565,11 @@ pub trait ParseNodeKind: fmt::Display + Ord + Hash + Copy + 'static {
 pub trait CodeLabel: fmt::Debug + Ord + Hash + Copy + 'static {}
 
 pub macro traverse {
-    (@nones ?) => {None},
-    (@nones ($l_shape:tt, $r_shape:tt)) => { (traverse!(@nones $l_shape), traverse!(@nones $r_shape)) },
-    (@nones { $($i:tt: $kind:pat => $shape:tt,)* }) => { ($(traverse!(@nones $shape),)*) },
-    (@nones [$shape:tt]) => { (traverse!(@nones $shape),) },
+    (typeof($leaf:ty) _) => { $leaf },
+    (typeof($leaf:ty) ?) => { Option<traverse!(typeof($leaf) _)> },
+    (typeof($leaf:ty) ($l_shape:tt, $r_shape:tt)) => { (traverse!(typeof($leaf) $l_shape), traverse!(typeof($leaf) $r_shape)) },
+    (typeof($leaf:ty) { $($i:tt: $kind:pat => $shape:tt,)* }) => { ($(traverse!(typeof($leaf) $shape),)*) },
+    (typeof($leaf:ty) [$shape:tt]) => { (traverse!(typeof($leaf) $shape),) },
 
     ($sppf:ident, $node:ident, _, $result:pat => $cont:expr) => {
         match $node { $result => $cont }
@@ -584,7 +585,7 @@ pub macro traverse {
     },
     ($sppf:ident, $node:ident, { $($i:tt: $kind:pat => $shape:tt,)* }, $result:pat => $cont:expr) => {
         for node in $sppf.unary_children($node) {
-            let tuple_template = ($(traverse!(@nones $shape),)*);
+            let tuple_template = <($(traverse!(typeof(_) $shape),)*)>::default();
             match node.kind {
                 $($kind => traverse!($sppf, node, $shape, x => {
                     let mut r = tuple_template;
@@ -597,7 +598,7 @@ pub macro traverse {
     },
     ($sppf:ident, $node:ident, [$shape:tt], $result:pat => $cont:expr) => {
         {
-            let tuple_template = (traverse!(@nones $shape),);
+            let tuple_template = <(traverse!(typeof(_) $shape),)>::default();
             match $sppf.opt_child($node) {
                 Some(node) => {
                     traverse!($sppf, node, $shape, x => {
