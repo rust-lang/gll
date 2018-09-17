@@ -565,31 +565,28 @@ pub trait ParseNodeKind: fmt::Display + Ord + Hash + Copy + 'static {
 pub trait CodeLabel: fmt::Debug + Ord + Hash + Copy + 'static {}
 
 pub macro traverse {
-    (@nones _) => {None},
+    (@nones ?) => {None},
     (@nones ($l_shape:tt, $r_shape:tt)) => { (traverse!(@nones $l_shape), traverse!(@nones $r_shape)) },
     (@nones { $($i:tt: $kind:pat => $shape:tt,)* }) => { ($(traverse!(@nones $shape),)*) },
     (@nones [$shape:tt]) => { (traverse!(@nones $shape),) },
 
-    ($sppf:ident, $node:ident, $shape:tt, $result:pat => $cont:expr) => {
-        traverse!(refutable(false), $sppf, $node, $shape, $result => $cont)
-    },
-    (refutable(false), $sppf:ident, $node:ident, _, $result:pat => $cont:expr) => {
+    ($sppf:ident, $node:ident, _, $result:pat => $cont:expr) => {
         match $node { $result => $cont }
     },
-    (refutable(true), $sppf:ident, $node:ident, _, $result:pat => $cont:expr) => {
+    ($sppf:ident, $node:ident, ?, $result:pat => $cont:expr) => {
         match Some($node) { $result => $cont }
     },
-    (refutable($refutable:tt), $sppf:ident, $node:ident, ($l_shape:tt, $r_shape:tt), $result:pat => $cont:expr) => {
+    ($sppf:ident, $node:ident, ($l_shape:tt, $r_shape:tt), $result:pat => $cont:expr) => {
         for (left, right) in $sppf.binary_children($node) {
-            traverse!(refutable($refutable), $sppf, left, $l_shape, left =>
-               traverse!(refutable($refutable), $sppf, right, $r_shape, right => match (left, right) { $result => $cont }))
+            traverse!($sppf, left, $l_shape, left =>
+               traverse!($sppf, right, $r_shape, right => match (left, right) { $result => $cont }))
         }
     },
-    (refutable($refutable:tt), $sppf:ident, $node:ident, { $($i:tt: $kind:pat => $shape:tt,)* }, $result:pat => $cont:expr) => {
+    ($sppf:ident, $node:ident, { $($i:tt: $kind:pat => $shape:tt,)* }, $result:pat => $cont:expr) => {
         for node in $sppf.unary_children($node) {
             let tuple_template = ($(traverse!(@nones $shape),)*);
             match node.kind {
-                $($kind => traverse!(refutable(true), $sppf, node, $shape, x => {
+                $($kind => traverse!($sppf, node, $shape, x => {
                     let mut r = tuple_template;
                     r.$i = x;
                     match r { $result => $cont }
@@ -598,12 +595,12 @@ pub macro traverse {
             }
         }
     },
-    (refutable($refutable:tt), $sppf:ident, $node:ident, [$shape:tt], $result:pat => $cont:expr) => {
+    ($sppf:ident, $node:ident, [$shape:tt], $result:pat => $cont:expr) => {
         {
             let tuple_template = (traverse!(@nones $shape),);
             match $sppf.opt_child($node) {
                 Some(node) => {
-                    traverse!(refutable(true), $sppf, node, $shape, x => {
+                    traverse!($sppf, node, $shape, x => {
                         let mut r = tuple_template;
                         r.0 = x;
                         match r { $result => $cont }
