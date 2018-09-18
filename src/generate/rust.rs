@@ -1,6 +1,5 @@
 use grammar::{Grammar, MatchesEmpty, Pat, Rule, RuleWithNamedFields};
-use ordermap::OrderMap;
-use ordermap::OrderSet;
+use ordermap::{OrderMap, OrderSet};
 use runtime::ParseNodeShape;
 use std::cell::RefCell;
 use std::fmt;
@@ -203,7 +202,7 @@ impl fmt::Display for ParseNodeKind {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct CodeLabel(String);
 
 impl fmt::Display for CodeLabel {
@@ -222,7 +221,7 @@ impl<Pat: Ord + Hash + MatchesEmpty + ToRustSrc> Grammar<Pat> {
 
         let parse_nodes = RefCell::new(OrderMap::new());
         let mut named_parse_nodes = vec![];
-        let mut code_labels = vec![];
+        let mut code_labels = OrderMap::new();
 
         put!("extern crate gll;
 
@@ -487,7 +486,7 @@ impl<'a, 'i, 's> ", name, "<'a, 'i, 's> {
             p.threads.spawn(
                 Continuation {
                     code: call.callee,
-                    frame: call,
+                    fn_input: call.range,
                     state: 0,
                 },
                 call.range,
@@ -770,7 +769,7 @@ fn parse(p: &mut Parser) {
             } else {
                 Some(&parse_nodes)
             };
-            code_labels.push(CodeLabel(name.clone()));
+            let code_label = CodeLabel(name.clone());
             let parse_node_kind = ParseNodeKind(name.clone());
             let shape = if let Some(parse_nodes) = parse_nodes {
                 ParseNodeShape::Alias(rule.rule.parse_node_kind(parse_nodes))
@@ -780,13 +779,12 @@ fn parse(p: &mut Parser) {
             named_parse_nodes.push((parse_node_kind.clone(), shape));
 
             put!((
-                reify_as(CodeLabel(name.clone())) +
+                reify_as(code_label.clone()) +
                 rule.rule.clone().generate_parse(parse_nodes) +
                 ret()
             )(Continuation {
                 code_labels: &mut code_labels,
-                code_label_prefix: name,
-                code_label_counter: &mut 0,
+                fn_code_label: &mut code_label.clone(),
                 code_label_arms: &mut String::new(),
                 code: Code::Inline(String::new()),
                 nested_frames: vec![],
@@ -901,14 +899,37 @@ impl ParseNodeKind for _P {
 #[allow(non_camel_case_types)]
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
 pub enum _C {");
-        for s in code_labels {
+        for (name, _) in &self.rules {
             put!("
-    ", s.0, ",");
+    ", name, ",");
+        }
+        for (fn_label, &counter) in &code_labels {
+            for i in 0..counter {
+                put!("
+    ", fn_label.0, "__", i, ",");
+            }
         }
         put!("
 }
 
-impl CodeLabel for _C {}
+impl CodeLabel for _C {
+    fn enclosing_fn(self) -> Self {
+        match self {");
+        for (name, _) in &self.rules {
+            put!("
+            _C::", name, " => _C::", name, ",");
+        }
+        for (fn_label, &counter) in &code_labels {
+            for i in 0..counter {
+                let label = CodeLabel(format!("{}__{}", fn_label.0, i));
+                put!("
+            ", label, " => ", if code_labels.contains_key(&label) { &label } else { fn_label }, ",");
+            }
+        }
+        put!("
+        }
+    }
+}
 ");
         let rustfmt = Command::new("rustfmt")
             .stdin(Stdio::piped())
@@ -934,12 +955,11 @@ impl CodeLabel for _C {}
 
 #[must_use]
 struct Continuation<'a> {
-    code_labels: &'a mut Vec<CodeLabel>,
-    code_label_prefix: &'a str,
-    code_label_counter: &'a mut usize,
+    code_labels: &'a mut OrderMap<CodeLabel, usize>,
+    fn_code_label: &'a mut CodeLabel,
     code_label_arms: &'a mut String,
     code: Code,
-    nested_frames: Vec<Option<CodeLabel>>,
+    nested_frames: Vec<Option<(CodeLabel, CodeLabel)>>,
 }
 
 #[derive(Clone)]
@@ -950,20 +970,19 @@ enum Code {
 
 impl<'a> Continuation<'a> {
     fn next_code_label(&mut self) -> CodeLabel {
-        *self.code_label_counter += 1;
-        let label = CodeLabel(format!(
-            "{}__{}",
-            self.code_label_prefix, self.code_label_counter
-        ));
-        self.code_labels.push(label.clone());
+        let counter = self
+            .code_labels
+            .entry(self.fn_code_label.clone())
+            .or_insert(0);
+        let label = CodeLabel(format!("{}__{}", self.fn_code_label.0, counter));
+        *counter += 1;
         label
     }
 
     fn clone(&mut self) -> Continuation {
         Continuation {
             code_labels: self.code_labels,
-            code_label_prefix: self.code_label_prefix,
-            code_label_counter: self.code_label_counter,
+            fn_code_label: self.fn_code_label,
             code_label_arms: self.code_label_arms,
             code: self.code.clone(),
             nested_frames: self.nested_frames.clone(),
@@ -1055,7 +1074,10 @@ fn pop_state<F: FnOnce(Continuation) -> Continuation>(
 ) -> Thunk<impl FnOnce(Continuation) -> Continuation> {
     f("c.state") + Thunk::new(|mut cont| {
         if let Some(&None) = cont.nested_frames.last() {
-            *cont.nested_frames.last_mut().unwrap() = Some(cont.to_label().clone());
+            *cont.nested_frames.last_mut().unwrap() =
+                Some((cont.to_label().clone(), cont.fn_code_label.clone()));
+            *cont.fn_code_label = cont.next_code_label();
+            cont.code_labels.insert(cont.fn_code_label.clone(), 0);
             cont.code = Code::Inline(String::new());
             cont = ret()(cont);
         }
@@ -1071,7 +1093,9 @@ fn push_state(state: &str) -> Thunk<impl FnOnce(Continuation) -> Continuation> {
         state,
         ";"
     ) + Thunk::new(move |mut cont| {
-        if let Some(ret_label) = cont.nested_frames.pop().unwrap() {
+        if let Some((ret_label, outer_fn_label)) = cont.nested_frames.pop().unwrap() {
+            let inner_fn_label = mem::replace(cont.fn_code_label, outer_fn_label);
+            cont.reify_as(inner_fn_label);
             cont = call(mem::replace(cont.to_label(), ret_label))(cont);
         }
         cont
@@ -1108,7 +1132,7 @@ fn call(callee: CodeLabel) -> Thunk<impl FnOnce(Continuation) -> Continuation> {
 fn ret() -> Thunk<impl FnOnce(Continuation) -> Continuation> {
     thunk!(
         "
-                p.ret(c.frame, _range);"
+                p.ret(c, _range);"
     ) + Thunk::new(|mut cont| {
         assert_eq!(cont.to_inline(), "");
         cont
@@ -1123,7 +1147,7 @@ fn sppf_add(
         "
                 p.sppf.add(",
         parse_node_kind,
-        ", c.frame.range.subtract_suffix(_range), ",
+        ", c.fn_input.subtract_suffix(_range), ",
         child,
         ");"
     )
@@ -1179,8 +1203,12 @@ fn parallel(thunks: impl ForEachThunk) -> Thunk<impl FnOnce(Continuation) -> Con
             } else {
                 child_nested_frames = Some(child_cont.nested_frames.len());
             }
-            if let Some(Some(ret_label)) = child_cont.nested_frames.last().cloned() {
+            if let Some(Some((ret_label, outer_fn_label))) =
+                child_cont.nested_frames.last().cloned()
+            {
                 if let None = nested_frames[child_cont.nested_frames.len() - 1] {
+                    let inner_fn_label = mem::replace(child_cont.fn_code_label, outer_fn_label);
+                    child_cont.reify_as(inner_fn_label);
                     child_cont = call(mem::replace(child_cont.to_label(), ret_label))(child_cont);
                     *child_cont.nested_frames.last_mut().unwrap() = None;
                 }
@@ -1250,9 +1278,9 @@ impl<Pat: Ord + Hash + MatchesEmpty + ToRustSrc> Rule<Pat> {
             )(cont),
             (Rule::Concat([left, right]), Some(parse_nodes)) => (
                 thunk!("
-                assert_eq!(_range.start(), c.frame.range.start());") +
+                assert_eq!(_range.start(), c.fn_input.start());") +
                 left.generate_parse(Some(parse_nodes)) +
-                push_state("c.frame.range.subtract_suffix(_range).len()") +
+                push_state("c.fn_input.subtract_suffix(_range).len()") +
                 right.generate_parse(Some(parse_nodes)) +
                 pop_state(|state| sppf_add(&self.parse_node_kind(parse_nodes), state))
             )(cont),
@@ -1263,7 +1291,7 @@ impl<Pat: Ord + Hash + MatchesEmpty + ToRustSrc> Rule<Pat> {
             }
             (Rule::Or(rules), Some(parse_nodes)) => (
                 thunk!("
-                assert_eq!(_range.start(), c.frame.range.start());") +
+                assert_eq!(_range.start(), c.fn_input.start());") +
                 parallel(ThunkIter(rules.iter().map(|rule| {
                     push_state(&format!("{}.to_usize()", rule.parse_node_kind(parse_nodes))) +
                     rule.generate_parse(Some(parse_nodes))
@@ -1278,9 +1306,9 @@ impl<Pat: Ord + Hash + MatchesEmpty + ToRustSrc> Rule<Pat> {
                 let more = Rc::new(Rule::RepeatMore(rule.clone(), None));
                 opt(
                     thunk!("
-                assert_eq!(_range.start(), c.frame.range.start());") +
+                assert_eq!(_range.start(), c.fn_input.start());") +
                     rule.generate_parse(Some(parse_nodes)) +
-                    push_state("c.frame.range.subtract_suffix(_range).len()") +
+                    push_state("c.fn_input.subtract_suffix(_range).len()") +
                     call(label) +
                     pop_state(move |state| sppf_add(&more.parse_node_kind(parse_nodes), state))
                 )
@@ -1296,22 +1324,22 @@ impl<Pat: Ord + Hash + MatchesEmpty + ToRustSrc> Rule<Pat> {
             })(cont),
             (Rule::RepeatMore(rule, None), Some(parse_nodes)) => fix(|label| {
                 thunk!("
-                assert_eq!(_range.start(), c.frame.range.start());") +
+                assert_eq!(_range.start(), c.fn_input.start());") +
                 rule.generate_parse(Some(parse_nodes)) +
-                push_state("c.frame.range.subtract_suffix(_range).len()") +
+                push_state("c.fn_input.subtract_suffix(_range).len()") +
                 opt(call(label)) +
                 pop_state(|state| sppf_add(&self.parse_node_kind(parse_nodes), state))
             })(cont),
             (Rule::RepeatMore(elem, Some(sep)), Some(parse_nodes)) => fix(|label| {
                 thunk!("
-                assert_eq!(_range.start(), c.frame.range.start());") +
+                assert_eq!(_range.start(), c.fn_input.start());") +
                 elem.generate_parse(Some(parse_nodes)) +
-                push_state("c.frame.range.subtract_suffix(_range).len()") +
+                push_state("c.fn_input.subtract_suffix(_range).len()") +
                 opt(
                     thunk!("
-                assert_eq!(_range.start(), c.frame.range.start());") +
+                assert_eq!(_range.start(), c.fn_input.start());") +
                     sep.generate_parse(None) +
-                    push_state("c.frame.range.subtract_suffix(_range).len()") +
+                    push_state("c.fn_input.subtract_suffix(_range).len()") +
                     call(label) +
                     pop_state(|state| {
                         sppf_add(&Rc::new(Rule::Concat([
