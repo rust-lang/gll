@@ -728,6 +728,34 @@ impl<'a, 'i, 's> Handle<'a, 'i, 's, ", name, "<'a, 'i, 's>> {
             }
             put!(")
     }
+    pub fn for_each(self, mut f: impl FnMut(", name, "<'a, 'i, 's>)) {
+        let _sppf = &self.parser.sppf;");
+            if let Some(variants) = &variants {
+                put!("
+        for node in self.parser.sppf.unary_children(self.node) {
+            for node in self.parser.sppf.unary_children(node) {
+                match node.kind {");
+                for (rule, variant, _) in variants {
+                    put!("
+                    ", rule.parse_node_kind(&parse_nodes), " => {
+                        traverse!(_sppf, node, ", rule.generate_traverse_shape(false, &parse_nodes), ",
+                            _r => f(", name, "::", variant, "_from_sppf(self.parser, _r)));
+                    }");
+                }
+                put!("
+                    _ => unreachable!(),
+                }
+            }
+        }");
+            } else {
+                put!("
+        for node in self.parser.sppf.unary_children(self.node) {
+            traverse!(_sppf, node, ", rule.rule.generate_traverse_shape(false, &parse_nodes), ",
+                _r => f(", name, "::from_sppf(self.parser, _r)));
+        }");
+            }
+            put!("
+    }
 }");
         }
         put!("
