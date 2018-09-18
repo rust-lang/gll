@@ -482,8 +482,9 @@ impl<'a, 'i, 's> ", name, "<'a, 'i, 's> {
             callee: ", CodeLabel(name.clone()), ",
             range,
         };
-        if !p.gss.calls.contains_key(&call) {
-            p.gss.threads.spawn(
+        let mut result = p.memoizer.longest_result(call);
+        if result.is_none() {
+            p.threads.spawn(
                 Continuation {
                     code: call.callee,
                     frame: call,
@@ -492,8 +493,9 @@ impl<'a, 'i, 's> ", name, "<'a, 'i, 's> {
                 call.range,
             );
             parse(p);
+            result = p.memoizer.longest_result(call);
         }
-        if let Some(range) = p.gss.longest_result(call) {
+        if let Some(range) = result {
             return Ok(Handle {
                 node: ParseNode { kind: ", ParseNodeKind(name.clone()), ", range },
                 parser: p,
@@ -760,7 +762,7 @@ impl<'a, 'i, 's> Handle<'a, 'i, 's, ", name, "<'a, 'i, 's>> {
         }
         put!("
 fn parse(p: &mut Parser) {
-    while let Some(Call { callee: mut c, range: _range }) = p.gss.threads.steal() {
+    while let Some(Call { callee: mut c, range: _range }) = p.threads.steal() {
         match c.code {");
         for (name, rule) in &self.rules {
             let parse_nodes = if rule.fields.is_empty() {
@@ -975,7 +977,7 @@ impl<'a> Continuation<'a> {
                 self.code = Code::Inline(format!(
                     "
                 c.code = {};
-                p.gss.threads.spawn(c, _range);",
+                p.threads.spawn(c, _range);",
                     label
                 ));
                 self.to_inline()
@@ -1095,7 +1097,7 @@ fn call(callee: CodeLabel) -> Thunk<impl FnOnce(Continuation) -> Continuation> {
         cont.code = Code::Inline(format!(
             "
                 c.code = {};
-                p.gss.call(Call {{ callee: {}, range: _range }}, c);",
+                p.call(Call {{ callee: {}, range: _range }}, c);",
             cont.to_label(),
             callee
         ));
@@ -1106,7 +1108,7 @@ fn call(callee: CodeLabel) -> Thunk<impl FnOnce(Continuation) -> Continuation> {
 fn ret() -> Thunk<impl FnOnce(Continuation) -> Continuation> {
     thunk!(
         "
-                p.gss.ret(c.frame, _range);"
+                p.ret(c.frame, _range);"
     ) + Thunk::new(|mut cont| {
         assert_eq!(cont.to_inline(), "");
         cont

@@ -162,8 +162,10 @@ impl InputMatch<RangeInclusive<char>> for str {
 
 pub struct Parser<'i, P: ParseNodeKind, C: CodeLabel, I> {
     input: Container<'i, I>,
-    pub gss: CallGraph<'i, C>,
-    pub sppf: ParseGraph<'i, P>,
+    pub threads: Threads<'i, C>,
+    pub gss: GraphStack<'i, C>,
+    pub memoizer: Memoizer<'i, C>,
+    pub sppf: ParseForest<'i, P>,
 }
 
 impl<'i, P: ParseNodeKind, C: CodeLabel, I: Trustworthy> Parser<'i, P, C, I> {
@@ -173,14 +175,17 @@ impl<'i, P: ParseNodeKind, C: CodeLabel, I: Trustworthy> Parser<'i, P, C, I> {
             f(
                 Parser {
                     input,
-                    gss: CallGraph {
-                        threads: Threads {
-                            queue: BinaryHeap::new(),
-                            seen: BTreeSet::new(),
-                        },
-                        calls: HashMap::new(),
+                    threads: Threads {
+                        queue: BinaryHeap::new(),
+                        seen: BTreeSet::new(),
                     },
-                    sppf: ParseGraph {
+                    gss: GraphStack {
+                        returns: HashMap::new(),
+                    },
+                    memoizer: Memoizer {
+                        lengths: HashMap::new(),
+                    },
+                    sppf: ParseForest {
                         children: HashMap::new(),
                     },
                 },
@@ -211,6 +216,42 @@ impl<'i, P: ParseNodeKind, C: CodeLabel, I: Trustworthy> Parser<'i, P, C, I> {
         self.input(range)
             .match_right(pat)
             .map(|n| Range(range.split_at(range.len() - n).0))
+    }
+    pub fn call(&mut self, call: Call<'i, C>, next: Continuation<'i, C>) {
+        let returns = self.gss.returns.entry(call).or_default();
+        if returns.insert(next) {
+            if returns.len() > 1 {
+                if let Some(lengths) = self.memoizer.lengths.get(&call) {
+                    for &len in lengths {
+                        self.threads.spawn(next, Range(call.range.split_at(len).1));
+                    }
+                }
+            } else {
+                self.threads.spawn(
+                    Continuation {
+                        code: call.callee,
+                        frame: call,
+                        state: 0,
+                    },
+                    call.range,
+                );
+            }
+        }
+    }
+    pub fn ret(&mut self, call: Call<'i, C>, remaining: Range<'i>) {
+        if self
+            .memoizer
+            .lengths
+            .entry(call)
+            .or_default()
+            .insert(call.range.subtract_suffix(remaining).len())
+        {
+            if let Some(returns) = self.gss.returns.get(&call) {
+                for &next in returns {
+                    self.threads.spawn(next, remaining);
+                }
+            }
+        }
     }
 }
 
@@ -297,31 +338,16 @@ impl<'i, C: Ord> Ord for Call<'i, C> {
     }
 }
 
-pub struct CallNode<'i, C: CodeLabel> {
-    returns: BTreeSet<Continuation<'i, C>>,
-    lengths: BTreeSet<usize>,
+pub struct GraphStack<'i, C: CodeLabel> {
+    returns: HashMap<Call<'i, C>, BTreeSet<Continuation<'i, C>>>,
 }
 
-impl<'i, C: CodeLabel> CallNode<'i, C> {
-    pub fn new() -> Self {
-        CallNode {
-            returns: BTreeSet::new(),
-            lengths: BTreeSet::new(),
-        }
-    }
-}
-
-pub struct CallGraph<'i, C: CodeLabel> {
-    pub threads: Threads<'i, C>,
-    pub calls: HashMap<Call<'i, C>, CallNode<'i, C>>,
-}
-
-impl<'i, C: CodeLabel> CallGraph<'i, C> {
+impl<'i, C: CodeLabel> GraphStack<'i, C> {
     pub fn print(&self, out: &mut Write) -> io::Result<()> {
         writeln!(out, "digraph gss {{")?;
         writeln!(out, "    graph [rankdir=RL]")?;
-        for (call, node) in &self.calls {
-            for next in &node.returns {
+        for (call, returns) in &self.returns {
+            for next in returns {
                 writeln!(
                     out,
                     r#"    "{:?}" -> "{:?}" [label="{:?}"]"#,
@@ -331,60 +357,40 @@ impl<'i, C: CodeLabel> CallGraph<'i, C> {
         }
         writeln!(out, "}}")
     }
+}
+
+pub struct Memoizer<'i, C: CodeLabel> {
+    lengths: HashMap<Call<'i, C>, BTreeSet<usize>>,
+}
+
+impl<'i, C: CodeLabel> Memoizer<'i, C> {
     pub fn results<'a>(
         &'a self,
         call: Call<'i, C>,
     ) -> impl DoubleEndedIterator<Item = Range<'i>> + 'a {
-        self.calls.get(&call).into_iter().flat_map(move |node| {
-            node.lengths
-                .iter()
-                .map(move |&len| Range(call.range.split_at(len).0))
-        })
+        self.lengths
+            .get(&call)
+            .into_iter()
+            .flat_map(move |lengths| {
+                lengths
+                    .iter()
+                    .map(move |&len| Range(call.range.split_at(len).0))
+            })
     }
     pub fn longest_result(&self, call: Call<'i, C>) -> Option<Range<'i>> {
         self.results(call).rev().next()
     }
-    pub fn call(&mut self, call: Call<'i, C>, next: Continuation<'i, C>) {
-        let node = self.calls.entry(call).or_insert(CallNode::new());
-        if node.returns.insert(next) {
-            if node.returns.len() > 1 {
-                for &len in &node.lengths {
-                    self.threads.spawn(next, Range(call.range.split_at(len).1));
-                }
-            } else {
-                self.threads.spawn(
-                    Continuation {
-                        code: call.callee,
-                        frame: call,
-                        state: 0,
-                    },
-                    call.range,
-                );
-            }
-        }
-    }
-    pub fn ret(&mut self, call: Call<'i, C>, remaining: Range<'i>) {
-        let node = self.calls.entry(call).or_insert(CallNode::new());
-        if node
-            .lengths
-            .insert(call.range.subtract_suffix(remaining).len())
-        {
-            for &next in &node.returns {
-                self.threads.spawn(next, remaining);
-            }
-        }
-    }
 }
 
-pub struct ParseGraph<'i, P: ParseNodeKind> {
+pub struct ParseForest<'i, P: ParseNodeKind> {
     pub children: HashMap<ParseNode<'i, P>, BTreeSet<usize>>,
 }
 
-impl<'i, P: ParseNodeKind> ParseGraph<'i, P> {
+impl<'i, P: ParseNodeKind> ParseForest<'i, P> {
     pub fn add(&mut self, kind: P, range: Range<'i>, child: usize) {
         self.children
             .entry(ParseNode { kind, range })
-            .or_insert(BTreeSet::new())
+            .or_default()
             .insert(child);
     }
 
