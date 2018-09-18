@@ -230,7 +230,7 @@ impl<'i, P: ParseNodeKind, C: CodeLabel, I: Trustworthy> Parser<'i, P, C, I> {
                 self.threads.spawn(
                     Continuation {
                         code: call.callee,
-                        frame: call,
+                        fn_input: call.range,
                         state: 0,
                     },
                     call.range,
@@ -238,7 +238,11 @@ impl<'i, P: ParseNodeKind, C: CodeLabel, I: Trustworthy> Parser<'i, P, C, I> {
             }
         }
     }
-    pub fn ret(&mut self, call: Call<'i, C>, remaining: Range<'i>) {
+    pub fn ret(&mut self, from: Continuation<'i, C>, remaining: Range<'i>) {
+        let call = Call {
+            callee: from.code.enclosing_fn(),
+            range: from.fn_input,
+        };
         if self
             .memoizer
             .lengths
@@ -304,7 +308,7 @@ impl<'i, C: CodeLabel> Threads<'i, C> {
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Continuation<'i, C: CodeLabel> {
     pub code: C,
-    pub frame: Call<'i, C>,
+    pub fn_input: Range<'i>,
     pub state: usize,
 }
 
@@ -351,7 +355,12 @@ impl<'i, C: CodeLabel> GraphStack<'i, C> {
                 writeln!(
                     out,
                     r#"    "{:?}" -> "{:?}" [label="{:?}"]"#,
-                    call, next.frame, next.code
+                    call,
+                    Call {
+                        callee: next.code.enclosing_fn(),
+                        range: next.fn_input
+                    },
+                    next.code
                 )?;
             }
         }
@@ -568,7 +577,9 @@ pub trait ParseNodeKind: fmt::Display + Ord + Hash + Copy + 'static {
     fn to_usize(self) -> usize;
 }
 
-pub trait CodeLabel: fmt::Debug + Ord + Hash + Copy + 'static {}
+pub trait CodeLabel: fmt::Debug + Ord + Hash + Copy + 'static {
+    fn enclosing_fn(self) -> Self;
+}
 
 pub macro traverse {
     (typeof($leaf:ty) _) => { $leaf },
