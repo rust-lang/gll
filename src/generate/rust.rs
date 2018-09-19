@@ -1245,9 +1245,14 @@ fn fix<F: FnOnce(Continuation) -> Continuation>(
         let ret_label = cont.to_label().clone();
         cont.code = Code::Inline(String::new());
         let label = cont.next_code_label();
+        let outer_fn_label = mem::replace(cont.fn_code_label, label.clone());
+        cont.code_labels.insert(label.clone(), 0);
+
         cont = (reify_as(label.clone()) + f(label) + ret())(cont);
-        cont = call(mem::replace(cont.to_label(), ret_label))(cont);
+
+        *cont.fn_code_label = outer_fn_label;
         cont.nested_frames = nested_frames;
+        cont = call(mem::replace(cont.to_label(), ret_label))(cont);
         cont
     })
 }
