@@ -598,12 +598,13 @@ impl<'a, 'i, 's> ", name, "<'a, 'i, 's> {");
     #[allow(non_snake_case)]
     fn ", variant, "_from_sppf(
         parser: &'a Parser<'s, 'i>,
+        _node: ParseNode<'i, _P>,
         _r: traverse!(typeof(ParseNode<'i, _P>) ", rule.generate_traverse_shape(false, &parse_nodes), "),
     ) -> Self {");
                     if fields.is_empty() {
                         put!("
         ", name, "::", variant, "(Handle {
-            node: _r,
+            node: _node,
             parser,
             _marker: PhantomData,
         })");
@@ -648,6 +649,7 @@ impl<'a, 'i, 's> ", name, "<'a, 'i, 's> {");
                 put!("
     fn from_sppf(
         parser: &'a Parser<'s, 'i>,
+        _node: ParseNode<'i, _P>,
         _r: traverse!(typeof(ParseNode<'i, _P>) ", rule.rule.generate_traverse_shape(false, &parse_nodes), "),
     ) -> Self {
         ", name, " {");
@@ -713,7 +715,7 @@ impl<'a, 'i, 's> Handle<'a, 'i, 's, ", name, "<'a, 'i, 's>> {
                     put!("
                     ", rule.parse_node_kind(&parse_nodes), " => {
                         traverse!(_sppf, node, ", rule.generate_traverse_shape(false, &parse_nodes), ",
-                            _r => yield ", name, "::", variant, "_from_sppf(self.parser, _r));
+                            _r => yield ", name, "::", variant, "_from_sppf(self.parser, node, _r));
                     }");
                 }
                 put!("
@@ -724,7 +726,7 @@ impl<'a, 'i, 's> Handle<'a, 'i, 's, ", name, "<'a, 'i, 's>> {
             } else {
                 put!("for node in self.parser.sppf.unary_children(self.node) {
             traverse!(_sppf, node, ", rule.rule.generate_traverse_shape(false, &parse_nodes), ",
-                _r => yield ", name, "::from_sppf(self.parser, _r));
+                _r => yield ", name, "::from_sppf(self.parser, node, _r));
         }");
             }
             put!(")
@@ -740,7 +742,7 @@ impl<'a, 'i, 's> Handle<'a, 'i, 's, ", name, "<'a, 'i, 's>> {
                     put!("
                     ", rule.parse_node_kind(&parse_nodes), " => {
                         traverse!(_sppf, node, ", rule.generate_traverse_shape(false, &parse_nodes), ",
-                            _r => f(", name, "::", variant, "_from_sppf(self.parser, _r)));
+                            _r => f(", name, "::", variant, "_from_sppf(self.parser, node, _r)));
                     }");
                 }
                 put!("
@@ -752,7 +754,7 @@ impl<'a, 'i, 's> Handle<'a, 'i, 's, ", name, "<'a, 'i, 's>> {
                 put!("
         for node in self.parser.sppf.unary_children(self.node) {
             traverse!(_sppf, node, ", rule.rule.generate_traverse_shape(false, &parse_nodes), ",
-                _r => f(", name, "::from_sppf(self.parser, _r)));
+                _r => f(", name, "::from_sppf(self.parser, node, _r)));
         }");
             }
             put!("

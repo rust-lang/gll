@@ -65,7 +65,7 @@ fn main() {
         A = {
             X:{ a:"a" { x:A b:"b" } } |
             Y:{ a:"a" x:A c:"c" } |
-            Z:{ "a" }
+            Z:{ "a" "" }
         };
     };
     fs::write(
