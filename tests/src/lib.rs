@@ -10,8 +10,8 @@ macro_rules! testcase {
 
         #[test]
         fn $name() {
-            $name::Parser::with_str($input, |mut parser, range| {
-                let result = format!("{:#?}", $name::$rule::parse(&mut parser, range).unwrap());
+            $name::$rule::parse_with($input, |parser, result| {
+                let result = format!("{:#?}", result.unwrap());
                 assert!(
                     result == $expected,
                     "mismatched output, expected:\n{}\n\nfound:\n{}",

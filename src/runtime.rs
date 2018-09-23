@@ -47,6 +47,12 @@ impl<'i> Range<'i> {
 
 pub struct Str(str);
 
+impl<'a> From<&'a str> for &'a Str {
+    fn from(s: &'a str) -> Self {
+        unsafe { &*(s as *const str as *const Str) }
+    }
+}
+
 unsafe impl Trustworthy for Str {
     type Item = u8;
     fn base_len(&self) -> usize {
@@ -169,8 +175,11 @@ pub struct Parser<'i, P: ParseNodeKind, C: CodeLabel, I> {
 }
 
 impl<'i, P: ParseNodeKind, C: CodeLabel, I: Trustworthy> Parser<'i, P, C, I> {
-    pub fn with<R>(input: I, f: impl for<'i2> FnOnce(Parser<'i2, P, C, I>, Range<'i2>) -> R) -> R {
-        scope(input, |input| {
+    pub fn with<R>(
+        input: impl Into<I>,
+        f: impl for<'i2> FnOnce(Parser<'i2, P, C, I>, Range<'i2>) -> R,
+    ) -> R {
+        scope(input.into(), |input| {
             let range = input.range();
             f(
                 Parser {
@@ -256,16 +265,6 @@ impl<'i, P: ParseNodeKind, C: CodeLabel, I: Trustworthy> Parser<'i, P, C, I> {
                 }
             }
         }
-    }
-}
-
-impl<'a, 'i, P: ParseNodeKind, C: CodeLabel> Parser<'i, P, C, &'a Str> {
-    pub fn with_str<R>(
-        input: &'a str,
-        f: impl for<'i2> FnOnce(Parser<'i2, P, C, &'a Str>, Range<'i2>) -> R,
-    ) -> R {
-        let input = unsafe { &*(input as *const _ as *const Str) };
-        Parser::with(input, f)
     }
 }
 
