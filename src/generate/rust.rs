@@ -169,7 +169,7 @@ impl<Pat: Ord + Hash + MatchesEmpty + ToRustSrc> Rule<Pat> {
         let shape = match &**self {
             Rule::Empty | Rule::Eat(_) | Rule::NegativeLookahead(_) => ParseNodeShape::Opaque,
             Rule::Call(_) => unreachable!(),
-            Rule::Concat([left, right]) => ParseNodeShape::Binary(
+            Rule::Concat([left, right]) => ParseNodeShape::Split(
                 left.parse_node_kind(parse_nodes),
                 right.parse_node_kind(parse_nodes),
             ),
@@ -178,11 +178,11 @@ impl<Pat: Ord + Hash + MatchesEmpty + ToRustSrc> Rule<Pat> {
             Rule::RepeatMany(elem, sep) => ParseNodeShape::Opt(
                 Rc::new(Rule::RepeatMore(elem.clone(), sep.clone())).parse_node_kind(parse_nodes),
             ),
-            Rule::RepeatMore(rule, None) => ParseNodeShape::Binary(
+            Rule::RepeatMore(rule, None) => ParseNodeShape::Split(
                 rule.parse_node_kind(parse_nodes),
                 Rc::new(Rule::RepeatMany(rule.clone(), None)).parse_node_kind(parse_nodes),
             ),
-            Rule::RepeatMore(elem, Some(sep)) => ParseNodeShape::Binary(
+            Rule::RepeatMore(elem, Some(sep)) => ParseNodeShape::Split(
                 elem.parse_node_kind(parse_nodes),
                 Rc::new(Rule::Opt(Rc::new(Rule::Concat([
                     sep.clone(),
@@ -397,15 +397,15 @@ impl<'a, 'i, 's, T> Handle<'a, 'i, 's, [T]> {
     }
     fn all_list_heads(mut self) -> ListHead<impl Iterator<Item = (Handle<'a, 'i, 's, T>, Handle<'a, 'i, 's, [T]>)>> {
         if let ParseNodeShape::Opt(_) = self.node.kind.shape() {
-            if let Some(opt_child) = self.parser.sppf.opt_child(self.node) {
+            if let Some(opt_child) = self.node.unpack_opt() {
                 self.node = opt_child;
             } else {
                 return ListHead::Nil;
             }
         }
-        ListHead::Cons(self.parser.sppf.binary_children(self.node).flat_map(move |(elem, rest)| {
-            if let ParseNodeShape::Binary(..) = rest.kind.shape() {
-                Some(self.parser.sppf.binary_children(rest)).into_iter().flatten().chain(None)
+        ListHead::Cons(self.parser.sppf.all_splits(self.node).flat_map(move |(elem, rest)| {
+            if let ParseNodeShape::Split(..) = rest.kind.shape() {
+                Some(self.parser.sppf.all_splits(rest)).into_iter().flatten().chain(None)
             } else {
                 None.into_iter().flatten().chain(Some((elem, rest)))
             }
@@ -707,10 +707,11 @@ impl<'a, 'i, 's> Handle<'a, 'i, 's, ", name, "<'a, 'i, 's>> {
     }
     pub fn all(self) -> impl Iterator<Item = ", name, "<'a, 'i, 's>> {
         let _sppf = &self.parser.sppf;
-        GenIter(move || ");
+        GenIter(move || {
+            let node = self.node.unpack_alias();");
             if let Some(variants) = &variants {
-                put!("for node in self.parser.sppf.unary_children(self.node) {
-            for node in self.parser.sppf.unary_children(node) {
+                put!("
+            for node in self.parser.sppf.all_choices(node) {
                 match node.kind {");
                 for (rule, variant, _) in variants {
                     put!("
@@ -722,41 +723,37 @@ impl<'a, 'i, 's> Handle<'a, 'i, 's, ", name, "<'a, 'i, 's>> {
                 put!("
                     _ => unreachable!(),
                 }
-            }
-        }");
+            }");
             } else {
-                put!("for node in self.parser.sppf.unary_children(self.node) {
+                put!("
             traverse!(_sppf, node, ", rule.rule.generate_traverse_shape(false, &parse_nodes), ",
-                _r => yield ", name, "::from_sppf(self.parser, node, _r));
-        }");
+                _r => yield ", name, "::from_sppf(self.parser, node, _r));");
             }
-            put!(")
+            put!("
+        })
     }
     pub fn for_each(self, mut f: impl FnMut(", name, "<'a, 'i, 's>)) {
-        let _sppf = &self.parser.sppf;");
+        let _sppf = &self.parser.sppf;
+        let node = self.node.unpack_alias();");
             if let Some(variants) = &variants {
                 put!("
-        for node in self.parser.sppf.unary_children(self.node) {
-            for node in self.parser.sppf.unary_children(node) {
-                match node.kind {");
+        for node in self.parser.sppf.all_choices(node) {
+            match node.kind {");
                 for (rule, variant, _) in variants {
                     put!("
-                    ", rule.parse_node_kind(&parse_nodes), " => {
-                        traverse!(_sppf, node, ", rule.generate_traverse_shape(false, &parse_nodes), ",
-                            _r => f(", name, "::", variant, "_from_sppf(self.parser, node, _r)));
-                    }");
+                ", rule.parse_node_kind(&parse_nodes), " => {
+                    traverse!(_sppf, node, ", rule.generate_traverse_shape(false, &parse_nodes), ",
+                        _r => f(", name, "::", variant, "_from_sppf(self.parser, node, _r)));
+                }");
                 }
                 put!("
-                    _ => unreachable!(),
-                }
+                _ => unreachable!(),
             }
         }");
             } else {
                 put!("
-        for node in self.parser.sppf.unary_children(self.node) {
-            traverse!(_sppf, node, ", rule.rule.generate_traverse_shape(false, &parse_nodes), ",
-                _r => f(", name, "::from_sppf(self.parser, node, _r)));
-        }");
+        traverse!(_sppf, node, ", rule.rule.generate_traverse_shape(false, &parse_nodes), ",
+            _r => f(", name, "::from_sppf(self.parser, node, _r)));");
             }
             put!("
     }

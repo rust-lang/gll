@@ -186,7 +186,7 @@ impl<'i, P: ParseNodeKind, C: CodeLabel, I: Trustworthy> Parser<'i, P, C, I> {
                         lengths: HashMap::new(),
                     },
                     sppf: ParseForest {
-                        children: HashMap::new(),
+                        possibilities: HashMap::new(),
                     },
                 },
                 Range(range),
@@ -392,66 +392,48 @@ impl<'i, C: CodeLabel> Memoizer<'i, C> {
 }
 
 pub struct ParseForest<'i, P: ParseNodeKind> {
-    pub children: HashMap<ParseNode<'i, P>, BTreeSet<usize>>,
+    pub possibilities: HashMap<ParseNode<'i, P>, BTreeSet<usize>>,
 }
 
 impl<'i, P: ParseNodeKind> ParseForest<'i, P> {
-    pub fn add(&mut self, kind: P, range: Range<'i>, child: usize) {
-        self.children
+    pub fn add(&mut self, kind: P, range: Range<'i>, possibility: usize) {
+        self.possibilities
             .entry(ParseNode { kind, range })
             .or_default()
-            .insert(child);
+            .insert(possibility);
     }
 
-    pub fn unary_children<'a>(
+    pub fn all_choices<'a>(
         &'a self,
         node: ParseNode<'i, P>,
     ) -> impl Iterator<Item = ParseNode<'i, P>> + 'a {
-        let (alias_child, choice_children) = match node.kind.shape() {
-            ParseNodeShape::Alias(kind) => (Some(kind), None),
-            ParseNodeShape::Choice => (
-                None,
-                self.children
-                    .get(&node)
-                    .map(|children| children.iter().cloned().map(|i| P::from_usize(i))),
-            ),
-            shape => unreachable!("unary_children({}): non-unary shape {}", node, shape),
-        };
-        choice_children
-            .into_iter()
-            .flatten()
-            .chain(alias_child)
-            .map(move |kind| ParseNode {
-                kind,
-                range: node.range,
-            })
-    }
-
-    pub fn opt_child(&self, node: ParseNode<'i, P>) -> Option<ParseNode<'i, P>> {
         match node.kind.shape() {
-            ParseNodeShape::Opt(inner) => if node.range.is_empty() {
-                None
-            } else {
-                Some(ParseNode {
-                    kind: inner,
+            ParseNodeShape::Choice => self
+                .possibilities
+                .get(&node)
+                .into_iter()
+                .flatten()
+                .cloned()
+                .map(move |i| ParseNode {
+                    kind: P::from_usize(i),
                     range: node.range,
-                })
-            },
-            shape => unreachable!("opt_child({}): non-opt shape {}", node, shape),
+                }),
+            shape => unreachable!("all_choices({}): non-choice shape {}", node, shape),
         }
     }
 
-    pub fn binary_children<'a>(
+    pub fn all_splits<'a>(
         &'a self,
         node: ParseNode<'i, P>,
     ) -> impl Iterator<Item = (ParseNode<'i, P>, ParseNode<'i, P>)> + 'a {
         match node.kind.shape() {
-            ParseNodeShape::Binary(left_kind, right_kind) => self
-                .children
+            ParseNodeShape::Split(left_kind, right_kind) => self
+                .possibilities
                 .get(&node)
                 .into_iter()
                 .flatten()
-                .map(move |&i| {
+                .cloned()
+                .map(move |i| {
                     let (left, right, _) = node.range.split_at(i);
                     (
                         ParseNode {
@@ -464,54 +446,57 @@ impl<'i, P: ParseNodeKind> ParseForest<'i, P> {
                         },
                     )
                 }),
-            shape => unreachable!("binary_children({}): non-binary shape {}", node, shape),
+            shape => unreachable!("all_splits({}): non-split shape {}", node, shape),
         }
     }
 
     pub fn print(&self, out: &mut Write) -> io::Result<()> {
         writeln!(out, "digraph sppf {{")?;
-        let mut queue: VecDeque<_> = self.children.keys().cloned().collect();
+        let mut queue: VecDeque<_> = self.possibilities.keys().cloned().collect();
         let mut seen: BTreeSet<_> = queue.iter().cloned().collect();
         let mut p = 0;
         while let Some(source) = queue.pop_front() {
-            let mut enqueue = |child| {
-                if seen.insert(child) {
-                    queue.push_back(child);
-                }
-            };
             writeln!(out, "    {:?} [shape=box]", source.to_string())?;
+            let mut add_children = |children: &[(&str, ParseNode<'i, P>)]| -> io::Result<()> {
+                writeln!(out, r#"    p{} [label="" shape=point]"#, p)?;
+                writeln!(out, "    {:?} -> p{}:n", source.to_string(), p)?;
+                for &(port, child) in children {
+                    writeln!(
+                        out,
+                        "    p{}:{} -> {:?}:n [dir=none]",
+                        p,
+                        port,
+                        child.to_string()
+                    )?;
+                    if seen.insert(child) {
+                        queue.push_back(child);
+                    }
+                }
+                p += 1;
+                Ok(())
+            };
             match source.kind.shape() {
                 ParseNodeShape::Opaque => {}
 
-                ParseNodeShape::Alias(_) | ParseNodeShape::Choice => {
-                    for child in self.unary_children(source) {
-                        enqueue(child);
-                        writeln!(out, r#"    p{} [label="" shape=point]"#, p)?;
-                        writeln!(out, "    {:?} -> p{}:n", source.to_string(), p)?;
-                        writeln!(out, "    p{}:s -> {:?}:n [dir=none]", p, child.to_string())?;
-                        p += 1;
-                    }
+                ParseNodeShape::Alias(_) => {
+                    add_children(&[("s", source.unpack_alias())])?;
                 }
 
                 ParseNodeShape::Opt(_) => {
-                    if let Some(child) = self.opt_child(source) {
-                        enqueue(child);
-                        writeln!(out, r#"    p{} [label="" shape=point]"#, p)?;
-                        writeln!(out, "    {:?} -> p{}:n", source.to_string(), p)?;
-                        writeln!(out, "    p{}:s -> {:?}:n [dir=none]", p, child.to_string())?;
-                        p += 1;
+                    if let Some(child) = source.unpack_opt() {
+                        add_children(&[("s", child)])?;
                     }
                 }
 
-                ParseNodeShape::Binary(..) => {
-                    for (left, right) in self.binary_children(source) {
-                        enqueue(left);
-                        enqueue(right);
-                        writeln!(out, r#"    p{} [label="" shape=point]"#, p)?;
-                        writeln!(out, "    {:?} -> p{}:n", source.to_string(), p)?;
-                        writeln!(out, "    p{}:sw -> {:?}:n [dir=none]", p, left.to_string())?;
-                        writeln!(out, "    p{}:se -> {:?}:n [dir=none]", p, right.to_string())?;
-                        p += 1;
+                ParseNodeShape::Choice => {
+                    for child in self.all_choices(source) {
+                        add_children(&[("s", child)])?;
+                    }
+                }
+
+                ParseNodeShape::Split(..) => {
+                    for (left, right) in self.all_splits(source) {
+                        add_children(&[("sw", left), ("se", right)])?;
                     }
                 }
             }
@@ -524,6 +509,32 @@ impl<'i, P: ParseNodeKind> ParseForest<'i, P> {
 pub struct ParseNode<'i, P: ParseNodeKind> {
     pub kind: P,
     pub range: Range<'i>,
+}
+
+impl<'i, P: ParseNodeKind> ParseNode<'i, P> {
+    pub fn unpack_alias(self) -> Self {
+        match self.kind.shape() {
+            ParseNodeShape::Alias(inner) => ParseNode {
+                kind: inner,
+                range: self.range,
+            },
+            shape => unreachable!("unpack_alias({}): non-alias shape {}", self, shape),
+        }
+    }
+
+    pub fn unpack_opt(self) -> Option<Self> {
+        match self.kind.shape() {
+            ParseNodeShape::Opt(inner) => if self.range.is_empty() {
+                None
+            } else {
+                Some(ParseNode {
+                    kind: inner,
+                    range: self.range,
+                })
+            },
+            shape => unreachable!("unpack_opt({}): non-opt shape {}", self, shape),
+        }
+    }
 }
 
 impl<'i, P: ParseNodeKind> fmt::Display for ParseNode<'i, P> {
@@ -556,7 +567,7 @@ pub enum ParseNodeShape<P> {
     Alias(P),
     Choice,
     Opt(P),
-    Binary(P, P),
+    Split(P, P),
 }
 
 impl<P: fmt::Display> fmt::Display for ParseNodeShape<P> {
@@ -566,7 +577,7 @@ impl<P: fmt::Display> fmt::Display for ParseNodeShape<P> {
             ParseNodeShape::Alias(inner) => write!(f, "Alias({})", inner),
             ParseNodeShape::Choice => write!(f, "Choice"),
             ParseNodeShape::Opt(inner) => write!(f, "Opt({})", inner),
-            ParseNodeShape::Binary(left, right) => write!(f, "Binary({}, {})", left, right),
+            ParseNodeShape::Split(left, right) => write!(f, "Split({}, {})", left, right),
         }
     }
 }
@@ -595,13 +606,13 @@ pub macro traverse {
         match Some($node) { $result => $cont }
     },
     ($sppf:ident, $node:ident, ($l_shape:tt, $r_shape:tt), $result:pat => $cont:expr) => {
-        for (left, right) in $sppf.binary_children($node) {
+        for (left, right) in $sppf.all_splits($node) {
             traverse!($sppf, left, $l_shape, left =>
                traverse!($sppf, right, $r_shape, right => match (left, right) { $result => $cont }))
         }
     },
     ($sppf:ident, $node:ident, { $($i:tt: $kind:pat => $shape:tt,)* }, $result:pat => $cont:expr) => {
-        for node in $sppf.unary_children($node) {
+        for node in $sppf.all_choices($node) {
             let tuple_template = <($(traverse!(typeof(_) $shape),)*)>::default();
             match node.kind {
                 $($kind => traverse!($sppf, node, $shape, x => {
@@ -616,7 +627,7 @@ pub macro traverse {
     ($sppf:ident, $node:ident, [$shape:tt], $result:pat => $cont:expr) => {
         {
             let tuple_template = <(traverse!(typeof(_) $shape),)>::default();
-            match $sppf.opt_child($node) {
+            match $node.unpack_opt() {
                 Some(node) => {
                     traverse!($sppf, node, $shape, x => {
                         let mut r = tuple_template;
