@@ -1,7 +1,7 @@
 use grammar::{MatchesEmpty, MaybeKnown};
 use std::char;
 use std::convert::TryFrom;
-use std::ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive};
+use std::ops::{self, Bound, RangeBounds};
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Pat<S, C> {
@@ -9,65 +9,67 @@ pub enum Pat<S, C> {
     Range(C, C),
 }
 
-impl<'a> From<&'a str> for Pat<&'a str, char> {
+impl<'a, C> From<&'a str> for Pat<&'a str, C> {
     fn from(s: &'a str) -> Self {
         Pat::String(s)
     }
 }
 
-impl<'a> From<RangeInclusive<char>> for Pat<&'a str, char> {
-    fn from(range: RangeInclusive<char>) -> Self {
-        Pat::Range(*range.start(), *range.end())
+impl<'a, C> From<&'a str> for Pat<String, C> {
+    fn from(s: &str) -> Self {
+        Pat::String(s.to_string())
     }
 }
 
-impl<'a> From<RangeToInclusive<char>> for Pat<&'a str, char> {
-    fn from(range: RangeToInclusive<char>) -> Self {
-        Self::from('\0'..=range.end)
+impl<C> From<String> for Pat<String, C> {
+    fn from(s: String) -> Self {
+        Pat::String(s)
     }
 }
 
-impl<'a> From<Range<char>> for Pat<&'a str, char> {
-    fn from(range: Range<char>) -> Self {
-        Self::from(range.start..=char::try_from(range.end as u32 - 1).unwrap())
+// HACK(eddyb) this should be generic over `RangeBounds<char>`,
+// but that errors with: "upstream crates may add new impl of trait
+// `std::ops::RangeBounds<char>` for type `&str` in future versions"
+impl<'a, S> From<(Bound<&'a char>, Bound<&'a char>)> for Pat<S, char> {
+    fn from(range: (Bound<&char>, Bound<&char>)) -> Self {
+        let start = match range.start_bound() {
+            Bound::Included(&c) => c,
+            Bound::Excluded(&c) => char::try_from(c as u32 + 1).unwrap(),
+            Bound::Unbounded => '\0',
+        };
+        let end = match range.end_bound() {
+            Bound::Included(&c) => c,
+            Bound::Excluded(&c) => char::try_from(c as u32 - 1).unwrap(),
+            Bound::Unbounded => char::MAX,
+        };
+        Pat::Range(start, end)
     }
 }
 
-impl<'a> From<RangeFrom<char>> for Pat<&'a str, char> {
-    fn from(range: RangeFrom<char>) -> Self {
-        Self::from(range.start..=char::MAX)
+macro_rules! range_impls {
+    ($($ty:ty),*) => {
+        $(impl<S> From<$ty> for Pat<S, char> {
+            fn from(range: $ty) -> Self {
+                Self::from((range.start_bound(), range.end_bound()))
+            }
+        })*
     }
 }
-
-impl<'a> From<RangeTo<char>> for Pat<&'a str, char> {
-    fn from(range: RangeTo<char>) -> Self {
-        Self::from('\0'..range.end)
-    }
+range_impls! {
+    (Bound<char>, Bound<char>),
+    ops::RangeTo<char>,
+    ops::Range<char>,
+    ops::RangeInclusive<char>,
+    ops::RangeFull,
+    ops::RangeFrom<char>,
+    ops::RangeToInclusive<char>
 }
 
-impl<'a> From<RangeFull> for Pat<&'a str, char> {
-    fn from(_: RangeFull) -> Self {
-        Self::from('\0'..)
-    }
-}
-
-impl<S: MatchesEmpty, C: MatchesEmpty> MatchesEmpty for Pat<S, C> {
+impl<S: AsRef<str>> MatchesEmpty for Pat<S, char> {
     fn matches_empty(&self) -> MaybeKnown<bool> {
-        match self {
-            Pat::String(s) => s.matches_empty(),
-            Pat::Range(start, end) => start.matches_empty() | end.matches_empty(),
-        }
-    }
-}
-
-impl<'a> MatchesEmpty for &'a str {
-    fn matches_empty(&self) -> MaybeKnown<bool> {
-        MaybeKnown::Known(self.is_empty())
-    }
-}
-
-impl MatchesEmpty for char {
-    fn matches_empty(&self) -> MaybeKnown<bool> {
-        MaybeKnown::Known(false)
+        MaybeKnown::Known(match self {
+            Pat::String(s) => s.as_ref().is_empty(),
+            Pat::Range(..) => false,
+        })
     }
 }
