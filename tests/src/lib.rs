@@ -20,7 +20,7 @@ macro_rules! testcase {
                 );
                 parser
                     .gss
-                    .print(
+                    .dump_graphviz(
                         &mut File::create(concat!(
                             env!("CARGO_MANIFEST_DIR"),
                             "/../target/",
@@ -30,7 +30,7 @@ macro_rules! testcase {
                     ).unwrap();
                 parser
                     .sppf
-                    .print(
+                    .dump_graphviz(
                         &mut File::create(concat!(
                             env!("CARGO_MANIFEST_DIR"),
                             "/../target/",

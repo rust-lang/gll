@@ -347,7 +347,7 @@ pub struct GraphStack<'i, C: CodeLabel> {
 }
 
 impl<'i, C: CodeLabel> GraphStack<'i, C> {
-    pub fn print(&self, out: &mut Write) -> io::Result<()> {
+    pub fn dump_graphviz(&self, out: &mut Write) -> io::Result<()> {
         writeln!(out, "digraph gss {{")?;
         writeln!(out, "    graph [rankdir=RL]")?;
         for (call, returns) in &self.returns {
@@ -450,7 +450,7 @@ impl<'i, P: ParseNodeKind> ParseForest<'i, P> {
         }
     }
 
-    pub fn print(&self, out: &mut Write) -> io::Result<()> {
+    pub fn dump_graphviz(&self, out: &mut Write) -> io::Result<()> {
         writeln!(out, "digraph sppf {{")?;
         let mut queue: VecDeque<_> = self.possibilities.keys().cloned().collect();
         let mut seen: BTreeSet<_> = queue.iter().cloned().collect();
