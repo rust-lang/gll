@@ -8,6 +8,8 @@ use std::fs;
 use std::path::PathBuf;
 
 fn main() {
+    println!("cargo:rerun-if-changed=build.rs");
+
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
 
     type Grammar = gll::grammar::Grammar<gll::scannerless::Pat<&'static str, char>>;
