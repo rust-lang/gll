@@ -245,7 +245,17 @@ impl<G: Generator<Return = ()>> Iterator for GenIter<G> {
     }
 }
 
-pub type Parser<'i, 's> = gll::runtime::Parser<'i, _P, _C, &'s gll::runtime::Str>;
+pub type ParseInput<'s> = &'s gll::runtime::Str;
+pub type Parser<'i, 's> = gll::runtime::Parser<'i, _P, _C, ParseInput<'s>>;
+
+#[derive(Debug)]
+pub enum ParseError<T> {
+    TooShort(T),
+    NoParse,
+}
+
+pub type ParseResult<'a, 'i, 's, T> =
+    Result<Handle<'a, 'i, 's, T>, ParseError<Handle<'a, 'i, 's, T>>>;
 
 pub type Any = dyn any::Any;
 
@@ -477,14 +487,19 @@ pub struct ", name, "<'a, 'i: 'a, 's: 'a> {");
             put!("
 
 impl<'a, 'i, 's> ", name, "<'a, 'i, 's> {
-    pub fn parse(p: &'a mut Parser<'i, 's>, range: Range<'i>) -> Result<Handle<'a, 'i, 's, Self>, ()> {
-        let call = Call {
-            callee: ", CodeLabel(name.clone()), ",
-            range,
-        };
-        let mut result = p.memoizer.longest_result(call);
-        if result.is_none() {
-            p.threads.spawn(
+    pub fn parse_with<R>(
+        input: impl Into<ParseInput<'s>>,
+        f: impl for<'b, 'i2> FnOnce(
+            &'b Parser<'i2, 's>,
+            ParseResult<'b, 'i2, 's, ", name, "<'b, 'i2, 's>>,
+        ) -> R,
+    ) -> R {
+        Parser::with(input, |mut parser, range| {
+            let call = Call {
+                callee: ", CodeLabel(name.clone()), ",
+                range,
+            };
+            parser.threads.spawn(
                 Continuation {
                     code: call.callee,
                     fn_input: call.range,
@@ -492,17 +507,21 @@ impl<'a, 'i, 's> ", name, "<'a, 'i, 's> {
                 },
                 call.range,
             );
-            parse(p);
-            result = p.memoizer.longest_result(call);
-        }
-        if let Some(range) = result {
-            return Ok(Handle {
-                node: ParseNode { kind: ", ParseNodeKind(name.clone()), ", range },
-                parser: p,
-                _marker: PhantomData,
-            });
-        }
-        Err(())
+            parse(&mut parser);
+            let result = parser.memoizer.longest_result(call);
+            f(&parser, result.ok_or(ParseError::NoParse).and_then(|range| {
+                let handle = Handle {
+                    node: ParseNode { kind: ", ParseNodeKind(name.clone()), ", range },
+                    parser: &parser,
+                    _marker: PhantomData,
+                };
+                if range == call.range {
+                    Ok(handle)
+                } else {
+                    Err(ParseError::TooShort(handle))
+                }
+            }))
+        })
     }
 }
 
@@ -510,8 +529,7 @@ impl<'a, 'i, 's> fmt::Debug for ", name, "<'a, 'i, 's> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {");
             if let Some(variants) = &variants {
                 put!("
-        match self {
-        ");
+        match self {");
                 for (rule, variant, fields) in variants {
                     if fields.is_empty() {
                         put!("
@@ -541,7 +559,7 @@ impl<'a, 'i, 's> fmt::Debug for ", name, "<'a, 'i, 's> {
                     }
                 }
                 put!("
-            }");
+        }");
             } else {
                 put!("
         let mut d = f.debug_struct(\"", name, "\");");
