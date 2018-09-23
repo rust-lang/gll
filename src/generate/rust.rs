@@ -224,9 +224,8 @@ impl<Pat: Ord + Hash + MatchesEmpty + ToRustSrc> Grammar<Pat> {
         let mut named_parse_nodes = vec![];
         let mut code_labels = OrderMap::new();
 
-        put!("extern crate gll;
-
-use self::gll::runtime::{Call, Continuation, ParseNodeKind, CodeLabel, ParseNodeShape, ParseNode, Range, traverse};
+        put!("
+use gll::runtime::{Call, Continuation, ParseNodeKind, CodeLabel, ParseNodeShape, ParseNode, Range, traverse};
 use std::any;
 use std::fmt;
 use std::marker::PhantomData;
@@ -245,8 +244,8 @@ impl<G: Generator<Return = ()>> Iterator for GenIter<G> {
     }
 }
 
-pub type ParseInput<'s> = &'s gll::runtime::Str;
-pub type Parser<'i, 's> = gll::runtime::Parser<'i, _P, _C, ParseInput<'s>>;
+pub type ParseInput<'s> = &'s ::gll::runtime::Str;
+pub type Parser<'i, 's> = ::gll::runtime::Parser<'i, _P, _C, ParseInput<'s>>;
 
 #[derive(Debug)]
 pub enum ParseError<T> {

@@ -1,5 +1,7 @@
 #![feature(decl_macro, generators, generator_trait)]
 
+extern crate gll;
+
 use std::fs::File;
 
 macro_rules! testcase {
