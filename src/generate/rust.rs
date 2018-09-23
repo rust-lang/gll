@@ -326,8 +326,12 @@ impl<'a, 'i, 's, T> fmt::Debug for Handle<'a, 'i, 's, [T]>
                     impl<T: fmt::Debug, L: fmt::Debug> fmt::Debug for Elem<T, L> {
                         fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
                             match self {
-                                Elem::One(x) => write!(f, \"{:?}\", x),
-                                Elem::Spread(xs) => write!(f, \"..({:?})\", xs),
+                                Elem::One(x) => fmt::Debug::fmt(x, f),
+                                Elem::Spread(xs) => {
+                                    write!(f, \"..(\")?;
+                                    fmt::Debug::fmt(xs, f)?;
+                                    write!(f, \")\")
+                                }
                             }
                         }
                     }
