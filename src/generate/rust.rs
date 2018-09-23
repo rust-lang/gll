@@ -245,7 +245,7 @@ impl<G: Generator<Return = ()>> Iterator for GenIter<G> {
     }
 }
 
-pub type Parser<'a, 'i> = gll::runtime::Parser<'i, _P, _C, &'a gll::runtime::Str>;
+pub type Parser<'i, 's> = gll::runtime::Parser<'i, _P, _C, &'s gll::runtime::Str>;
 
 pub type Any = dyn any::Any;
 
@@ -254,7 +254,7 @@ pub struct Ambiguity<T>(T);
 
 pub struct Handle<'a, 'i: 'a, 's: 'a, T: ?Sized> {
     pub node: ParseNode<'i, _P>,
-    pub parser: &'a Parser<'s, 'i>,
+    pub parser: &'a Parser<'i, 's>,
     _marker: PhantomData<T>,
 }
 
@@ -477,7 +477,7 @@ pub struct ", name, "<'a, 'i: 'a, 's: 'a> {");
             put!("
 
 impl<'a, 'i, 's> ", name, "<'a, 'i, 's> {
-    pub fn parse(p: &'a mut Parser<'s, 'i>, range: Range<'i>) -> Result<Handle<'a, 'i, 's, Self>, ()> {
+    pub fn parse(p: &'a mut Parser<'i, 's>, range: Range<'i>) -> Result<Handle<'a, 'i, 's, Self>, ()> {
         let call = Call {
             callee: ", CodeLabel(name.clone()), ",
             range,
@@ -598,7 +598,7 @@ impl<'a, 'i, 's> ", name, "<'a, 'i, 's> {");
                     put!("
     #[allow(non_snake_case)]
     fn ", variant, "_from_sppf(
-        parser: &'a Parser<'s, 'i>,
+        parser: &'a Parser<'i, 's>,
         _node: ParseNode<'i, _P>,
         _r: traverse!(typeof(ParseNode<'i, _P>) ", rule.generate_traverse_shape(false, &parse_nodes), "),
     ) -> Self {");
@@ -649,7 +649,7 @@ impl<'a, 'i, 's> ", name, "<'a, 'i, 's> {");
             } else {
                 put!("
     fn from_sppf(
-        parser: &'a Parser<'s, 'i>,
+        parser: &'a Parser<'i, 's>,
         _node: ParseNode<'i, _P>,
         _r: traverse!(typeof(ParseNode<'i, _P>) ", rule.rule.generate_traverse_shape(false, &parse_nodes), "),
     ) -> Self {
