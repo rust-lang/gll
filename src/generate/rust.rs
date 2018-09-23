@@ -275,6 +275,15 @@ impl<'a, 'i, 's, T: ?Sized> Clone for Handle<'a, 'i, 's, T> {
     }
 }
 
+impl<'a, 'i, 's, T: ?Sized> Handle<'a, 'i, 's, T> {
+    pub fn source(self) -> &'a <ParseInput<'s> as ::gll::runtime::InputSlice>::Slice {
+        self.parser.input(self.node.range)
+    }
+    pub fn source_line_column(self) -> ::gll::runtime::LineColumnRange {
+        self.parser.input_line_column(self.node.range)
+    }
+}
+
 impl<'a, 'i, 's, T> From<Ambiguity<Handle<'a, 'i, 's, T>>> for Ambiguity<Handle<'a, 'i, 's, Any>> {
     fn from(x: Ambiguity<Handle<'a, 'i, 's, T>>) -> Self {
         Ambiguity(Handle {
@@ -297,7 +306,7 @@ impl<'a, 'i, 's, T> From<Ambiguity<Handle<'a, 'i, 's, [T]>>> for Ambiguity<Handl
 
 impl<'a, 'i, 's> fmt::Debug for Handle<'a, 'i, 's, ()> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, \"{:?}\", self.parser.input_line_column(self.node.range))
+        write!(f, \"{:?}\", self.source_line_column())
     }
 }
 
@@ -311,7 +320,7 @@ impl<'a, 'i, 's, T> fmt::Debug for Handle<'a, 'i, 's, [T]>
     where Handle<'a, 'i, 's, T>: fmt::Debug,
 {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, \"{:?} => \", self.parser.input_line_column(self.node.range))?;
+        write!(f, \"{:?} => \", self.source_line_column())?;
         match self.all_list_heads() {
             ListHead::Cons(cons) => {
                 for (i, (elem, rest)) in cons.enumerate() {
@@ -578,7 +587,7 @@ impl<'a, 'i, 's> fmt::Debug for ", name, "<'a, 'i, 's> {
 
 impl<'a, 'i, 's> fmt::Debug for Handle<'a, 'i, 's, ", name, "<'a, 'i, 's>> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, \"{:?}\", self.parser.input_line_column(self.node.range))
+        write!(f, \"{:?}\", self.source_line_column())
     }
 }");
                 continue;
@@ -587,7 +596,7 @@ impl<'a, 'i, 's> fmt::Debug for Handle<'a, 'i, 's, ", name, "<'a, 'i, 's>> {
 
 impl<'a, 'i, 's> fmt::Debug for Handle<'a, 'i, 's, ", name, "<'a, 'i, 's>> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, \"{:?} => \", self.parser.input_line_column(self.node.range))?;
+        write!(f, \"{:?} => \", self.source_line_column())?;
         for (i, x) in self.all().enumerate() {
             if i > 0 {
                 write!(f, \" | \")?;
