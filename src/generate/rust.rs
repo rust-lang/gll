@@ -298,12 +298,7 @@ impl<'a, 'i, 's, T> From<Ambiguity<Handle<'a, 'i, 's, [T]>>> for Ambiguity<Handl
 
 impl<'a, 'i, 's> fmt::Debug for Handle<'a, 'i, 's, ()> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(
-            f,
-            \"{}..{}\",
-            self.node.range.start(),
-            self.node.range.end()
-        )
+        write!(f, \"{:?}\", self.parser.input_line_column(self.node.range))
     }
 }
 
@@ -317,12 +312,7 @@ impl<'a, 'i, 's, T> fmt::Debug for Handle<'a, 'i, 's, [T]>
     where Handle<'a, 'i, 's, T>: fmt::Debug,
 {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(
-            f,
-            \"{}..{} => \",
-            self.node.range.start(),
-            self.node.range.end()
-        )?;
+        write!(f, \"{:?} => \", self.parser.input_line_column(self.node.range))?;
         match self.all_list_heads() {
             ListHead::Cons(cons) => {
                 for (i, (elem, rest)) in cons.enumerate() {
@@ -585,7 +575,7 @@ impl<'a, 'i, 's> fmt::Debug for ", name, "<'a, 'i, 's> {
 
 impl<'a, 'i, 's> fmt::Debug for Handle<'a, 'i, 's, ", name, "<'a, 'i, 's>> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, \"{}..{}\", self.node.range.start(), self.node.range.end())
+        write!(f, \"{:?}\", self.parser.input_line_column(self.node.range))
     }
 }");
                 continue;
@@ -594,12 +584,7 @@ impl<'a, 'i, 's> fmt::Debug for Handle<'a, 'i, 's, ", name, "<'a, 'i, 's>> {
 
 impl<'a, 'i, 's> fmt::Debug for Handle<'a, 'i, 's, ", name, "<'a, 'i, 's>> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(
-            f,
-            \"{}..{} => \",
-            self.node.range.start(),
-            self.node.range.end()
-        )?;
+        write!(f, \"{:?} => \", self.parser.input_line_column(self.node.range))?;
         for (i, x) in self.all().enumerate() {
             if i > 0 {
                 write!(f, \" | \")?;

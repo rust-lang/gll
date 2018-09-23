@@ -45,6 +45,41 @@ impl<'i> Range<'i> {
     }
 }
 
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct LineColumn {
+    pub line: usize,
+    pub column: usize,
+}
+
+impl fmt::Debug for LineColumn {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}:{}", 1 + self.line, 1 + self.column)
+    }
+}
+
+impl LineColumn {
+    fn count(prefix: &str) -> Self {
+        let (line, column) = prefix
+            .split("\n")
+            .enumerate()
+            .last()
+            .map_or((0, 0), |(i, s)| (i, s.chars().count()));
+        LineColumn { line, column }
+    }
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct LineColumnRange {
+    pub start: LineColumn,
+    pub end: LineColumn,
+}
+
+impl fmt::Debug for LineColumnRange {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{:?}-{:?}", self.start, self.end)
+    }
+}
+
 pub struct Str(str);
 
 impl<'a> From<&'a str> for &'a Str {
@@ -265,6 +300,21 @@ impl<'i, P: ParseNodeKind, C: CodeLabel, I: Trustworthy> Parser<'i, P, C, I> {
                 }
             }
         }
+    }
+}
+
+impl<'i, 's, P: ParseNodeKind, C: CodeLabel> Parser<'i, P, C, &'s Str> {
+    pub fn input_line_column(&self, range: Range<'i>) -> LineColumnRange {
+        let prefix_range = Range(self.input.range().split_at(range.start()).0);
+        let start = LineColumn::count(self.input(prefix_range));
+        // HACK(eddyb) add up `LineColumn`s to avoid counting twice.
+        // Ideally we'd cache around a line map, like rustc's `SourceMap`.
+        let mut end = LineColumn::count(self.input(range));
+        end.line += start.line;
+        if end.line == start.line {
+            end.column += start.column;
+        }
+        LineColumnRange { start, end }
     }
 }
 
