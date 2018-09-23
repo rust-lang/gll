@@ -1,6 +1,7 @@
-use grammar::{Grammar, MatchesEmpty, Pat, Rule, RuleWithNamedFields};
+use grammar::{Grammar, MatchesEmpty, Rule, RuleWithNamedFields};
 use ordermap::{OrderMap, OrderSet};
 use runtime::ParseNodeShape;
+use scannerless;
 use std::cell::RefCell;
 use std::fmt;
 use std::fmt::Write as FmtWrite;
@@ -15,11 +16,11 @@ pub trait ToRustSrc {
     fn to_rust_src(&self) -> String;
 }
 
-impl<S: fmt::Debug, C: fmt::Debug> ToRustSrc for Pat<S, C> {
+impl<S: fmt::Debug, C: fmt::Debug> ToRustSrc for scannerless::Pat<S, C> {
     fn to_rust_src(&self) -> String {
         match self {
-            Pat::String(s) => format!("{:?}", s),
-            Pat::Range(start, end) => format!("{:?}", start..=end),
+            scannerless::Pat::String(s) => format!("{:?}", s),
+            scannerless::Pat::Range(start, end) => format!("{:?}", start..=end),
         }
     }
 }
@@ -77,7 +78,7 @@ impl<Pat: Ord + Hash + MatchesEmpty + ToRustSrc> Rule<Pat> {
     }
     fn field_type(&self, path: &[usize]) -> String {
         match self {
-            Rule::Empty | Rule::Match(_) | Rule::NotMatch(_) => {
+            Rule::Empty | Rule::Eat(_) | Rule::NegativeLookahead(_) => {
                 assert_eq!(path, []);
                 "()".to_string()
             }
@@ -107,8 +108,8 @@ impl<Pat: Ord + Hash + MatchesEmpty + ToRustSrc> Rule<Pat> {
         }
         let kind = match &**self {
             Rule::Empty => ParseNodeKind("()".to_string()),
-            Rule::Match(pat) => ParseNodeKind(pat.to_rust_src()),
-            Rule::NotMatch(pat) => ParseNodeKind(format!("!{}", pat.to_rust_src())),
+            Rule::Eat(pat) => ParseNodeKind(pat.to_rust_src()),
+            Rule::NegativeLookahead(pat) => ParseNodeKind(format!("!{}", pat.to_rust_src())),
             Rule::Call(r) => return ParseNodeKind(r.clone()),
             Rule::Concat([left, right]) => ParseNodeKind(format!(
                 "({} {})",
@@ -166,7 +167,7 @@ impl<Pat: Ord + Hash + MatchesEmpty + ToRustSrc> Rule<Pat> {
             return;
         }
         let shape = match &**self {
-            Rule::Empty | Rule::Match(_) | Rule::NotMatch(_) => ParseNodeShape::Opaque,
+            Rule::Empty | Rule::Eat(_) | Rule::NegativeLookahead(_) => ParseNodeShape::Opaque,
             Rule::Call(_) => unreachable!(),
             Rule::Concat([left, right]) => ParseNodeShape::Binary(
                 left.parse_node_kind(parse_nodes),
@@ -807,7 +808,7 @@ fn parse(p: &mut Parser) {
             .chain(parse_nodes.into_inner().into_iter().map(|(r, (k, s))| {
                 (k, s.unwrap(), match &*r {
                     Rule::RepeatMany(rule, _) | Rule::RepeatMore(rule, _) => match &**rule {
-                        Rule::Match(_) => Some("()".to_string()),
+                        Rule::Eat(_) => Some("()".to_string()),
                         Rule::Call(r) => Some(r.clone()),
                         _ => None,
                     },
@@ -1272,10 +1273,10 @@ impl<Pat: Ord + Hash + MatchesEmpty + ToRustSrc> Rule<Pat> {
     ) -> Thunk<impl FnOnce(Continuation) -> Continuation + 'a> {
         Thunk::new(move |cont| match (&**self, parse_nodes) {
             (Rule::Empty, _) => cont,
-            (Rule::Match(pat), _) => {
+            (Rule::Eat(pat), _) => {
                 check(&format!("let Some(_range) = p.input_consume_left(_range, {})", pat.to_rust_src()))(cont)
             }
-            (Rule::NotMatch(pat), _) => {
+            (Rule::NegativeLookahead(pat), _) => {
                 check(&format!("p.input_consume_left(_range, {}).is_none()", pat.to_rust_src()))(cont)
             }
             (Rule::Call(r), _) => call(CodeLabel(r.clone()))(cont),
@@ -1368,8 +1369,8 @@ impl<Pat: Ord + Hash + MatchesEmpty + ToRustSrc> Rule<Pat> {
     ) -> String {
         match self {
             Rule::Empty
-            | Rule::Match(_)
-            | Rule::NotMatch(_)
+            | Rule::Eat(_)
+            | Rule::NegativeLookahead(_)
             | Rule::Call(_)
             | Rule::RepeatMany(..)
             | Rule::RepeatMore(..) => {
