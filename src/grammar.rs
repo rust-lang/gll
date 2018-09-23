@@ -1,12 +1,9 @@
 use ordermap::{orderset, OrderMap, OrderSet};
-use std::char;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
-use std::convert::TryFrom;
 use std::hash::Hash;
-use std::ops::{
-    BitAnd, BitOr, Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive,
-};
+use std::iter;
+use std::ops::{Add, BitAnd, BitOr};
 use std::rc::Rc;
 
 pub struct Grammar<Pat> {
@@ -19,7 +16,7 @@ impl<Pat> Grammar<Pat> {
             rules: OrderMap::new(),
         }
     }
-    pub fn add_rule(&mut self, name: &str, rule: RuleWithNamedFields<Pat>) {
+    pub fn define(&mut self, name: &str, rule: RuleWithNamedFields<Pat>) {
         self.rules.insert(name.to_string(), rule);
     }
 }
@@ -29,99 +26,41 @@ pub struct RuleWithNamedFields<Pat> {
     pub(crate) fields: OrderMap<String, OrderSet<Vec<usize>>>,
 }
 
-impl<Pat: PartialEq> RuleWithNamedFields<Pat> {
-    pub fn empty() -> Self {
-        RuleWithNamedFields {
-            rule: Rc::new(Rule::Empty),
-            fields: OrderMap::new(),
-        }
+pub fn empty<Pat>() -> RuleWithNamedFields<Pat> {
+    RuleWithNamedFields {
+        rule: Rc::new(Rule::Empty),
+        fields: OrderMap::new(),
     }
-    pub fn match_(pat: Pat) -> Self {
-        RuleWithNamedFields {
-            rule: Rc::new(Rule::Match(pat)),
-            fields: OrderMap::new(),
-        }
+}
+pub fn eat<Pat>(pat: impl Into<Pat>) -> RuleWithNamedFields<Pat> {
+    RuleWithNamedFields {
+        rule: Rc::new(Rule::Eat(pat.into())),
+        fields: OrderMap::new(),
     }
-    pub fn not_match(pat: Pat) -> Self {
-        RuleWithNamedFields {
-            rule: Rc::new(Rule::NotMatch(pat)),
-            fields: OrderMap::new(),
-        }
+}
+pub fn negative_lookahead<Pat>(pat: impl Into<Pat>) -> RuleWithNamedFields<Pat> {
+    RuleWithNamedFields {
+        rule: Rc::new(Rule::NegativeLookahead(pat.into())),
+        fields: OrderMap::new(),
     }
-    pub fn call(call: String) -> Self {
-        RuleWithNamedFields {
-            rule: Rc::new(Rule::Call(call)),
-            fields: OrderMap::new(),
-        }
+}
+pub fn call<Pat>(name: &str) -> RuleWithNamedFields<Pat> {
+    RuleWithNamedFields {
+        rule: Rc::new(Rule::Call(name.to_string())),
+        fields: OrderMap::new(),
     }
-    pub fn or(rules: Vec<Self>) -> Self {
-        let mut fields = OrderMap::new();
-        let rules = rules
-            .into_iter()
-            .enumerate()
-            .map(|(i, rule)| {
-                for (name, paths) in rule.fields {
-                    fields
-                        .entry(name)
-                        .or_insert_with(OrderSet::new)
-                        .extend(paths.into_iter().map(|mut path| {
-                            path.insert(0, i);
-                            path
-                        }));
-                }
+}
 
-                rule.rule
-            }).collect();
-        RuleWithNamedFields {
-            rule: Rc::new(Rule::Or(rules)),
-            fields,
-        }
-    }
-    pub fn with_field_name(mut self, name: &str) -> Self {
+impl<Pat> RuleWithNamedFields<Pat> {
+    pub fn field(mut self, name: &str) -> Self {
         match &*self.rule {
             Rule::RepeatMany(rule, _) | Rule::RepeatMore(rule, _) => match **rule {
-                Rule::Match(_) | Rule::Call(_) => {}
+                Rule::Eat(_) | Rule::Call(_) => {}
                 _ => unimplemented!(),
             },
             _ => {}
         }
         self.fields.insert(name.to_string(), orderset![vec![]]);
-        self
-    }
-    pub fn then(mut self, other: Self) -> Self {
-        if *self.rule == Rule::Empty && self.fields.is_empty() {
-            return other;
-        }
-        if *other.rule == Rule::Empty && other.fields.is_empty() {
-            return self;
-        }
-        self.fields = self
-            .fields
-            .into_iter()
-            .map(|(name, paths)| {
-                (
-                    name,
-                    paths
-                        .into_iter()
-                        .map(|mut path| {
-                            path.insert(0, 0);
-                            path
-                        }).collect(),
-                )
-            }).collect();
-        for (name, paths) in other.fields {
-            assert!(!self.fields.contains_key(&name), "duplicate field {}", name);
-            self.fields.insert(
-                name,
-                paths
-                    .into_iter()
-                    .map(|mut path| {
-                        path.insert(0, 1);
-                        path
-                    }).collect(),
-            );
-        }
-        self.rule = Rc::new(Rule::Concat([self.rule, other.rule]));
         self
     }
     pub fn opt(mut self) -> Self {
@@ -186,11 +125,85 @@ impl<Pat: PartialEq> RuleWithNamedFields<Pat> {
     }
 }
 
+impl<Pat> Add for RuleWithNamedFields<Pat> {
+    type Output = Self;
+
+    fn add(mut self, other: Self) -> Self {
+        match (&*self.rule, &*other.rule) {
+            (Rule::Empty, _) if self.fields.is_empty() => return other,
+            (_, Rule::Empty) if other.fields.is_empty() => return self,
+            _ => {}
+        }
+
+        self.fields = self
+            .fields
+            .into_iter()
+            .map(|(name, paths)| {
+                (
+                    name,
+                    paths
+                        .into_iter()
+                        .map(|mut path| {
+                            path.insert(0, 0);
+                            path
+                        }).collect(),
+                )
+            }).collect();
+        for (name, paths) in other.fields {
+            assert!(!self.fields.contains_key(&name), "duplicate field {}", name);
+            self.fields.insert(
+                name,
+                paths
+                    .into_iter()
+                    .map(|mut path| {
+                        path.insert(0, 1);
+                        path
+                    }).collect(),
+            );
+        }
+        self.rule = Rc::new(Rule::Concat([self.rule, other.rule]));
+        self
+    }
+}
+
+impl<Pat> BitOr for RuleWithNamedFields<Pat> {
+    type Output = Self;
+
+    fn bitor(self, other: Self) -> Self {
+        let (old_rules, this, mut fields) = match &*self.rule {
+            Rule::Or(rules) => (&rules[..], None, self.fields),
+            _ => (&[][..], Some(self), OrderMap::new()),
+        };
+        let new_rules =
+            this.into_iter()
+                .chain(iter::once(other))
+                .enumerate()
+                .map(|(i, rule)| {
+                    for (name, paths) in rule.fields {
+                        fields.entry(name).or_insert_with(OrderSet::new).extend(
+                            paths.into_iter().map(|mut path| {
+                                path.insert(0, old_rules.len() + i);
+                                path
+                            }),
+                        );
+                    }
+
+                    rule.rule
+                });
+        let rules = old_rules.iter().cloned().chain(new_rules).collect();
+
+        RuleWithNamedFields {
+            rule: Rc::new(Rule::Or(rules)),
+            fields,
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Rule<Pat> {
     Empty,
-    Match(Pat),
-    NotMatch(Pat),
+    Eat(Pat),
+    NegativeLookahead(Pat),
     Call(String),
 
     Concat([Rc<Rule<Pat>>; 2]),
@@ -212,8 +225,8 @@ impl<Pat: Ord + Hash + MatchesEmpty> Rule<Pat> {
     pub(crate) fn field_is_refutable(&self, path: &[usize]) -> bool {
         match self {
             Rule::Empty
-            | Rule::Match(_)
-            | Rule::NotMatch(_)
+            | Rule::Eat(_)
+            | Rule::NegativeLookahead(_)
             | Rule::Call(_)
             | Rule::RepeatMany(..)
             | Rule::RepeatMore(..) => false,
@@ -233,10 +246,10 @@ impl<Pat: Ord + Hash + MatchesEmpty> Rule<Pat> {
             }
         }
         let r = match &**self {
-            Rule::Empty | Rule::NotMatch(_) | Rule::Opt(_) | Rule::RepeatMany(..) => {
+            Rule::Empty | Rule::NegativeLookahead(_) | Rule::Opt(_) | Rule::RepeatMany(..) => {
                 MaybeKnown::Known(true)
             }
-            Rule::Match(pat) => pat.matches_empty(),
+            Rule::Eat(pat) => pat.matches_empty(),
             Rule::Call(rule) => grammar.rules[rule].rule.can_be_empty(cache, grammar),
             Rule::Concat([left, right]) => {
                 left.can_be_empty(cache, grammar) & right.can_be_empty(cache, grammar)
@@ -261,7 +274,7 @@ impl<Pat: Ord + Hash + MatchesEmpty> Rule<Pat> {
         grammar: &Grammar<Pat>,
     ) {
         match &**self {
-            Rule::Empty | Rule::Match(_) | Rule::NotMatch(_) | Rule::Call(_) => {}
+            Rule::Empty | Rule::Eat(_) | Rule::NegativeLookahead(_) | Rule::Call(_) => {}
             Rule::Concat([left, right]) => {
                 left.check_non_empty_opt(cache, grammar);
                 right.check_non_empty_opt(cache, grammar);
@@ -287,7 +300,7 @@ impl<Pat: Ord + Hash + MatchesEmpty> Rule<Pat> {
 
     fn check_call_names(self: &Rc<Self>, grammar: &Grammar<Pat>) {
         match &**self {
-            Rule::Empty | Rule::Match(_) | Rule::NotMatch(_) => {}
+            Rule::Empty | Rule::Eat(_) | Rule::NegativeLookahead(_) => {}
             Rule::Call(rule) => {
                 assert!(grammar.rules.contains_key(rule), "no rule named `{}`", rule);
             }
@@ -347,163 +360,94 @@ pub trait MatchesEmpty {
     fn matches_empty(&self) -> MaybeKnown<bool>;
 }
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Pat<S, C> {
-    String(S),
-    Range(C, C),
-}
-
-impl<'a> From<&'a str> for Pat<&'a str, char> {
-    fn from(s: &'a str) -> Self {
-        Pat::String(s)
-    }
-}
-
-impl<'a> From<RangeInclusive<char>> for Pat<&'a str, char> {
-    fn from(range: RangeInclusive<char>) -> Self {
-        Pat::Range(*range.start(), *range.end())
-    }
-}
-
-impl<'a> From<RangeToInclusive<char>> for Pat<&'a str, char> {
-    fn from(range: RangeToInclusive<char>) -> Self {
-        Self::from('\0'..=range.end)
-    }
-}
-
-impl<'a> From<Range<char>> for Pat<&'a str, char> {
-    fn from(range: Range<char>) -> Self {
-        Self::from(range.start..=char::try_from(range.end as u32 - 1).unwrap())
-    }
-}
-
-impl<'a> From<RangeFrom<char>> for Pat<&'a str, char> {
-    fn from(range: RangeFrom<char>) -> Self {
-        Self::from(range.start..=char::MAX)
-    }
-}
-
-impl<'a> From<RangeTo<char>> for Pat<&'a str, char> {
-    fn from(range: RangeTo<char>) -> Self {
-        Self::from('\0'..range.end)
-    }
-}
-
-impl<'a> From<RangeFull> for Pat<&'a str, char> {
-    fn from(_: RangeFull) -> Self {
-        Self::from('\0'..)
-    }
-}
-
-impl<S: MatchesEmpty, C: MatchesEmpty> MatchesEmpty for Pat<S, C> {
-    fn matches_empty(&self) -> MaybeKnown<bool> {
-        match self {
-            Pat::String(s) => s.matches_empty(),
-            Pat::Range(start, end) => start.matches_empty() | end.matches_empty(),
-        }
-    }
-}
-
-impl<'a> MatchesEmpty for &'a str {
-    fn matches_empty(&self) -> MaybeKnown<bool> {
-        MaybeKnown::Known(self.is_empty())
-    }
-}
-
-impl MatchesEmpty for char {
-    fn matches_empty(&self) -> MaybeKnown<bool> {
-        MaybeKnown::Known(false)
-    }
-}
-
 pub macro grammar {
     (@rule_tok { $($rule:tt)* }) => {
         grammar!(@rule [$($rule)*] () [])
     },
     (@rule_tok $rule:ident) => {
-        RuleWithNamedFields::call(stringify!($rule).to_string())
+        call(stringify!($rule))
     },
     (@rule_tok $pat:expr) => {
-        RuleWithNamedFields::match_(Pat::from($pat))
+        eat($pat)
     },
     (@rule [] ($current:expr) []) => { $current },
     (@rule [] ($current:expr) [$($rules:expr)+]) => {
-        RuleWithNamedFields::or(vec![$($rules,)+ $current])
+        $($rules |)+ $current
     },
     (@rule [$($input:tt)*] () [$($rules:expr)*]) => {
-        grammar!(@rule [$($input)*] (RuleWithNamedFields::empty()) [$($rules)*])
+        grammar!(@rule [$($input)*] (empty()) [$($rules)*])
     },
     (@rule [| $($input:tt)*] ($current:expr) [$($rules:expr)*]) => {
         grammar!(@rule [$($input)*] () [$($rules)* $current])
     },
     (@rule [! $input0:tt $($input:tt)*] ($current:expr) [$($rules:expr)*]) => {
-        grammar!(@rule [$($input)*] ($current.then(
-            RuleWithNamedFields::not_match(Pat::from($input0))
-        )) [$($rules)*])
+        grammar!(@rule [$($input)*] ($current +
+            negative_lookahead($input0)
+        ) [$($rules)*])
     },
     (@rule [$name:ident : $input0:tt ? $($input:tt)*] ($current:expr) [$($rules:expr)*]) => {
-        grammar!(@rule [$($input)*] ($current.then(
-            grammar!(@rule_tok $input0).with_field_name(stringify!($name)).opt()
-        )) [$($rules)*])
+        grammar!(@rule [$($input)*] ($current +
+            grammar!(@rule_tok $input0).field(stringify!($name)).opt()
+        ) [$($rules)*])
     },
     (@rule [$input0:tt ? $($input:tt)*] ($current:expr) [$($rules:expr)*]) => {
-        grammar!(@rule [$($input)*] ($current.then(
+        grammar!(@rule [$($input)*] ($current +
             grammar!(@rule_tok $input0).opt()
-        )) [$($rules)*])
+        ) [$($rules)*])
     },
     (@rule [$name:ident : $input0:tt * % $input1:tt $($input:tt)*] ($current:expr) [$($rules:expr)*]) => {
-        grammar!(@rule [$($input)*] ($current.then(
-            grammar!(@rule_tok $input0).repeat_many(Some(grammar!(@rule_tok $input1))).with_field_name(stringify!($name))
-        )) [$($rules)*])
+        grammar!(@rule [$($input)*] ($current +
+            grammar!(@rule_tok $input0).repeat_many(Some(grammar!(@rule_tok $input1))).field(stringify!($name))
+        ) [$($rules)*])
     },
     (@rule [$input0:tt * % $input1:tt $($input:tt)*] ($current:expr) [$($rules:expr)*]) => {
-        grammar!(@rule [$($input)*] ($current.then(
+        grammar!(@rule [$($input)*] ($current +
             grammar!(@rule_tok $input0).repeat_many(Some(grammar!(@rule_tok $input1)))
-        )) [$($rules)*])
+        ) [$($rules)*])
     },
     (@rule [$name:ident : $input0:tt * $($input:tt)*] ($current:expr) [$($rules:expr)*]) => {
-        grammar!(@rule [$($input)*] ($current.then(
-            grammar!(@rule_tok $input0).repeat_many(None).with_field_name(stringify!($name))
-        )) [$($rules)*])
+        grammar!(@rule [$($input)*] ($current +
+            grammar!(@rule_tok $input0).repeat_many(None).field(stringify!($name))
+        ) [$($rules)*])
     },
     (@rule [$input0:tt * $($input:tt)*] ($current:expr) [$($rules:expr)*]) => {
-        grammar!(@rule [$($input)*] ($current.then(
+        grammar!(@rule [$($input)*] ($current +
             grammar!(@rule_tok $input0).repeat_many(None)
-        )) [$($rules)*])
+        ) [$($rules)*])
     },
     (@rule [$name:ident : $input0:tt + % $input1:tt $($input:tt)*] ($current:expr) [$($rules:expr)*]) => {
-        grammar!(@rule [$($input)*] ($current.then(
-            grammar!(@rule_tok $input0).repeat_more(Some(grammar!(@rule_tok $input1))).with_field_name(stringify!($name))
-        )) [$($rules)*])
+        grammar!(@rule [$($input)*] ($current +
+            grammar!(@rule_tok $input0).repeat_more(Some(grammar!(@rule_tok $input1))).field(stringify!($name))
+        ) [$($rules)*])
     },
     (@rule [$input0:tt + % $input1:tt $($input:tt)*] ($current:expr) [$($rules:expr)*]) => {
-        grammar!(@rule [$($input)*] ($current.then(
+        grammar!(@rule [$($input)*] ($current +
             grammar!(@rule_tok $input0).repeat_more(Some(grammar!(@rule_tok $input1)))
-        )) [$($rules)*])
+        ) [$($rules)*])
     },
     (@rule [$name:ident : $input0:tt + $($input:tt)*] ($current:expr) [$($rules:expr)*]) => {
-        grammar!(@rule [$($input)*] ($current.then(
-            grammar!(@rule_tok $input0).repeat_more(None).with_field_name(stringify!($name))
-        )) [$($rules)*])
+        grammar!(@rule [$($input)*] ($current +
+            grammar!(@rule_tok $input0).repeat_more(None).field(stringify!($name))
+        ) [$($rules)*])
     },
     (@rule [$input0:tt + $($input:tt)*] ($current:expr) [$($rules:expr)*]) => {
-        grammar!(@rule [$($input)*] ($current.then(
+        grammar!(@rule [$($input)*] ($current +
             grammar!(@rule_tok $input0).repeat_more(None)
-        )) [$($rules)*])
+        ) [$($rules)*])
     },
     (@rule [$name:ident : $input0:tt $($input:tt)*] ($current:expr) [$($rules:expr)*]) => {
-        grammar!(@rule [$($input)*] ($current.then(
-            grammar!(@rule_tok $input0).with_field_name(stringify!($name))
-        )) [$($rules)*])
+        grammar!(@rule [$($input)*] ($current +
+            grammar!(@rule_tok $input0).field(stringify!($name))
+        ) [$($rules)*])
     },
     (@rule [$input0:tt $($input:tt)*] ($current:expr) [$($rules:expr)*]) => {
-        grammar!(@rule [$($input)*] ($current.then(
+        grammar!(@rule [$($input)*] ($current +
             grammar!(@rule_tok $input0)
-        )) [$($rules)*])
+        ) [$($rules)*])
     },
     ($($rule_name:ident = { $($rule:tt)* };)*) => ({
         let mut grammar = Grammar::new();
-        $(grammar.add_rule(stringify!($rule_name), grammar!(@rule_tok { $($rule)* }));)*
+        $(grammar.define(stringify!($rule_name), grammar!(@rule_tok { $($rule)* }));)*
         grammar
     })
 }
