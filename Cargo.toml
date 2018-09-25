@@ -13,6 +13,10 @@ description = "GLL parser generator."
 indexing = "0.3.1"
 ordermap = "0.3.0"
 
+[build-dependencies]
+indexing = "0.3.1"
+ordermap = "0.3.0"
+
 [lib]
 doctest = false
 test = false

@@ -1,7 +1,7 @@
-extern crate indexing;
+pub use grammar::ParseNodeShape;
 
 use indexing::container_traits::{Contiguous, Trustworthy};
-use indexing::{scope, Container};
+use indexing::{self, scope, Container};
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BTreeSet, BinaryHeap, HashMap, VecDeque};
 use std::fmt;
@@ -45,7 +45,7 @@ impl<'i> Range<'i> {
     }
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Copy, Clone, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct LineColumn {
     pub line: usize,
     pub column: usize,
@@ -607,27 +607,6 @@ impl<'i, P: ParseNodeKind> fmt::Debug for ParseNode<'i, P> {
             self.range.start(),
             self.range.end()
         )
-    }
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum ParseNodeShape<P> {
-    Opaque,
-    Alias(P),
-    Choice,
-    Opt(P),
-    Split(P, P),
-}
-
-impl<P: fmt::Display> fmt::Display for ParseNodeShape<P> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            ParseNodeShape::Opaque => write!(f, "Opaque"),
-            ParseNodeShape::Alias(inner) => write!(f, "Alias({})", inner),
-            ParseNodeShape::Choice => write!(f, "Choice"),
-            ParseNodeShape::Opt(inner) => write!(f, "Opt({})", inner),
-            ParseNodeShape::Split(left, right) => write!(f, "Split({}, {})", left, right),
-        }
     }
 }
 

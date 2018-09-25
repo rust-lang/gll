@@ -1,6 +1,6 @@
+use grammar::ParseNodeShape;
 use grammar::{Grammar, MatchesEmpty, Rule, RuleWithNamedFields};
 use ordermap::{OrderMap, OrderSet};
-use runtime::ParseNodeShape;
 use scannerless;
 use std::cell::RefCell;
 use std::fmt;
