@@ -1,18 +1,23 @@
-#![feature(decl_macro, generators, generator_trait)]
+#![feature(
+    decl_macro,
+    generators,
+    generator_trait,
+    proc_macro_gen,
+    proc_macro_non_items
+)]
 
 extern crate gll;
+extern crate gll_macros;
 
 use std::fs::File;
 
-macro_rules! testcase {
-    ($name:ident:: $rule:ident($input:expr) => $expected:expr) => {
-        pub mod $name {
-            include!(concat!(env!("OUT_DIR"), "/", stringify!($name), ".rs"));
-        }
-
-        #[test]
+macro_rules! testcases {
+    ($($name:ident { $($grammar:tt)* }: $rule:ident($input:expr) => $expected:expr),*) => {
+        $(#[test]
         fn $name() {
-            $name::$rule::parse_with($input, |parser, result| {
+           ::gll_macros::scannerless_parser!($($grammar)*);
+
+            $rule::parse_with($input, |parser, result| {
                 let result = format!("{:#?}", result.unwrap());
                 assert!(
                     result == $expected,
@@ -41,11 +46,22 @@ macro_rules! testcase {
                         )).unwrap(),
                     ).unwrap();
             });
-        }
+        })*
     };
 }
 
-testcase!(gll10_g0::S("aad") => "\
+testcases![
+    gll10_g0 {
+        S = X:{ a:A s:S d:"d" } |
+            Y:{ b:B s:S } |
+            Z:{};
+
+        A = A:"a" |
+            C:"c";
+
+        B = A:"a" |
+            B:"b";
+    }: S("aad") => "\
 1:1-1:4 => S::X {
     a: 1:1-1:2 => A::A(
         1:1-1:2
@@ -72,8 +88,15 @@ testcase!(gll10_g0::S("aad") => "\
     b: 1:1-1:2 => B::A(
         1:1-1:2
     )
-}");
-testcase!(gll10_g0_opaque::S("aad") => "\
+}",
+
+    gll10_g0_opaque {
+        S = { a:A s:S "d" } |
+            { b:B s:S } |
+            {};
+        A = "a" | "c";
+        B = "a" | "b";
+    }: S("aad") => "\
 1:1-1:4 => S {
     a: 1:1-1:2,
     s: 1:2-1:3 => S {
@@ -86,8 +109,13 @@ testcase!(gll10_g0_opaque::S("aad") => "\
         s: 1:3-1:3 => S
     },
     b: 1:1-1:2
-}");
-testcase!(gll13_g1::S("adb") => "\
+}",
+
+    gll13_g1 {
+        S = X:{ a:"a" s:S b:"b" } |
+            Y:{ "d" } |
+            Z:{ a:"a" d:"d" b:"b" };
+    }: S("adb") => "\
 1:1-1:4 => S::Z {
     a: 1:1-1:2,
     b: 1:3-1:4,
@@ -98,20 +126,31 @@ testcase!(gll13_g1::S("adb") => "\
         1:2-1:3
     ),
     b: 1:3-1:4
-}");
-testcase!(gll15_g0::A("aac") => "\
+}",
+
+    gll15_g0 {
+        A = X:{ a:"a" x:A b:"b" } |
+            Y:{ a:"a" x:A c:"c" } |
+            Z:{ "a" };
+    }: A("aac") => "\
 1:1-1:4 => A::Y {
     a: 1:1-1:2,
     x: 1:2-1:3 => A::Z(
         1:2-1:3
     ),
     c: 1:3-1:4
-}");
-testcase!(gll15_g0_nested::A("aab") => "\
+}",
+
+    gll15_g0_nested {
+        A = X:{ a:"a" { x:A b:"b" } } |
+            Y:{ a:"a" x:A c:"c" } |
+            Z:{ "a" "" };
+    }: A("aab") => "\
 1:1-1:4 => A::X {
     a: 1:1-1:2,
     x: 1:2-1:3 => A::Z(
         1:2-1:3
     ),
     b: 1:3-1:4
-}");
+}"
+];

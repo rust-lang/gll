@@ -1,5 +1,5 @@
 [package]
-name = "gll-tests"
+name = "gll-macros"
 version = "0.1.0"
 authors = [
     "Ana-Maria <mihalacheana.maria@yahoo.com>",
@@ -7,13 +7,11 @@ authors = [
 ]
 repository = "https://github.com/lykenware/lyken"
 license = "MIT/Apache-2.0"
-description = "Tests for the gll crate."
+description = "Macros used with the gll crate."
 
 [dependencies]
 gll = { path = ".." }
 
-[build-dependencies]
-gll = { path = ".." }
-
 [lib]
 doctest = false
+proc-macro = true
