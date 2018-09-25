@@ -27,7 +27,7 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 
-type Grammar = grammar::Grammar<scannerless::Pat<&'static str, char>>;
+type Grammar = scannerless::Grammar<&'static str>;
 
 // HACK(eddyb) more explicit subset of the grammar, for bootstrapping.
 macro_rules! rule {

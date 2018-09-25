@@ -17,7 +17,7 @@ pub trait RustInputPat {
     fn rust_matcher(&self) -> String;
 }
 
-impl<S: AsRef<str>> RustInputPat for scannerless::Pat<S, char> {
+impl<S: AsRef<str>> RustInputPat for scannerless::Pat<S> {
     fn rust_slice_ty() -> String {
         "str".to_string()
     }
