@@ -10,7 +10,7 @@ impl<Pat: From<SPat>> FromStr for ::grammar::Grammar<Pat> {
     fn from_str(src: &str) -> Result<Self, Self::Err> {
         Grammar::parse_with(src, |_, g| {
             g.map_err(|err| match err {
-                ParseError::TooShort(handle) => handle.source_line_column().end,
+                ParseError::TooShort(handle) => handle.source_info().end,
                 ParseError::NoParse => ::runtime::LineColumn::default(),
             }).map(|g| {
                 let mut grammar = ::grammar::Grammar::new();
@@ -24,7 +24,7 @@ impl<Pat: From<SPat>> FromStr for ::grammar::Grammar<Pat> {
     }
 }
 
-impl<'a, 'i, 's> Or<'a, 'i, 's> {
+impl<'a, 'i, 's> Or<'a, 'i, &'s str> {
     fn lower<Pat: From<SPat>>(self) -> ::grammar::RuleWithNamedFields<Pat> {
         let mut rules = self.rules.map(|rule| rule.unwrap().one().unwrap().lower());
         let first = rules.next().unwrap();
@@ -32,7 +32,7 @@ impl<'a, 'i, 's> Or<'a, 'i, 's> {
     }
 }
 
-impl<'a, 'i, 's> Concat<'a, 'i, 's> {
+impl<'a, 'i, 's> Concat<'a, 'i, &'s str> {
     fn lower<Pat: From<SPat>>(self) -> ::grammar::RuleWithNamedFields<Pat> {
         self.rules
             .map(|rule| rule.unwrap().one().unwrap().lower())
@@ -40,7 +40,7 @@ impl<'a, 'i, 's> Concat<'a, 'i, 's> {
     }
 }
 
-impl<'a, 'i, 's> Rule<'a, 'i, 's> {
+impl<'a, 'i, 's> Rule<'a, 'i, &'s str> {
     fn lower<Pat: From<SPat>>(self) -> ::grammar::RuleWithNamedFields<Pat> {
         let mut rule = self.rule.one().unwrap().lower();
         if let Some(modifier) = self.modifier {
@@ -53,7 +53,7 @@ impl<'a, 'i, 's> Rule<'a, 'i, 's> {
     }
 }
 
-impl<'a, 'i, 's> Primary<'a, 'i, 's> {
+impl<'a, 'i, 's> Primary<'a, 'i, &'s str> {
     fn lower<Pat: From<SPat>>(self) -> ::grammar::RuleWithNamedFields<Pat> {
         match self {
             Primary::Eat(pat) => ::grammar::eat(pat.one().unwrap().lower()),
@@ -68,7 +68,7 @@ impl<'a, 'i, 's> Primary<'a, 'i, 's> {
     }
 }
 
-impl<'a, 'i, 's> Modifier<'a, 'i, 's> {
+impl<'a, 'i, 's> Modifier<'a, 'i, &'s str> {
     fn lower<Pat: From<SPat>>(
         self,
         rule: ::grammar::RuleWithNamedFields<Pat>,
@@ -86,9 +86,9 @@ impl<'a, 'i, 's> Modifier<'a, 'i, 's> {
     }
 }
 
-impl<'a, 'i, 's> Pattern<'a, 'i, 's> {
+impl<'a, 'i, 's> Pattern<'a, 'i, &'s str> {
     fn lower(self) -> SPat {
-        fn unescape<T>(handle: Handle<T>) -> String {
+        fn unescape<T>(handle: Handle<&str, T>) -> String {
             let mut out = String::new();
             let s = handle.source();
             let mut chars = s[1..s.len() - 1].chars();
