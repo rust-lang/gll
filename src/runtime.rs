@@ -7,7 +7,7 @@ use std::collections::{BTreeSet, BinaryHeap, HashMap, VecDeque};
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::io::{self, Write};
-use std::ops::{Deref, RangeInclusive};
+use std::ops::{self, Deref, RangeInclusive};
 use std::str;
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -107,22 +107,66 @@ unsafe impl Contiguous for Str {
     }
 }
 
-pub trait InputSlice: Sized {
+pub trait Input: Sized {
+    type Container: Trustworthy;
     type Slice: ?Sized;
-    fn slice<'a, 'i>(input: &'a Container<'i, Self>, range: Range<'i>) -> &'a Self::Slice;
+    type SourceInfo: fmt::Debug;
+    fn to_container(self) -> Self::Container;
+    fn slice<'a, 'i>(
+        input: &'a Container<'i, Self::Container>,
+        range: Range<'i>,
+    ) -> &'a Self::Slice;
+    fn source_info<'i>(
+        input: &Container<'i, Self::Container>,
+        range: Range<'i>,
+    ) -> Self::SourceInfo;
 }
 
-impl<'a, T> InputSlice for &'a [T] {
+impl<'a, T> Input for &'a [T] {
+    type Container = Self;
     type Slice = [T];
-    fn slice<'b, 'i>(input: &'b Container<'i, Self>, range: Range<'i>) -> &'b Self::Slice {
+    type SourceInfo = ops::Range<usize>;
+    fn to_container(self) -> Self::Container {
+        self
+    }
+    fn slice<'b, 'i>(
+        input: &'b Container<'i, Self::Container>,
+        range: Range<'i>,
+    ) -> &'b Self::Slice {
         &input[range.0]
+    }
+    fn source_info<'i>(_: &Container<'i, Self::Container>, range: Range<'i>) -> Self::SourceInfo {
+        range.as_range()
     }
 }
 
-impl<'a> InputSlice for &'a Str {
+impl<'a> Input for &'a str {
+    type Container = &'a Str;
     type Slice = str;
-    fn slice<'b, 'i>(input: &'b Container<'i, Self>, range: Range<'i>) -> &'b Self::Slice {
+    type SourceInfo = LineColumnRange;
+    fn to_container(self) -> Self::Container {
+        self.into()
+    }
+    fn slice<'b, 'i>(
+        input: &'b Container<'i, Self::Container>,
+        range: Range<'i>,
+    ) -> &'b Self::Slice {
         unsafe { str::from_utf8_unchecked(&input[range.0]) }
+    }
+    fn source_info<'i>(
+        input: &Container<'i, Self::Container>,
+        range: Range<'i>,
+    ) -> Self::SourceInfo {
+        let prefix_range = Range(input.range().split_at(range.start()).0);
+        let start = LineColumn::count(Self::slice(input, prefix_range));
+        // HACK(eddyb) add up `LineColumn`s to avoid counting twice.
+        // Ideally we'd cache around a line map, like rustc's `SourceMap`.
+        let mut end = LineColumn::count(Self::slice(input, range));
+        end.line += start.line;
+        if end.line == start.line {
+            end.column += start.column;
+        }
+        LineColumnRange { start, end }
     }
 }
 
@@ -201,20 +245,17 @@ impl InputMatch<RangeInclusive<char>> for str {
     }
 }
 
-pub struct Parser<'i, P: ParseNodeKind, C: CodeLabel, I> {
-    input: Container<'i, I>,
+pub struct Parser<'i, P: ParseNodeKind, C: CodeLabel, I: Input> {
+    input: Container<'i, I::Container>,
     pub threads: Threads<'i, C>,
     pub gss: GraphStack<'i, C>,
     pub memoizer: Memoizer<'i, C>,
     pub sppf: ParseForest<'i, P>,
 }
 
-impl<'i, P: ParseNodeKind, C: CodeLabel, I: Trustworthy> Parser<'i, P, C, I> {
-    pub fn with<R>(
-        input: impl Into<I>,
-        f: impl for<'i2> FnOnce(Parser<'i2, P, C, I>, Range<'i2>) -> R,
-    ) -> R {
-        scope(input.into(), |input| {
+impl<'i, P: ParseNodeKind, C: CodeLabel, I: Input> Parser<'i, P, C, I> {
+    pub fn with<R>(input: I, f: impl for<'i2> FnOnce(Parser<'i2, P, C, I>, Range<'i2>) -> R) -> R {
+        scope(input.to_container(), |input| {
             let range = input.range();
             f(
                 Parser {
@@ -237,15 +278,14 @@ impl<'i, P: ParseNodeKind, C: CodeLabel, I: Trustworthy> Parser<'i, P, C, I> {
             )
         })
     }
-    pub fn input(&self, range: Range<'i>) -> &I::Slice
-    where
-        I: InputSlice,
-    {
+    pub fn input(&self, range: Range<'i>) -> &I::Slice {
         I::slice(&self.input, range)
+    }
+    pub fn source_info(&self, range: Range<'i>) -> I::SourceInfo {
+        I::source_info(&self.input, range)
     }
     pub fn input_consume_left<Pat>(&self, range: Range<'i>, pat: Pat) -> Option<Range<'i>>
     where
-        I: InputSlice,
         I::Slice: InputMatch<Pat>,
     {
         self.input(range)
@@ -254,7 +294,6 @@ impl<'i, P: ParseNodeKind, C: CodeLabel, I: Trustworthy> Parser<'i, P, C, I> {
     }
     pub fn input_consume_right<Pat>(&self, range: Range<'i>, pat: Pat) -> Option<Range<'i>>
     where
-        I: InputSlice,
         I::Slice: InputMatch<Pat>,
     {
         self.input(range)
@@ -300,21 +339,6 @@ impl<'i, P: ParseNodeKind, C: CodeLabel, I: Trustworthy> Parser<'i, P, C, I> {
                 }
             }
         }
-    }
-}
-
-impl<'i, 's, P: ParseNodeKind, C: CodeLabel> Parser<'i, P, C, &'s Str> {
-    pub fn input_line_column(&self, range: Range<'i>) -> LineColumnRange {
-        let prefix_range = Range(self.input.range().split_at(range.start()).0);
-        let start = LineColumn::count(self.input(prefix_range));
-        // HACK(eddyb) add up `LineColumn`s to avoid counting twice.
-        // Ideally we'd cache around a line map, like rustc's `SourceMap`.
-        let mut end = LineColumn::count(self.input(range));
-        end.line += start.line;
-        if end.line == start.line {
-            end.column += start.column;
-        }
-        LineColumnRange { start, end }
     }
 }
 

@@ -12,14 +12,18 @@ use std::ops::Add;
 use std::process::{Command, Stdio};
 use std::rc::Rc;
 
-pub trait ToRustSrc {
-    fn to_rust_src(&self) -> String;
+pub trait RustInputPat {
+    fn rust_slice_ty() -> String;
+    fn rust_matcher(&self) -> String;
 }
 
-impl<S: fmt::Debug, C: fmt::Debug> ToRustSrc for scannerless::Pat<S, C> {
-    fn to_rust_src(&self) -> String {
+impl<S: AsRef<str>> RustInputPat for scannerless::Pat<S, char> {
+    fn rust_slice_ty() -> String {
+        "str".to_string()
+    }
+    fn rust_matcher(&self) -> String {
         match self {
-            scannerless::Pat::String(s) => format!("{:?}", s),
+            scannerless::Pat::String(s) => format!("{:?}", s.as_ref()),
             scannerless::Pat::Range(start, end) => format!("{:?}", start..=end),
         }
     }
@@ -66,7 +70,7 @@ impl<Pat: PartialEq> RuleWithNamedFields<Pat> {
     }
 }
 
-impl<Pat: Ord + Hash + MatchesEmpty + ToRustSrc> Rule<Pat> {
+impl<Pat: Ord + Hash + MatchesEmpty + RustInputPat> Rule<Pat> {
     fn field_pathset_type(&self, paths: &OrderSet<Vec<usize>>) -> String {
         let ty = self.field_type(paths.get_index(0).unwrap());
         for path in paths.iter().skip(1) {
@@ -82,7 +86,7 @@ impl<Pat: Ord + Hash + MatchesEmpty + ToRustSrc> Rule<Pat> {
                 assert_eq!(path, []);
                 "()".to_string()
             }
-            Rule::Call(r) => format!("{}<'a, 'i, 's>", r),
+            Rule::Call(r) => format!("{}<'a, 'i, I>", r),
             Rule::Concat(rules) => {
                 if path.is_empty() {
                     return "()".to_string();
@@ -108,8 +112,8 @@ impl<Pat: Ord + Hash + MatchesEmpty + ToRustSrc> Rule<Pat> {
         }
         let kind = match &**self {
             Rule::Empty => ParseNodeKind("()".to_string()),
-            Rule::Eat(pat) => ParseNodeKind(pat.to_rust_src()),
-            Rule::NegativeLookahead(pat) => ParseNodeKind(format!("!{}", pat.to_rust_src())),
+            Rule::Eat(pat) => ParseNodeKind(pat.rust_matcher()),
+            Rule::NegativeLookahead(pat) => ParseNodeKind(format!("!{}", pat.rust_matcher())),
             Rule::Call(r) => return ParseNodeKind(r.clone()),
             Rule::Concat([left, right]) => ParseNodeKind(format!(
                 "({} {})",
@@ -213,7 +217,7 @@ impl fmt::Display for CodeLabel {
 }
 
 #[cfg_attr(rustfmt, rustfmt_skip)]
-impl<Pat: Ord + Hash + MatchesEmpty + ToRustSrc> Grammar<Pat> {
+impl<Pat: Ord + Hash + MatchesEmpty + RustInputPat> Grammar<Pat> {
     pub fn generate_rust(&self) -> String {
         self.check();
 
@@ -244,48 +248,45 @@ impl<G: Generator<Return = ()>> Iterator for GenIter<G> {
     }
 }
 
-pub type ParseInput<'s> = &'s ::gll::runtime::Str;
-pub type Parser<'i, 's> = ::gll::runtime::Parser<'i, _P, _C, ParseInput<'s>>;
-
 #[derive(Debug)]
 pub enum ParseError<T> {
     TooShort(T),
     NoParse,
 }
 
-pub type ParseResult<'a, 'i, 's, T> =
-    Result<Handle<'a, 'i, 's, T>, ParseError<Handle<'a, 'i, 's, T>>>;
+pub type ParseResult<'a, 'i, I, T> =
+    Result<Handle<'a, 'i, I, T>, ParseError<Handle<'a, 'i, I, T>>>;
 
 pub type Any = dyn any::Any;
 
 #[derive(Debug)]
 pub struct Ambiguity<T>(T);
 
-pub struct Handle<'a, 'i: 'a, 's: 'a, T: ?Sized> {
+pub struct Handle<'a, 'i: 'a, I: ::gll::runtime::Input, T: ?Sized> {
     pub node: ParseNode<'i, _P>,
-    pub parser: &'a Parser<'i, 's>,
+    pub parser: &'a ::gll::runtime::Parser<'i, _P, _C, I>,
     _marker: PhantomData<T>,
 }
 
-impl<'a, 'i, 's, T: ?Sized> Copy for Handle<'a, 'i, 's, T> {}
+impl<'a, 'i, I: ::gll::runtime::Input, T: ?Sized> Copy for Handle<'a, 'i, I, T> {}
 
-impl<'a, 'i, 's, T: ?Sized> Clone for Handle<'a, 'i, 's, T> {
+impl<'a, 'i, I: ::gll::runtime::Input, T: ?Sized> Clone for Handle<'a, 'i, I, T> {
     fn clone(&self) -> Self {
         *self
     }
 }
 
-impl<'a, 'i, 's, T: ?Sized> Handle<'a, 'i, 's, T> {
-    pub fn source(self) -> &'a <ParseInput<'s> as ::gll::runtime::InputSlice>::Slice {
+impl<'a, 'i, I: ::gll::runtime::Input, T: ?Sized> Handle<'a, 'i, I, T> {
+    pub fn source(self) -> &'a I::Slice {
         self.parser.input(self.node.range)
     }
-    pub fn source_line_column(self) -> ::gll::runtime::LineColumnRange {
-        self.parser.input_line_column(self.node.range)
+    pub fn source_info(self) -> I::SourceInfo {
+        self.parser.source_info(self.node.range)
     }
 }
 
-impl<'a, 'i, 's, T> From<Ambiguity<Handle<'a, 'i, 's, T>>> for Ambiguity<Handle<'a, 'i, 's, Any>> {
-    fn from(x: Ambiguity<Handle<'a, 'i, 's, T>>) -> Self {
+impl<'a, 'i, I: ::gll::runtime::Input, T> From<Ambiguity<Handle<'a, 'i, I, T>>> for Ambiguity<Handle<'a, 'i, I, Any>> {
+    fn from(x: Ambiguity<Handle<'a, 'i, I, T>>) -> Self {
         Ambiguity(Handle {
             node: x.0.node,
             parser: x.0.parser,
@@ -294,8 +295,8 @@ impl<'a, 'i, 's, T> From<Ambiguity<Handle<'a, 'i, 's, T>>> for Ambiguity<Handle<
     }
 }
 
-impl<'a, 'i, 's, T> From<Ambiguity<Handle<'a, 'i, 's, [T]>>> for Ambiguity<Handle<'a, 'i, 's, Any>> {
-    fn from(x: Ambiguity<Handle<'a, 'i, 's, [T]>>) -> Self {
+impl<'a, 'i, I: ::gll::runtime::Input, T> From<Ambiguity<Handle<'a, 'i, I, [T]>>> for Ambiguity<Handle<'a, 'i, I, Any>> {
+    fn from(x: Ambiguity<Handle<'a, 'i, I, [T]>>) -> Self {
         Ambiguity(Handle {
             node: x.0.node,
             parser: x.0.parser,
@@ -304,23 +305,23 @@ impl<'a, 'i, 's, T> From<Ambiguity<Handle<'a, 'i, 's, [T]>>> for Ambiguity<Handl
     }
 }
 
-impl<'a, 'i, 's> fmt::Debug for Handle<'a, 'i, 's, ()> {
+impl<'a, 'i, I: ::gll::runtime::Input> fmt::Debug for Handle<'a, 'i, I, ()> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, \"{:?}\", self.source_line_column())
+        write!(f, \"{:?}\", self.source_info())
     }
 }
 
-impl<'a, 'i, 's> fmt::Debug for Handle<'a, 'i, 's, Any> {
+impl<'a, 'i, I: ::gll::runtime::Input> fmt::Debug for Handle<'a, 'i, I, Any> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         handle_any_match_type!(self, |handle| write!(f, \"{:?}\", handle))
     }
 }
 
-impl<'a, 'i, 's, T> fmt::Debug for Handle<'a, 'i, 's, [T]>
-    where Handle<'a, 'i, 's, T>: fmt::Debug,
+impl<'a, 'i, I: ::gll::runtime::Input, T> fmt::Debug for Handle<'a, 'i, I, [T]>
+    where Handle<'a, 'i, I, T>: fmt::Debug,
 {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, \"{:?} => \", self.source_line_column())?;
+        write!(f, \"{:?} => \", self.source_info())?;
         match self.all_list_heads() {
             ListHead::Cons(cons) => {
                 for (i, (elem, rest)) in cons.enumerate() {
@@ -359,8 +360,8 @@ impl<'a, 'i, 's, T> fmt::Debug for Handle<'a, 'i, 's, [T]>
     }
 }
 
-impl<'a, 'i, 's, T> Iterator for Handle<'a, 'i, 's, [T]> {
-    type Item = Result<Handle<'a, 'i, 's, T>, Ambiguity<Self>>;
+impl<'a, 'i, I: ::gll::runtime::Input, T> Iterator for Handle<'a, 'i, I, [T]> {
+    type Item = Result<Handle<'a, 'i, I, T>, Ambiguity<Self>>;
     fn next(&mut self) -> Option<Self::Item> {
         match self.all_list_heads() {
             ListHead::Cons(mut iter) => {
@@ -393,8 +394,8 @@ pub enum ListHead<C> {
     Nil,
 }
 
-impl<'a, 'i, 's, T> Handle<'a, 'i, 's, [T]> {
-    fn one_list_head(self) -> ListHead<Result<(Handle<'a, 'i, 's, T>, Handle<'a, 'i, 's, [T]>), Ambiguity<Self>>> {
+impl<'a, 'i, I: ::gll::runtime::Input, T> Handle<'a, 'i, I, [T]> {
+    fn one_list_head(self) -> ListHead<Result<(Handle<'a, 'i, I, T>, Handle<'a, 'i, I, [T]>), Ambiguity<Self>>> {
         match self.all_list_heads() {
             ListHead::Cons(mut iter) => {
                 let first = iter.next().unwrap();
@@ -407,7 +408,7 @@ impl<'a, 'i, 's, T> Handle<'a, 'i, 's, [T]> {
             ListHead::Nil => ListHead::Nil,
         }
     }
-    fn all_list_heads(mut self) -> ListHead<impl Iterator<Item = (Handle<'a, 'i, 's, T>, Handle<'a, 'i, 's, [T]>)>> {
+    fn all_list_heads(mut self) -> ListHead<impl Iterator<Item = (Handle<'a, 'i, I, T>, Handle<'a, 'i, I, [T]>)>> {
         if let ParseNodeShape::Opt(_) = self.node.kind.shape() {
             if let Some(opt_child) = self.node.unpack_opt() {
                 self.node = opt_child;
@@ -435,11 +436,11 @@ impl<'a, 'i, 's, T> Handle<'a, 'i, 's, [T]> {
             if let Some(variants) = &variants {
                 put!("
 
-pub enum ", name, "<'a, 'i: 'a, 's: 'a> {");
+pub enum ", name, "<'a, 'i: 'a, I: ::gll::runtime::Input> {");
                 for (rule, variant, fields) in variants {
                     if fields.is_empty() {
                         put!("
-    ", variant, "(Handle<'a, 'i, 's, ", rule.field_type(&[]), ">),");
+    ", variant, "(Handle<'a, 'i, I, ", rule.field_type(&[]), ">),");
                     } else {
                         put!("
     ", variant, " {");
@@ -450,7 +451,7 @@ pub enum ", name, "<'a, 'i: 'a, 's: 'a> {");
                             if refutable {
                                 put!("Option<");
                             }
-                            put!("Handle<'a, 'i, 's, ", rule.field_pathset_type(paths), ">");
+                            put!("Handle<'a, 'i, I, ", rule.field_pathset_type(paths), ">");
                             if refutable {
                                 put!(">");
                             }
@@ -465,7 +466,7 @@ pub enum ", name, "<'a, 'i: 'a, 's: 'a> {");
             } else {
                 put!("
 
-pub struct ", name, "<'a, 'i: 'a, 's: 'a> {");
+pub struct ", name, "<'a, 'i: 'a, I: ::gll::runtime::Input> {");
                 for (field_name, paths) in &rule.fields {
                     let refutable = rule.rule.field_pathset_is_refutable(paths);
                     put!("
@@ -473,7 +474,7 @@ pub struct ", name, "<'a, 'i: 'a, 's: 'a> {");
                     if refutable {
                         put!("Option<");
                     }
-                    put!("Handle<'a, 'i, 's, ", rule.rule.field_pathset_type(paths), ">");
+                    put!("Handle<'a, 'i, I, ", rule.rule.field_pathset_type(paths), ">");
                     if refutable {
                         put!(">");
                     }
@@ -481,22 +482,22 @@ pub struct ", name, "<'a, 'i: 'a, 's: 'a> {");
                 }
                 if rule.fields.is_empty() {
                     put!("
-    _marker: PhantomData<(&'a (), &'i (), &'s ())>,");
+    _marker: PhantomData<(&'a (), &'i (), I)>,");
                 }
                 put!("
 }");
             }
             put!("
 
-impl<'a, 'i, 's> ", name, "<'a, 'i, 's> {
+impl<'a, 'i, I: ::gll::runtime::Input<Slice = ", Pat::rust_slice_ty() ,">> ", name, "<'a, 'i, I> {
     pub fn parse_with<R>(
-        input: impl Into<ParseInput<'s>>,
+        input: I,
         f: impl for<'b, 'i2> FnOnce(
-            &'b Parser<'i2, 's>,
-            ParseResult<'b, 'i2, 's, ", name, "<'b, 'i2, 's>>,
+            &'b ::gll::runtime::Parser<'i2, _P, _C, I>,
+            ParseResult<'b, 'i2, I, ", name, "<'b, 'i2, I>>,
         ) -> R,
     ) -> R {
-        Parser::with(input, |mut parser, range| {
+        ::gll::runtime::Parser::with(input, |mut parser, range| {
             let call = Call {
                 callee: ", CodeLabel(name.clone()), ",
                 range,
@@ -527,7 +528,7 @@ impl<'a, 'i, 's> ", name, "<'a, 'i, 's> {
     }
 }
 
-impl<'a, 'i, 's> fmt::Debug for ", name, "<'a, 'i, 's> {
+impl<'a, 'i, I: ::gll::runtime::Input> fmt::Debug for ", name, "<'a, 'i, I> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {");
             if let Some(variants) = &variants {
                 put!("
@@ -585,18 +586,18 @@ impl<'a, 'i, 's> fmt::Debug for ", name, "<'a, 'i, 's> {
             if rule.fields.is_empty() {
                 put!("
 
-impl<'a, 'i, 's> fmt::Debug for Handle<'a, 'i, 's, ", name, "<'a, 'i, 's>> {
+impl<'a, 'i, I: ::gll::runtime::Input> fmt::Debug for Handle<'a, 'i, I, ", name, "<'a, 'i, I>> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, \"{:?}\", self.source_line_column())
+        write!(f, \"{:?}\", self.source_info())
     }
 }");
                 continue;
             }
             put!("
 
-impl<'a, 'i, 's> fmt::Debug for Handle<'a, 'i, 's, ", name, "<'a, 'i, 's>> {
+impl<'a, 'i, I: ::gll::runtime::Input> fmt::Debug for Handle<'a, 'i, I, ", name, "<'a, 'i, I>> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, \"{:?} => \", self.source_line_column())?;
+        write!(f, \"{:?} => \", self.source_info())?;
         for (i, x) in self.all().enumerate() {
             if i > 0 {
                 write!(f, \" | \")?;
@@ -607,13 +608,13 @@ impl<'a, 'i, 's> fmt::Debug for Handle<'a, 'i, 's, ", name, "<'a, 'i, 's>> {
     }
 }
 
-impl<'a, 'i, 's> ", name, "<'a, 'i, 's> {");
+impl<'a, 'i, I: ::gll::runtime::Input> ", name, "<'a, 'i, I> {");
             if let Some(variants) = &variants {
                 for (rule, variant, fields) in variants {
                     put!("
     #[allow(non_snake_case)]
     fn ", variant, "_from_sppf(
-        parser: &'a Parser<'i, 's>,
+        parser: &'a ::gll::runtime::Parser<'i, _P, _C, I>,
         _node: ParseNode<'i, _P>,
         _r: traverse!(typeof(ParseNode<'i, _P>) ", rule.generate_traverse_shape(false, &parse_nodes), "),
     ) -> Self {");
@@ -664,7 +665,7 @@ impl<'a, 'i, 's> ", name, "<'a, 'i, 's> {");
             } else {
                 put!("
     fn from_sppf(
-        parser: &'a Parser<'i, 's>,
+        parser: &'a ::gll::runtime::Parser<'i, _P, _C, I>,
         _node: ParseNode<'i, _P>,
         _r: traverse!(typeof(ParseNode<'i, _P>) ", rule.rule.generate_traverse_shape(false, &parse_nodes), "),
     ) -> Self {
@@ -710,8 +711,8 @@ impl<'a, 'i, 's> ", name, "<'a, 'i, 's> {");
             put!("
 }
 
-impl<'a, 'i, 's> Handle<'a, 'i, 's, ", name, "<'a, 'i, 's>> {
-    pub fn one(self) -> Result<", name, "<'a, 'i, 's>, Ambiguity<Self>> {
+impl<'a, 'i, I: ::gll::runtime::Input> Handle<'a, 'i, I, ", name, "<'a, 'i, I>> {
+    pub fn one(self) -> Result<", name, "<'a, 'i, I>, Ambiguity<Self>> {
         let mut iter = self.all();
         let first = iter.next().unwrap();
         if iter.next().is_none() {
@@ -720,7 +721,7 @@ impl<'a, 'i, 's> Handle<'a, 'i, 's, ", name, "<'a, 'i, 's>> {
             Err(Ambiguity(self))
         }
     }
-    pub fn all(self) -> impl Iterator<Item = ", name, "<'a, 'i, 's>> {
+    pub fn all(self) -> impl Iterator<Item = ", name, "<'a, 'i, I>> {
         let _sppf = &self.parser.sppf;
         GenIter(move || {
             let node = self.node.unpack_alias();");
@@ -747,7 +748,7 @@ impl<'a, 'i, 's> Handle<'a, 'i, 's, ", name, "<'a, 'i, 's>> {
             put!("
         })
     }
-    pub fn for_each(self, mut f: impl FnMut(", name, "<'a, 'i, 's>)) {
+    pub fn for_each(self, mut f: impl FnMut(", name, "<'a, 'i, I>)) {
         let _sppf = &self.parser.sppf;
         let node = self.node.unpack_alias();");
             if let Some(variants) = &variants {
@@ -775,7 +776,9 @@ impl<'a, 'i, 's> Handle<'a, 'i, 's, ", name, "<'a, 'i, 's>> {
 }");
         }
         put!("
-fn parse(p: &mut Parser) {
+fn parse<I>(p: &mut ::gll::runtime::Parser<_P, _C, I>)
+where I: ::gll::runtime::Input<Slice = ", Pat::rust_slice_ty() ,">
+{
     while let Some(Call { callee: mut c, range: _range }) = p.threads.steal() {
         match c.code {");
         for (name, rule) in &self.rules {
@@ -816,18 +819,18 @@ fn parse(p: &mut Parser) {
             rule.fill_parse_node_shape(&parse_nodes);
             i += 1;
         }
-        let mut all_parse_nodes: Vec<_> = named_parse_nodes.into_iter().map(|(k, s)| (k.clone(), s, Some(k.0)))
-            .chain(parse_nodes.into_inner().into_iter().map(|(r, (k, s))| {
-                (k, s.unwrap(), match &*r {
-                    Rule::RepeatMany(rule, _) | Rule::RepeatMore(rule, _) => match &**rule {
-                        Rule::Eat(_) => Some("()".to_string()),
-                        Rule::Call(r) => Some(r.clone()),
-                        _ => None,
-                    },
+        let mut all_parse_nodes: Vec<_> = named_parse_nodes.into_iter().map(|(k, s)| {
+            (k.clone(), s, Some(format!("{}<_>", k.0)))
+        }).chain(parse_nodes.into_inner().into_iter().map(|(r, (k, s))| {
+            (k, s.unwrap(), match &*r {
+                Rule::RepeatMany(rule, _) | Rule::RepeatMore(rule, _) => match &**rule {
+                    Rule::Eat(_) => Some("[()]".to_string()),
+                    Rule::Call(r) => Some(format!("[{}<_>]", r)),
                     _ => None,
-                })
-            }))
-            .collect();
+                },
+                _ => None,
+            })
+        })).collect();
         all_parse_nodes.sort();
         put!("
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
@@ -845,7 +848,7 @@ macro handle_any_match_type($handle:expr, $case:expr) {
         for (kind, _, ty) in &all_parse_nodes {
             if let Some(ty) = ty {
                 put!("
-        ", kind, " => $case(Handle::<", ty, "> {
+        ", kind, " => $case(Handle::<_, ", ty, "> {
             node: $handle.node,
             parser: $handle.parser,
             _marker: PhantomData,
@@ -853,7 +856,7 @@ macro handle_any_match_type($handle:expr, $case:expr) {
             }
         }
         put!("
-        _ => $case(Handle::<()> {
+        _ => $case(Handle::<_, ()> {
             node: $handle.node,
             parser: $handle.parser,
             _marker: PhantomData,
@@ -1277,7 +1280,7 @@ fn reify_as(label: CodeLabel) -> Thunk<impl FnOnce(Continuation) -> Continuation
     })
 }
 
-impl<Pat: Ord + Hash + MatchesEmpty + ToRustSrc> Rule<Pat> {
+impl<Pat: Ord + Hash + MatchesEmpty + RustInputPat> Rule<Pat> {
     #[cfg_attr(rustfmt, rustfmt_skip)]
     fn generate_parse<'a>(
         self: &'a Rc<Self>,
@@ -1286,10 +1289,10 @@ impl<Pat: Ord + Hash + MatchesEmpty + ToRustSrc> Rule<Pat> {
         Thunk::new(move |cont| match (&**self, parse_nodes) {
             (Rule::Empty, _) => cont,
             (Rule::Eat(pat), _) => {
-                check(&format!("let Some(_range) = p.input_consume_left(_range, {})", pat.to_rust_src()))(cont)
+                check(&format!("let Some(_range) = p.input_consume_left(_range, {})", pat.rust_matcher()))(cont)
             }
             (Rule::NegativeLookahead(pat), _) => {
-                check(&format!("p.input_consume_left(_range, {}).is_none()", pat.to_rust_src()))(cont)
+                check(&format!("p.input_consume_left(_range, {}).is_none()", pat.rust_matcher()))(cont)
             }
             (Rule::Call(r), _) => call(CodeLabel(r.clone()))(cont),
             (Rule::Concat([left, right]), None) => (
