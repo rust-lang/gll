@@ -3,7 +3,7 @@ use std::char;
 use std::convert::TryFrom;
 use std::ops::{self, Bound, RangeBounds};
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Pat<S, C> {
     String(S),
     Range(C, C),

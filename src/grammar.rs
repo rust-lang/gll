@@ -1,6 +1,7 @@
 use ordermap::{orderset, OrderMap, OrderSet};
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
+use std::fmt;
 use std::hash::Hash;
 use std::iter;
 use std::ops::{Add, BitAnd, BitOr};
@@ -417,98 +418,6 @@ pub trait MatchesEmpty {
     fn matches_empty(&self) -> MaybeKnown<bool>;
 }
 
-pub macro grammar {
-    (@rule_tok { $($rule:tt)* }) => {
-        grammar!(@rule [$($rule)*] () [])
-    },
-    (@rule_tok $rule:ident) => {
-        call(stringify!($rule))
-    },
-    (@rule_tok $pat:expr) => {
-        eat($pat)
-    },
-    (@rule [] ($current:expr) []) => { $current },
-    (@rule [] ($current:expr) [$($rules:expr)+]) => {
-        $($rules |)+ $current
-    },
-    (@rule [$($input:tt)*] () [$($rules:expr)*]) => {
-        grammar!(@rule [$($input)*] (empty()) [$($rules)*])
-    },
-    (@rule [| $($input:tt)*] ($current:expr) [$($rules:expr)*]) => {
-        grammar!(@rule [$($input)*] () [$($rules)* $current])
-    },
-    (@rule [! $input0:tt $($input:tt)*] ($current:expr) [$($rules:expr)*]) => {
-        grammar!(@rule [$($input)*] ($current +
-            negative_lookahead($input0)
-        ) [$($rules)*])
-    },
-    (@rule [$name:ident : $input0:tt ? $($input:tt)*] ($current:expr) [$($rules:expr)*]) => {
-        grammar!(@rule [$($input)*] ($current +
-            grammar!(@rule_tok $input0).field(stringify!($name)).opt()
-        ) [$($rules)*])
-    },
-    (@rule [$input0:tt ? $($input:tt)*] ($current:expr) [$($rules:expr)*]) => {
-        grammar!(@rule [$($input)*] ($current +
-            grammar!(@rule_tok $input0).opt()
-        ) [$($rules)*])
-    },
-    (@rule [$name:ident : $input0:tt * % $input1:tt $($input:tt)*] ($current:expr) [$($rules:expr)*]) => {
-        grammar!(@rule [$($input)*] ($current +
-            grammar!(@rule_tok $input0).repeat_many(Some(grammar!(@rule_tok $input1))).field(stringify!($name))
-        ) [$($rules)*])
-    },
-    (@rule [$input0:tt * % $input1:tt $($input:tt)*] ($current:expr) [$($rules:expr)*]) => {
-        grammar!(@rule [$($input)*] ($current +
-            grammar!(@rule_tok $input0).repeat_many(Some(grammar!(@rule_tok $input1)))
-        ) [$($rules)*])
-    },
-    (@rule [$name:ident : $input0:tt * $($input:tt)*] ($current:expr) [$($rules:expr)*]) => {
-        grammar!(@rule [$($input)*] ($current +
-            grammar!(@rule_tok $input0).repeat_many(None).field(stringify!($name))
-        ) [$($rules)*])
-    },
-    (@rule [$input0:tt * $($input:tt)*] ($current:expr) [$($rules:expr)*]) => {
-        grammar!(@rule [$($input)*] ($current +
-            grammar!(@rule_tok $input0).repeat_many(None)
-        ) [$($rules)*])
-    },
-    (@rule [$name:ident : $input0:tt + % $input1:tt $($input:tt)*] ($current:expr) [$($rules:expr)*]) => {
-        grammar!(@rule [$($input)*] ($current +
-            grammar!(@rule_tok $input0).repeat_more(Some(grammar!(@rule_tok $input1))).field(stringify!($name))
-        ) [$($rules)*])
-    },
-    (@rule [$input0:tt + % $input1:tt $($input:tt)*] ($current:expr) [$($rules:expr)*]) => {
-        grammar!(@rule [$($input)*] ($current +
-            grammar!(@rule_tok $input0).repeat_more(Some(grammar!(@rule_tok $input1)))
-        ) [$($rules)*])
-    },
-    (@rule [$name:ident : $input0:tt + $($input:tt)*] ($current:expr) [$($rules:expr)*]) => {
-        grammar!(@rule [$($input)*] ($current +
-            grammar!(@rule_tok $input0).repeat_more(None).field(stringify!($name))
-        ) [$($rules)*])
-    },
-    (@rule [$input0:tt + $($input:tt)*] ($current:expr) [$($rules:expr)*]) => {
-        grammar!(@rule [$($input)*] ($current +
-            grammar!(@rule_tok $input0).repeat_more(None)
-        ) [$($rules)*])
-    },
-    (@rule [$name:ident : $input0:tt $($input:tt)*] ($current:expr) [$($rules:expr)*]) => {
-        grammar!(@rule [$($input)*] ($current +
-            grammar!(@rule_tok $input0).field(stringify!($name))
-        ) [$($rules)*])
-    },
-    (@rule [$input0:tt $($input:tt)*] ($current:expr) [$($rules:expr)*]) => {
-        grammar!(@rule [$($input)*] ($current +
-            grammar!(@rule_tok $input0)
-        ) [$($rules)*])
-    },
-    ($($rule_name:ident = { $($rule:tt)* };)*) => ({
-        let mut grammar = Grammar::new();
-        $(grammar.define(stringify!($rule_name), grammar!(@rule_tok { $($rule)* }));)*
-        grammar
-    })
-}
-
 impl<Pat: Ord + Hash + MatchesEmpty> Grammar<Pat> {
     pub(crate) fn check(&self) {
         for rule in self.rules.values() {
@@ -615,5 +524,29 @@ impl<Pat> RuleWithNamedFields<Pat> {
         };
         rule.fields.extend(self.filter_fields(None));
         rule
+    }
+}
+
+// HACK(eddyb) moved here so bootstrap (build.rs) doesn't need
+// to include the runtime. Should maybe be in a different module?
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ParseNodeShape<P> {
+    Opaque,
+    Alias(P),
+    Choice,
+    Opt(P),
+    Split(P, P),
+}
+
+impl<P: fmt::Display> fmt::Display for ParseNodeShape<P> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            ParseNodeShape::Opaque => write!(f, "Opaque"),
+            ParseNodeShape::Alias(inner) => write!(f, "Alias({})", inner),
+            ParseNodeShape::Choice => write!(f, "Choice"),
+            ParseNodeShape::Opt(inner) => write!(f, "Opt({})", inner),
+            ParseNodeShape::Split(left, right) => write!(f, "Split({}, {})", left, right),
+        }
     }
 }
