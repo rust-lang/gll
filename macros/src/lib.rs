@@ -9,7 +9,7 @@ pub fn scannerless_parser(input: TokenStream) -> TokenStream {
     // Also, avoid running `rustfmt` here, it's wasteful and unnecessary.
     input
         .to_string()
-        .parse::<gll::grammar::Grammar<gll::scannerless::Pat<String, char>>>()
+        .parse::<gll::scannerless::Grammar>()
         .unwrap()
         .generate_rust()
         .parse()
