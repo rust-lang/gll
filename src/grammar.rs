@@ -19,8 +19,65 @@ impl<Pat> Grammar<Pat> {
     pub fn define(&mut self, name: &str, rule: RuleWithNamedFields<Pat>) {
         self.rules.insert(name.to_string(), rule);
     }
+    pub fn extend(&mut self, other: Self) {
+        self.rules.extend(other.rules);
+    }
+    pub fn insert_whitespace(self, whitespace: RuleWithNamedFields<Pat>) -> Self
+    where
+        Pat: Clone,
+    {
+        assert!(whitespace.fields.is_empty());
+
+        struct WhitespaceInserter<Pat> {
+            whitespace: RuleWithNamedFields<Pat>,
+        }
+
+        impl<Pat: Clone> Folder<Pat> for WhitespaceInserter<Pat> {
+            // FIXME(eddyb) this will insert too many whitespace rules,
+            // e.g. `A B? C` becomes `A WS B? WS C`, which when `B` is
+            // missing, is `A WS WS C`. Even worse, `A? B` ends up as
+            // `A? WS B`, which has an incorrect leading whitespace.
+            fn fold_concat(
+                &mut self,
+                left: RuleWithNamedFields<Pat>,
+                right: RuleWithNamedFields<Pat>,
+            ) -> RuleWithNamedFields<Pat> {
+                left.fold(self) + self.whitespace.clone() + right.fold(self)
+            }
+            fn fold_repeat_many(
+                &mut self,
+                elem: RuleWithNamedFields<Pat>,
+                sep: Option<RuleWithNamedFields<Pat>>,
+            ) -> RuleWithNamedFields<Pat> {
+                elem.fold(self).repeat_many(Some(
+                    sep.map_or_else(empty, |sep| self.whitespace.clone() + sep.fold(self))
+                        + self.whitespace.clone(),
+                ))
+            }
+            fn fold_repeat_more(
+                &mut self,
+                elem: RuleWithNamedFields<Pat>,
+                sep: Option<RuleWithNamedFields<Pat>>,
+            ) -> RuleWithNamedFields<Pat> {
+                elem.fold(self).repeat_more(Some(
+                    sep.map_or_else(empty, |sep| self.whitespace.clone() + sep.fold(self))
+                        + self.whitespace.clone(),
+                ))
+            }
+        }
+
+        let mut inserter = WhitespaceInserter { whitespace };
+        Grammar {
+            rules: self
+                .rules
+                .into_iter()
+                .map(|(name, rule)| (name, rule.fold(&mut inserter)))
+                .collect(),
+        }
+    }
 }
 
+#[derive(Clone)]
 pub struct RuleWithNamedFields<Pat> {
     pub(crate) rule: Rc<Rule<Pat>>,
     pub(crate) fields: OrderMap<String, OrderSet<Vec<usize>>>,
@@ -462,5 +519,101 @@ impl<Pat: Ord + Hash + MatchesEmpty> Grammar<Pat> {
         for rule in self.rules.values() {
             rule.rule.check_non_empty_opt(&mut can_be_empty_cache, self);
         }
+    }
+}
+
+pub trait Folder<Pat>: Sized {
+    fn fold_leaf(&mut self, rule: RuleWithNamedFields<Pat>) -> RuleWithNamedFields<Pat> {
+        rule
+    }
+    fn fold_concat(
+        &mut self,
+        left: RuleWithNamedFields<Pat>,
+        right: RuleWithNamedFields<Pat>,
+    ) -> RuleWithNamedFields<Pat> {
+        left.fold(self) + right.fold(self)
+    }
+    fn fold_or(
+        &mut self,
+        left: RuleWithNamedFields<Pat>,
+        right: RuleWithNamedFields<Pat>,
+    ) -> RuleWithNamedFields<Pat> {
+        left.fold(self) | right.fold(self)
+    }
+    fn fold_opt(&mut self, rule: RuleWithNamedFields<Pat>) -> RuleWithNamedFields<Pat> {
+        rule.fold(self).opt()
+    }
+    fn fold_repeat_many(
+        &mut self,
+        elem: RuleWithNamedFields<Pat>,
+        sep: Option<RuleWithNamedFields<Pat>>,
+    ) -> RuleWithNamedFields<Pat> {
+        elem.fold(self).repeat_many(sep.map(|sep| sep.fold(self)))
+    }
+    fn fold_repeat_more(
+        &mut self,
+        elem: RuleWithNamedFields<Pat>,
+        sep: Option<RuleWithNamedFields<Pat>>,
+    ) -> RuleWithNamedFields<Pat> {
+        elem.fold(self).repeat_more(sep.map(|sep| sep.fold(self)))
+    }
+}
+
+impl<Pat> RuleWithNamedFields<Pat> {
+    // HACK(eddyb) this is pretty expensive, find a better way
+    fn filter_fields<'a>(
+        &'a self,
+        field: Option<usize>,
+    ) -> impl Iterator<Item = (String, OrderSet<Vec<usize>>)> + 'a {
+        self.fields.iter().filter_map(move |(name, paths)| {
+            let paths: OrderSet<_> = paths
+                .iter()
+                .filter_map(move |path| {
+                    if path.first().cloned() == field {
+                        Some(path.get(1..).unwrap_or(&[]).to_vec())
+                    } else {
+                        None
+                    }
+                }).collect();
+            if !paths.is_empty() {
+                Some((name.clone(), paths))
+            } else {
+                None
+            }
+        })
+    }
+
+    pub fn fold(self, folder: &mut impl Folder<Pat>) -> Self {
+        let field_rule = |rule: &Rc<Rule<Pat>>, i| RuleWithNamedFields {
+            rule: rule.clone(),
+            fields: self.filter_fields(Some(i)).collect(),
+        };
+        let mut rule = match &*self.rule {
+            Rule::Empty | Rule::Eat(_) | Rule::NegativeLookahead(_) | Rule::Call(_) => {
+                return folder.fold_leaf(self);
+            }
+            Rule::Concat([left, right]) => {
+                folder.fold_concat(field_rule(left, 0), field_rule(right, 1))
+            }
+            Rule::Or(rules) => {
+                let mut rules = rules
+                    .iter()
+                    .enumerate()
+                    .map(|(i, rule)| field_rule(rule, i));
+                let first = rules.next().unwrap();
+                rules.fold(first, |or, rule| folder.fold_or(or, rule))
+            }
+            Rule::Opt(rule) => folder.fold_opt(field_rule(rule, 0)),
+            Rule::RepeatMany(elem, sep) => folder.fold_repeat_many(
+                field_rule(elem, 0),
+                sep.as_ref().map(|sep| field_rule(sep, 1)),
+            ),
+            Rule::RepeatMore(elem, sep) => folder.fold_repeat_more(
+                field_rule(elem, 0),
+                sep.as_ref().map(|sep| field_rule(sep, 1)),
+            ),
+        };
+        rule.fields.extend(self.filter_fields(None));
+        rule
     }
 }
