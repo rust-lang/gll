@@ -12,6 +12,9 @@ description = "Macros used with the gll crate."
 [dependencies]
 gll = { path = ".." }
 
+[dev-dependencies]
+quote = "0.6"
+
 [lib]
 doctest = false
 proc-macro = true
