@@ -97,8 +97,7 @@ impl<'a, 'i, 's> Pattern<'a, 'i, &'s str> {
                         't' => '\t',
                         'n' => '\n',
                         'r' => '\r',
-                        '\\' => '\\',
-                        _ => unreachable!(),
+                        c => c,
                     },
                     _ => c,
                 };
