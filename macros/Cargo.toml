@@ -9,8 +9,9 @@ repository = "https://github.com/lykenware/gll"
 license = "MIT/Apache-2.0"
 description = "Macros used with the gll crate."
 
-[dependencies]
-gll = { path = ".." }
+[dependencies.gll]
+path = ".."
+version = "0.0.1"
 
 [dev-dependencies]
 quote = "0.6"
