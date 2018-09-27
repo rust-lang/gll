@@ -37,6 +37,8 @@ mod json_like {
     }
 }
 ```
+You can also use a build script to generate the parser (**TODO**: document).
+
 To parse a string with that grammar:
 ```rust
 let tokens = string.parse().unwrap();
@@ -66,6 +68,7 @@ Rules are made out of:
   * optional separator: `A* % ","` - "comma-separated `A`s"
 
 Parts of a rule can be labeled with **field names**, to allow later access to them.
+
 For example, `LetDecl = "let" pat:Pat { "=" init:Expr }? ";";` produces:
 ```rust
 // Note: generic parameters omitted for brevity.
