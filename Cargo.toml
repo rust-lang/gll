@@ -7,7 +7,7 @@ authors = [
 ]
 repository = "https://github.com/lykenware/gll"
 license = "MIT/Apache-2.0"
-description = "GLL parser generator."
+description = "GLL parsing framework."
 
 [dependencies]
 indexing = "0.3.1"
