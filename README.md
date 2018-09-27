@@ -67,9 +67,9 @@ Rules are made out of:
 * **lists**: `A*` - "zero or more `A`s", `A+` - "one or more `A`s"
   * optional separator: `A* % ","` - "comma-separated `A`s"
 
-Parts of a rule can be labeled with **field names**, to allow later access to them.
+Parts of a rule can be labeled with **field names**, to allow later access to them:
 
-For example, `LetDecl = "let" pat:Pat { "=" init:Expr }? ";";` produces:
+`LetDecl = "let" pat:Pat { "=" init:Expr }? ";";` produces:
 ```rust
 // Note: generic parameters omitted for brevity.
 struct LetDecl {
@@ -77,8 +77,9 @@ struct LetDecl {
     init: Option<Handle<Expr>>,
 }
 ```
-One Rust-specific convention is that alternation fields are enum variants,
-such that a rule like `Expr = Lit:LITERAL | Add:{ a:Expr "+" b:Expr };` produces:
+One Rust-specific convention is that alternation fields are enum variants.
+
+`Expr = Lit:LITERAL | Add:{ a:Expr "+" b:Expr };` produces:
 ```rust
 enum Expr {
     Lit(Handle<LITERAL>),
