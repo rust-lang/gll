@@ -1,9 +1,8 @@
 include!(concat!(env!("OUT_DIR"), "/parse_grammar.rs"));
 
+use scannerless::Pat as SPat;
 use std::ops::Bound;
 use std::str::FromStr;
-
-type SPat = ::scannerless::Pat;
 
 impl<Pat: From<SPat>> FromStr for ::grammar::Grammar<Pat> {
     type Err = ::runtime::LineColumn;
