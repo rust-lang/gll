@@ -262,7 +262,7 @@ pub type Any = dyn any::Any;
 #[derive(Debug)]
 pub struct Ambiguity<T>(T);
 
-pub struct Handle<'a, 'i: 'a, I: ::gll::runtime::Input, T: ?Sized> {
+pub struct Handle<'a, 'i: 'a, I: 'a + ::gll::runtime::Input, T: ?Sized> {
     pub node: ParseNode<'i, _P>,
     pub parser: &'a ::gll::runtime::Parser<'i, _P, _C, I>,
     _marker: PhantomData<T>,
@@ -436,7 +436,7 @@ impl<'a, 'i, I: ::gll::runtime::Input, T> Handle<'a, 'i, I, [T]> {
             if let Some(variants) = &variants {
                 put!("
 
-pub enum ", name, "<'a, 'i: 'a, I: ::gll::runtime::Input> {");
+pub enum ", name, "<'a, 'i: 'a, I: 'a + ::gll::runtime::Input> {");
                 for (rule, variant, fields) in variants {
                     if fields.is_empty() {
                         put!("
@@ -466,7 +466,7 @@ pub enum ", name, "<'a, 'i: 'a, I: ::gll::runtime::Input> {");
             } else {
                 put!("
 
-pub struct ", name, "<'a, 'i: 'a, I: ::gll::runtime::Input> {");
+pub struct ", name, "<'a, 'i: 'a, I: 'a + ::gll::runtime::Input> {");
                 for (field_name, paths) in &rule.fields {
                     let refutable = rule.rule.field_pathset_is_refutable(paths);
                     put!("
