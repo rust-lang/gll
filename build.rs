@@ -104,7 +104,7 @@ fn main() {
 
         StrLit = { "\"" {{ { {!"\\"} {!"\""} .. } | { "\\" Escape } }*} "\"" };
         CharLit = { "'" { { {!"\\"} {!"'"} .. } | { "\\" Escape } } "'" };
-        Escape = "t" | "n" | "r" | "\\";
+        Escape = "t" | "n" | "r" | "\\" | "'" | "\"";
     };
 
     grammar.extend(
