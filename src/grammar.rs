@@ -111,14 +111,15 @@ pub fn call<Pat>(name: &str) -> RuleWithNamedFields<Pat> {
 
 impl<Pat> RuleWithNamedFields<Pat> {
     pub fn field(mut self, name: &str) -> Self {
-        match &*self.rule {
+        let path = match &*self.rule {
             Rule::RepeatMany(rule, _) | Rule::RepeatMore(rule, _) => match **rule {
-                Rule::Eat(_) | Rule::Call(_) => {}
+                Rule::Eat(_) | Rule::Call(_) => vec![],
                 _ => unimplemented!(),
             },
-            _ => {}
-        }
-        self.fields.insert(name.to_string(), orderset![vec![]]);
+            Rule::Opt(_) => vec![0],
+            _ => vec![],
+        };
+        self.fields.insert(name.to_string(), orderset![path]);
         self
     }
     pub fn opt(mut self) -> Self {
