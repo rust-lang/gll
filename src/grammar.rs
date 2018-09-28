@@ -445,10 +445,11 @@ pub trait Folder<Pat>: Sized {
     }
     fn fold_or(
         &mut self,
-        left: RuleWithNamedFields<Pat>,
-        right: RuleWithNamedFields<Pat>,
+        rules: impl Iterator<Item = RuleWithNamedFields<Pat>>,
     ) -> RuleWithNamedFields<Pat> {
-        left.fold(self) | right.fold(self)
+        let mut rules = rules.map(|rule| rule.fold(self));
+        let first = rules.next().unwrap();
+        rules.fold(first, |or, rule| or | rule)
     }
     fn fold_opt(&mut self, rule: RuleWithNamedFields<Pat>) -> RuleWithNamedFields<Pat> {
         rule.fold(self).opt()
@@ -505,14 +506,12 @@ impl<Pat> RuleWithNamedFields<Pat> {
             Rule::Concat([left, right]) => {
                 folder.fold_concat(field_rule(left, 0), field_rule(right, 1))
             }
-            Rule::Or(rules) => {
-                let mut rules = rules
+            Rule::Or(rules) => folder.fold_or(
+                rules
                     .iter()
                     .enumerate()
-                    .map(|(i, rule)| field_rule(rule, i));
-                let first = rules.next().unwrap();
-                rules.fold(first, |or, rule| folder.fold_or(or, rule))
-            }
+                    .map(|(i, rule)| field_rule(rule, i)),
+            ),
             Rule::Opt(rule) => folder.fold_opt(field_rule(rule, 0)),
             Rule::RepeatMany(elem, sep) => folder.fold_repeat_many(
                 field_rule(elem, 0),
