@@ -949,6 +949,22 @@ impl CodeLabel for _C {
     }
 }
 ");
+
+        // HACK(eddyb) don't try to feed input to `rustfmt` without
+        // knowing that it will at least try to read it.
+        // *Somehow* (despite libstd ignoring it) we can get SIGPIPE.
+        let has_rustfmt = Command::new("rustfmt")
+            .arg("-V")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .and_then(|child| child.wait_with_output().map(|o| o.status.success()))
+            .unwrap_or(false);
+
+        if !has_rustfmt {
+            return out;
+        }
+
         let rustfmt = Command::new("rustfmt")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
