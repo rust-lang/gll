@@ -2,8 +2,7 @@
     decl_macro,
     generators,
     generator_trait,
-    proc_macro_gen,
-    proc_macro_non_items
+    proc_macro_hygiene
 )]
 
 extern crate gll;
