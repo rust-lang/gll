@@ -1,10 +1,8 @@
 #![feature(
     arbitrary_self_types,
-    fn_traits,
     macro_literal_matcher,
     str_escape,
-    try_from,
-    unboxed_closures
+    try_from
 )]
 
 extern crate indexing;
