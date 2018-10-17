@@ -799,7 +799,7 @@ where I: ::gll::runtime::Input<Slice = ", Pat::rust_slice_ty() ,">
 
             put!((
                 reify_as(code_label.clone()) +
-                rule.rule.clone().generate_parse(parse_nodes) +
+                rule.rule.generate_parse(parse_nodes) +
                 ret()
             )(Continuation {
                 code_labels: &mut code_labels,
@@ -1025,17 +1025,22 @@ impl<'a> Continuation<'a> {
     }
 
     fn to_inline(&mut self) -> &mut String {
-        match self.code {
-            Code::Inline(ref mut code) => code,
-            Code::Label(ref label) => {
-                self.code = Code::Inline(format!(
-                    "
+        // HACK(eddyb) remove `self.code` juggling post-NLL
+        let replacement = match self.code {
+            Code::Inline(_) => None,
+            Code::Label(ref label) => Some(Code::Inline(format!(
+                "
                 c.code = {};
                 p.threads.spawn(c, _range);",
-                    label
-                ));
-                self.to_inline()
-            }
+                label
+            ))),
+        };
+        if let Some(replacement) = replacement {
+            self.code = replacement;
+        }
+        match self.code {
+            Code::Inline(ref mut code) => code,
+            Code::Label(_) => unreachable!(),
         }
     }
 
@@ -1139,14 +1144,17 @@ fn push_state(state: &str) -> Thunk<impl FnOnce(Continuation) -> Continuation> {
 
 fn check<'a>(condition: &'a str) -> Thunk<impl FnOnce(Continuation) -> Continuation + 'a> {
     Thunk::new(move |mut cont| {
-        let code = cont.to_inline();
-        *code = format!(
-            "
-                if {} {{{}
-                }}",
-            condition,
-            code.replace("\n", "\n    ")
-        );
+        // HACK(eddyb) remove awkward scope post-NLL
+        {
+            let code = cont.to_inline();
+            *code = format!(
+                "
+                    if {} {{{}
+                    }}",
+                condition,
+                code.replace("\n", "\n    ")
+            );
+        }
         cont
     })
 }
@@ -1306,10 +1314,16 @@ impl<Pat: Ord + Hash + MatchesEmpty + RustInputPat> Rule<Pat> {
         Thunk::new(move |cont| match (&**self, parse_nodes) {
             (Rule::Empty, _) => cont,
             (Rule::Eat(pat), _) => {
-                check(&format!("let Some(_range) = p.input_consume_left(_range, {})", pat.rust_matcher()))(cont)
+                // HACK(eddyb) remove extra variables post-NLL
+                let code = format!("let Some(_range) = p.input_consume_left(_range, {})", pat.rust_matcher());
+                let cont = check(&code)(cont);
+                cont
             }
             (Rule::NegativeLookahead(pat), _) => {
-                check(&format!("p.input_consume_left(_range, {}).is_none()", pat.rust_matcher()))(cont)
+                // HACK(eddyb) remove extra variables post-NLL
+                let code = format!("p.input_consume_left(_range, {}).is_none()", pat.rust_matcher());
+                let cont = check(&code)(cont);
+                cont
             }
             (Rule::Call(r), _) => call(CodeLabel(r.clone()))(cont),
             (Rule::Concat([left, right]), None) => (
@@ -1354,7 +1368,10 @@ impl<Pat: Ord + Hash + MatchesEmpty + RustInputPat> Rule<Pat> {
                 )
             })(cont),
             (Rule::RepeatMany(elem, Some(sep)), parse_nodes) => {
-                opt(Rc::new(Rule::RepeatMore(elem.clone(), Some(sep.clone()))).generate_parse(parse_nodes))(cont)
+                // HACK(eddyb) remove extra variables post-NLL
+                let rule = Rc::new(Rule::RepeatMore(elem.clone(), Some(sep.clone())));
+                let cont = opt(rule.generate_parse(parse_nodes))(cont);
+                cont
             }
             (Rule::RepeatMore(rule, None), None) => fix(|label| {
                 rule.generate_parse(None) + opt(call(label))

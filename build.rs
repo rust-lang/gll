@@ -3,7 +3,6 @@
     decl_macro,
     fn_traits,
     macro_literal_matcher,
-    nll,
     range_contains,
     slice_patterns,
     str_escape,

@@ -240,25 +240,37 @@ impl<Pat> BitOr for RuleWithNamedFields<Pat> {
     fn bitor(self, other: Self) -> Self {
         let (old_rules, this, mut fields) = match &*self.rule {
             Rule::Or(rules) => (&rules[..], None, self.fields),
-            _ => (&[][..], Some(self), OrderMap::new()),
+            _ => (
+                &[][..],
+                // HACK(eddyb) replace with `Some(self)` post-NLL
+                Some(Self {
+                    rule: self.rule.clone(),
+                    fields: self.fields,
+                }),
+                OrderMap::new(),
+            ),
         };
-        let new_rules =
-            this.into_iter()
-                .chain(iter::once(other))
-                .enumerate()
-                .map(|(i, rule)| {
-                    for (name, paths) in rule.fields {
-                        fields.entry(name).or_insert_with(OrderSet::new).extend(
-                            paths.into_iter().map(|mut path| {
-                                path.insert(0, old_rules.len() + i);
-                                path
-                            }),
-                        );
-                    }
 
-                    rule.rule
-                });
-        let rules = old_rules.iter().cloned().chain(new_rules).collect();
+        // HACK(eddyb) remove awkward scope post-NLL
+        let rules = {
+            let new_rules =
+                this.into_iter()
+                    .chain(iter::once(other))
+                    .enumerate()
+                    .map(|(i, rule)| {
+                        for (name, paths) in rule.fields {
+                            fields.entry(name).or_insert_with(OrderSet::new).extend(
+                                paths.into_iter().map(|mut path| {
+                                    path.insert(0, old_rules.len() + i);
+                                    path
+                                }),
+                            );
+                        }
+
+                        rule.rule
+                    });
+            old_rules.iter().cloned().chain(new_rules).collect()
+        };
 
         RuleWithNamedFields {
             rule: Rc::new(Rule::Or(rules)),
@@ -505,13 +517,21 @@ impl<Pat> RuleWithNamedFields<Pat> {
     }
 
     pub fn fold(self, folder: &mut impl Folder<Pat>) -> Self {
+        // HACK(eddyb) remove separate pattern-matching post-NLL
+        let is_leaf = match &*self.rule {
+            Rule::Empty | Rule::Eat(_) | Rule::NegativeLookahead(_) | Rule::Call(_) => true,
+            _ => false,
+        };
+        if is_leaf {
+            return folder.fold_leaf(self);
+        }
         let field_rule = |rule: &Rc<Rule<Pat>>, i| RuleWithNamedFields {
             rule: rule.clone(),
             fields: self.filter_fields(Some(i)).collect(),
         };
         let mut rule = match &*self.rule {
             Rule::Empty | Rule::Eat(_) | Rule::NegativeLookahead(_) | Rule::Call(_) => {
-                return folder.fold_leaf(self);
+                unreachable!()
             }
             Rule::Concat([left, right]) => {
                 folder.fold_concat(field_rule(left, 0), field_rule(right, 1))
