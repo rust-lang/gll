@@ -648,25 +648,29 @@ pub trait CodeLabel: fmt::Debug + Ord + Hash + Copy + 'static {
     fn enclosing_fn(self) -> Self;
 }
 
-pub macro traverse {
-    (typeof($leaf:ty) _) => { $leaf },
-    (typeof($leaf:ty) ?) => { Option<traverse!(typeof($leaf) _)> },
-    (typeof($leaf:ty) ($l_shape:tt, $r_shape:tt)) => { (traverse!(typeof($leaf) $l_shape), traverse!(typeof($leaf) $r_shape)) },
-    (typeof($leaf:ty) { $($i:tt: $kind:pat => $shape:tt,)* }) => { ($(traverse!(typeof($leaf) $shape),)*) },
-    (typeof($leaf:ty) [$shape:tt]) => { (traverse!(typeof($leaf) $shape),) },
+// HACK(eddyb) work around `macro_rules` not being `use`-able.
+pub use crate::traverse;
+
+#[macro_export]
+macro_rules! traverse {
+    (typeof($leaf:ty) _) => { $leaf };
+    (typeof($leaf:ty) ?) => { Option<traverse!(typeof($leaf) _)> };
+    (typeof($leaf:ty) ($l_shape:tt, $r_shape:tt)) => { (traverse!(typeof($leaf) $l_shape), traverse!(typeof($leaf) $r_shape)) };
+    (typeof($leaf:ty) { $($i:tt: $kind:pat => $shape:tt,)* }) => { ($(traverse!(typeof($leaf) $shape),)*) };
+    (typeof($leaf:ty) [$shape:tt]) => { (traverse!(typeof($leaf) $shape),) };
 
     ($sppf:ident, $node:ident, _, $result:pat => $cont:expr) => {
         match $node { $result => $cont }
-    },
+    };
     ($sppf:ident, $node:ident, ?, $result:pat => $cont:expr) => {
         match Some($node) { $result => $cont }
-    },
+    };
     ($sppf:ident, $node:ident, ($l_shape:tt, $r_shape:tt), $result:pat => $cont:expr) => {
         for (left, right) in $sppf.all_splits($node) {
             traverse!($sppf, left, $l_shape, left =>
                traverse!($sppf, right, $r_shape, right => match (left, right) { $result => $cont }))
         }
-    },
+    };
     ($sppf:ident, $node:ident, { $($i:tt: $kind:pat => $shape:tt,)* }, $result:pat => $cont:expr) => {
         for node in $sppf.all_choices($node) {
             let tuple_template = <($(traverse!(typeof(_) $shape),)*)>::default();
@@ -679,7 +683,7 @@ pub macro traverse {
                 _ => unreachable!(),
             }
         }
-    },
+    };
     ($sppf:ident, $node:ident, [$shape:tt], $result:pat => $cont:expr) => {
         {
             let tuple_template = <(traverse!(typeof(_) $shape),)>::default();
