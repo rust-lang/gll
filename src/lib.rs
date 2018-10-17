@@ -2,7 +2,6 @@
     arbitrary_self_types,
     decl_macro,
     fn_traits,
-    range_contains,
     slice_patterns,
     str_escape,
     try_from,

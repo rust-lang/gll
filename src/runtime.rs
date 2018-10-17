@@ -194,14 +194,16 @@ impl<'a, T: PartialEq> InputMatch<&'a [T]> for [T] {
 
 impl<T: PartialOrd> InputMatch<RangeInclusive<T>> for [T] {
     fn match_left(&self, pat: RangeInclusive<T>) -> Option<usize> {
-        if pat.contains(self.first()?) {
+        let x = self.first()?;
+        if pat.start() <= x && x <= pat.end() {
             Some(1)
         } else {
             None
         }
     }
     fn match_right(&self, pat: RangeInclusive<T>) -> Option<usize> {
-        if pat.contains(self.last()?) {
+        let x = self.last()?;
+        if pat.start() <= x && x <= pat.end() {
             Some(1)
         } else {
             None
@@ -229,7 +231,7 @@ impl<'a> InputMatch<&'a str> for str {
 impl InputMatch<RangeInclusive<char>> for str {
     fn match_left(&self, pat: RangeInclusive<char>) -> Option<usize> {
         let c = self.chars().next()?;
-        if pat.contains(&c) {
+        if *pat.start() <= c && c <= *pat.end() {
             Some(c.len_utf8())
         } else {
             None
@@ -237,7 +239,7 @@ impl InputMatch<RangeInclusive<char>> for str {
     }
     fn match_right(&self, pat: RangeInclusive<char>) -> Option<usize> {
         let c = self.chars().rev().next()?;
-        if pat.contains(&c) {
+        if *pat.start() <= c && c <= *pat.end() {
             Some(c.len_utf8())
         } else {
             None
