@@ -1,7 +1,6 @@
 #![feature(
     arbitrary_self_types,
     fn_traits,
-    slice_patterns,
     str_escape,
     try_from,
     unboxed_closures
