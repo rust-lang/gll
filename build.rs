@@ -1,9 +1,4 @@
-#![feature(
-    arbitrary_self_types,
-    macro_literal_matcher,
-    str_escape,
-    try_from
-)]
+#![feature(arbitrary_self_types, macro_literal_matcher, str_escape)]
 
 extern crate indexing;
 extern crate ordermap;

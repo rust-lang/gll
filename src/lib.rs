@@ -1,4 +1,4 @@
-#![feature(arbitrary_self_types, str_escape, try_from)]
+#![feature(arbitrary_self_types, str_escape)]
 // HACK(eddyb) needed for bootstrapping `parse_grammar`.
 #![feature(generators, generator_trait)]
 

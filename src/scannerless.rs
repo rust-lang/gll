@@ -1,6 +1,5 @@
 use grammar::{self, MatchesEmpty, MaybeKnown};
 use std::char;
-use std::convert::TryFrom;
 use std::ops::{self, Bound, RangeBounds};
 
 pub type Grammar<S = String> = grammar::Grammar<Pat<S>>;
@@ -36,12 +35,16 @@ impl<'a, S> From<(Bound<&'a char>, Bound<&'a char>)> for Pat<S> {
     fn from(range: (Bound<&char>, Bound<&char>)) -> Self {
         let start = match range.start_bound() {
             Bound::Included(&c) => c,
-            Bound::Excluded(&c) => char::try_from(c as u32 + 1).unwrap(),
+            Bound::Excluded(&c) => {
+                char::from_u32(c as u32 + 1).expect("excluded lower char bound too high")
+            }
             Bound::Unbounded => '\0',
         };
         let end = match range.end_bound() {
             Bound::Included(&c) => c,
-            Bound::Excluded(&c) => char::try_from(c as u32 - 1).unwrap(),
+            Bound::Excluded(&c) => {
+                char::from_u32(c as u32 - 1).expect("excluded upper char bound too low")
+            }
             Bound::Unbounded => char::MAX,
         };
         Pat::Range(start, end)
