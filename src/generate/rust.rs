@@ -223,7 +223,9 @@ impl<Pat: Ord + Hash + MatchesEmpty + RustInputPat> Grammar<Pat> {
         self.check();
 
         let mut out = String::new();
-        macro put($($x:expr),*) {{ $(write!(out, "{}", $x).unwrap();)* }}
+        macro_rules! put {
+            ($($x:expr),*) => {{ $(write!(out, "{}", $x).unwrap();)* }}
+        }
 
         let parse_nodes = RefCell::new(OrderMap::new());
         let mut named_parse_nodes = vec![];
@@ -235,7 +237,11 @@ use std::any;
 use std::fmt;
 use std::marker::PhantomData;
 use std::ops::{GeneratorState, Generator};
+");
+        // HACK(eddyb) see `out += out_body` at the end
+        let out_imports = mem::replace(&mut out, String::new());
 
+        put!("
 struct GenIter<G>(G);
 
 impl<G: Generator<Return = ()>> Iterator for GenIter<G> {
@@ -814,6 +820,9 @@ where I: ::gll::runtime::Input<Slice = ", Pat::rust_slice_ty() ,">
     }
 }
 ");
+        // HACK(eddyb) see `out += out_body` at the end
+        let out_body = mem::replace(&mut out, out_imports);
+
         let mut i = 0;
         while i < parse_nodes.borrow().len() {
             let rule = parse_nodes.borrow().get_index(i).unwrap().0.clone();
@@ -844,34 +853,33 @@ pub enum _P {");
         put!("
 }
 
-macro handle_any_match_type($handle:expr, $case:expr) {
-    match $handle.node.kind {");
+macro_rules! handle_any_match_type {
+    ($handle:expr, $case:expr) => {
+        match $handle.node.kind {");
         for (kind, _, ty) in &all_parse_nodes {
             if let Some(ty) = ty {
                 put!("
-        ", kind, " => $case(Handle::<_, ", ty, "> {
-            node: $handle.node,
-            parser: $handle.parser,
-            _marker: PhantomData,
-        }),");
+            ", kind, " => $case(Handle::<_, ", ty, "> {
+                node: $handle.node,
+                parser: $handle.parser,
+                _marker: PhantomData,
+            }),");
             }
         }
         put!("
-        _ => $case(Handle::<_, ()> {
-            node: $handle.node,
-            parser: $handle.parser,
-            _marker: PhantomData,
-        }),
+            _ => $case(Handle::<_, ()> {
+                node: $handle.node,
+                parser: $handle.parser,
+                _marker: PhantomData,
+            }),
+        }
     }
 }
 
-macro P {");
+macro_rules! P {");
         for (i, (kind, _, _)) in all_parse_nodes.iter().enumerate() {
-            if i != 0 {
-                put!(",");
-            }
             put!("
-    (", kind.0, ") => (_P::_", i, ")");
+    (", kind.0, ") => (_P::_", i, ");");
         }
         put!("
 }
@@ -950,6 +958,9 @@ impl CodeLabel for _C {
     }
 }
 ");
+        // HACK(eddyb) make sure the main part of the output is after any
+        // `macro_rules!`, which are only visible after their definition.
+        out += &out_body;
 
         // HACK(eddyb) don't try to feed input to `rustfmt` without
         // knowing that it will at least try to read it.
@@ -1100,14 +1111,16 @@ impl<A, F: FnOnce<A>> FnOnce<A> for Thunk<F> {
     }
 }
 
-macro thunk($($x:expr),*) {{
-    let mut prefix = String::new();
-    $(write!(prefix, "{}", $x).unwrap();)*
-    Thunk::new(move |mut cont| {
-        cont.to_inline().insert_str(0, &prefix);
-        cont
-    })
-}}
+macro_rules! thunk {
+    ($($x:expr),*) => {{
+        let mut prefix = String::new();
+        $(write!(prefix, "{}", $x).unwrap();)*
+        Thunk::new(move |mut cont| {
+            cont.to_inline().insert_str(0, &prefix);
+            cont
+        })
+    }}
+}
 
 fn pop_state<F: FnOnce(Continuation) -> Continuation>(
     f: impl FnOnce(&str) -> Thunk<F>,

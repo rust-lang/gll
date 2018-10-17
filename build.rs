@@ -1,6 +1,5 @@
 #![feature(
     arbitrary_self_types,
-    decl_macro,
     fn_traits,
     macro_literal_matcher,
     slice_patterns,

@@ -1,3 +1,6 @@
+// HACK(eddyb) silence warnings from unused exports in the generated code.
+#![allow(unused)]
+
 include!(concat!(env!("OUT_DIR"), "/parse_grammar.rs"));
 
 use scannerless::Pat as SPat;
