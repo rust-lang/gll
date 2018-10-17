@@ -134,9 +134,11 @@ impl<Pat> RuleWithNamedFields<Pat> {
                         .map(|mut path| {
                             path.insert(0, 0);
                             path
-                        }).collect(),
+                        })
+                        .collect(),
                 )
-            }).collect();
+            })
+            .collect();
         self.rule = Rc::new(Rule::Opt(self.rule));
         self
     }
@@ -152,9 +154,11 @@ impl<Pat> RuleWithNamedFields<Pat> {
                         .map(|mut path| {
                             path.insert(0, 0);
                             path
-                        }).collect(),
+                        })
+                        .collect(),
                 )
-            }).collect();
+            })
+            .collect();
         if let Some(sep) = &sep {
             assert!(sep.fields.is_empty());
         }
@@ -173,9 +177,11 @@ impl<Pat> RuleWithNamedFields<Pat> {
                         .map(|mut path| {
                             path.insert(0, 0);
                             path
-                        }).collect(),
+                        })
+                        .collect(),
                 )
-            }).collect();
+            })
+            .collect();
         if let Some(sep) = &sep {
             assert!(sep.fields.is_empty());
         }
@@ -205,9 +211,11 @@ impl<Pat> Add for RuleWithNamedFields<Pat> {
                         .map(|mut path| {
                             path.insert(0, 0);
                             path
-                        }).collect(),
+                        })
+                        .collect(),
                 )
-            }).collect();
+            })
+            .collect();
         for (name, paths) in other.fields {
             assert!(!self.fields.contains_key(&name), "duplicate field {}", name);
             self.fields.insert(
@@ -217,7 +225,8 @@ impl<Pat> Add for RuleWithNamedFields<Pat> {
                     .map(|mut path| {
                         path.insert(0, 1);
                         path
-                    }).collect(),
+                    })
+                    .collect(),
             );
         }
         self.rule = Rc::new(Rule::Concat([self.rule, other.rule]));
@@ -485,7 +494,8 @@ impl<Pat> RuleWithNamedFields<Pat> {
                     } else {
                         None
                     }
-                }).collect();
+                })
+                .collect();
             if !paths.is_empty() {
                 Some((name.clone(), paths))
             } else {

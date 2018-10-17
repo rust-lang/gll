@@ -597,14 +597,16 @@ impl<'i, P: ParseNodeKind> ParseNode<'i, P> {
 
     pub fn unpack_opt(self) -> Option<Self> {
         match self.kind.shape() {
-            ParseNodeShape::Opt(inner) => if self.range.is_empty() {
-                None
-            } else {
-                Some(ParseNode {
-                    kind: inner,
-                    range: self.range,
-                })
-            },
+            ParseNodeShape::Opt(inner) => {
+                if self.range.is_empty() {
+                    None
+                } else {
+                    Some(ParseNode {
+                        kind: inner,
+                        range: self.range,
+                    })
+                }
+            }
             shape => unreachable!("unpack_opt({}): non-opt shape {}", self, shape),
         }
     }
