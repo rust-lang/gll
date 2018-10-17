@@ -130,7 +130,8 @@ fn main() {
                 {Str:StrLit} |
                 {CharRange:{ {{start:CharLit}?} ".." {{end:CharLit}?} }} |
                 {CharRangeInclusive:{ {{start:CharLit}?} "..=" {end:CharLit} }};
-        }.insert_whitespace(grammar::call("Whitespace")),
+        }
+        .insert_whitespace(grammar::call("Whitespace")),
     );
 
     fs::write(&out_dir.join("parse_grammar.rs"), grammar.generate_rust()).unwrap();

@@ -191,7 +191,8 @@ impl<Pat: Ord + Hash + MatchesEmpty + RustInputPat> Rule<Pat> {
                 Rc::new(Rule::Opt(Rc::new(Rule::Concat([
                     sep.clone(),
                     self.clone(),
-                ])))).parse_node_kind(parse_nodes),
+                ]))))
+                .parse_node_kind(parse_nodes),
             ),
         };
         parse_nodes.borrow_mut().get_mut(self).unwrap().1 = Some(shape);
