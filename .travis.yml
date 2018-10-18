@@ -1,7 +1,13 @@
 language: rust
-rust: nightly
+rust:
+  - stable
+  - beta
+  - nightly
 cache: cargo
 script: cargo test --all
 branches:
   only:
   - master
+matrix:
+  allow_failures:
+  - rust: stable # TODO(eddyb) remove when 1.30 is released
