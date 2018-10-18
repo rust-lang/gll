@@ -1,5 +1,5 @@
 use grammar::ParseNodeShape;
-use grammar::{Grammar, MatchesEmpty, Rule, RuleWithNamedFields};
+use grammar::{Grammar, MatchesEmpty, Rc, Rule, RuleWithNamedFields};
 use ordermap::{OrderMap, OrderSet};
 use scannerless;
 use std::cell::RefCell;
@@ -10,7 +10,6 @@ use std::io::Write;
 use std::mem;
 use std::ops::Add;
 use std::process::{Command, Stdio};
-use std::rc::Rc;
 
 pub trait RustInputPat {
     fn rust_slice_ty() -> String;
@@ -70,7 +69,7 @@ impl<Pat: PartialEq> RuleWithNamedFields<Pat> {
     }
 }
 
-impl<Pat: Ord + Hash + MatchesEmpty + RustInputPat> Rule<Pat> {
+impl<Pat> Rule<Pat> {
     fn field_pathset_type(&self, paths: &OrderSet<Vec<usize>>) -> String {
         let ty = self.field_type(paths.get_index(0).unwrap());
         for path in paths.iter().skip(1) {
@@ -101,10 +100,13 @@ impl<Pat: Ord + Hash + MatchesEmpty + RustInputPat> Rule<Pat> {
             }
         }
     }
+}
+
+impl<Pat: Ord + Hash + RustInputPat> Rc<Rule<Pat>> {
     fn parse_node_kind(
-        self: &Rc<Self>,
+        &self,
         parse_nodes: &RefCell<
-            OrderMap<Rc<Self>, (ParseNodeKind, Option<ParseNodeShape<ParseNodeKind>>)>,
+            OrderMap<Self, (ParseNodeKind, Option<ParseNodeShape<ParseNodeKind>>)>,
         >,
     ) -> ParseNodeKind {
         if let Some((kind, _)) = parse_nodes.borrow().get(self) {
@@ -162,9 +164,9 @@ impl<Pat: Ord + Hash + MatchesEmpty + RustInputPat> Rule<Pat> {
     }
 
     fn fill_parse_node_shape(
-        self: &Rc<Self>,
+        &self,
         parse_nodes: &RefCell<
-            OrderMap<Rc<Self>, (ParseNodeKind, Option<ParseNodeShape<ParseNodeKind>>)>,
+            OrderMap<Self, (ParseNodeKind, Option<ParseNodeShape<ParseNodeKind>>)>,
         >,
     ) {
         if parse_nodes.borrow()[self].1.is_some() {
@@ -1318,11 +1320,11 @@ fn reify_as(label: CodeLabel) -> Thunk<impl ContFn> {
     })
 }
 
-impl<Pat: Ord + Hash + MatchesEmpty + RustInputPat> Rule<Pat> {
+impl<Pat: Ord + Hash + RustInputPat> Rc<Rule<Pat>> {
     #[cfg_attr(rustfmt, rustfmt_skip)]
     fn generate_parse<'a>(
-        self: &'a Rc<Self>,
-        parse_nodes: Option<&'a RefCell<OrderMap<Rc<Rule<Pat>>, (ParseNodeKind, Option<ParseNodeShape<ParseNodeKind>>)>>>
+        &'a self,
+        parse_nodes: Option<&'a RefCell<OrderMap<Self, (ParseNodeKind, Option<ParseNodeShape<ParseNodeKind>>)>>>
     ) -> Thunk<impl ContFn + 'a> {
         Thunk::new(move |cont| match (&**self, parse_nodes) {
             (Rule::Empty, _) => cont,
@@ -1422,11 +1424,14 @@ impl<Pat: Ord + Hash + MatchesEmpty + RustInputPat> Rule<Pat> {
             }).apply(cont),
         })
     }
+}
+
+impl<Pat: Ord + Hash + RustInputPat> Rule<Pat> {
     fn generate_traverse_shape(
         &self,
         refutable: bool,
         parse_nodes: &RefCell<
-            OrderMap<Rc<Rule<Pat>>, (ParseNodeKind, Option<ParseNodeShape<ParseNodeKind>>)>,
+            OrderMap<Rc<Self>, (ParseNodeKind, Option<ParseNodeShape<ParseNodeKind>>)>,
         >,
     ) -> String {
         match self {

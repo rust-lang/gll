@@ -1,4 +1,3 @@
-#![feature(arbitrary_self_types)]
 // HACK(eddyb) needed for bootstrapping `parse_grammar`.
 #![feature(generators, generator_trait)]
 
