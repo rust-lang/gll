@@ -889,7 +889,7 @@ impl fmt::Display for _P {
         let s = match *self {");
         for (kind, _, _) in &all_parse_nodes {
             put!("
-            ", kind, " => \"", kind.0.escape_default(), "\",");
+            ", kind, " => ", format!("{:?}", kind.0), ",");
         }
         put!("
         };
