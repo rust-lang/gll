@@ -1,6 +1,3 @@
-// HACK(eddyb) needed for bootstrapping `parse_grammar`.
-#![feature(generators, generator_trait)]
-
 extern crate indexing;
 extern crate ordermap;
 extern crate proc_macro2;
