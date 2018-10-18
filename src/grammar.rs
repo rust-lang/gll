@@ -4,8 +4,36 @@ use std::collections::HashMap;
 use std::fmt;
 use std::hash::Hash;
 use std::iter;
-use std::ops::{Add, BitAnd, BitOr};
-use std::rc::Rc;
+use std::ops::{Add, BitAnd, BitOr, Deref};
+
+// HACK(eddyb) newtype to avoid needing `arbitrary_self_types`
+#[derive(PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Rc<T>(::std::rc::Rc<T>);
+
+impl<T> Rc<T> {
+    pub fn new(x: T) -> Self {
+        Rc(::std::rc::Rc::new(x))
+    }
+}
+
+impl<T> Clone for Rc<T> {
+    fn clone(&self) -> Self {
+        Rc(self.0.clone())
+    }
+}
+
+impl<T> Deref for Rc<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
+impl<T: fmt::Debug> fmt::Debug for Rc<T> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
 
 pub struct Grammar<Pat> {
     pub(crate) rules: OrderMap<String, RuleWithNamedFields<Pat>>,
@@ -294,7 +322,7 @@ pub enum Rule<Pat> {
     RepeatMore(Rc<Rule<Pat>>, Option<Rc<Rule<Pat>>>),
 }
 
-impl<Pat: Ord + Hash + MatchesEmpty> Rule<Pat> {
+impl<Pat> Rule<Pat> {
     pub(crate) fn field_pathset_is_refutable(&self, paths: &OrderSet<Vec<usize>>) -> bool {
         if paths.len() > 1 {
             true
@@ -314,9 +342,12 @@ impl<Pat: Ord + Hash + MatchesEmpty> Rule<Pat> {
             Rule::Or(..) | Rule::Opt(_) => true,
         }
     }
+}
+
+impl<Pat: Ord + Hash + MatchesEmpty> Rc<Rule<Pat>> {
     fn can_be_empty(
-        self: &Rc<Self>,
-        cache: &mut HashMap<Rc<Self>, MaybeKnown<bool>>,
+        &self,
+        cache: &mut HashMap<Self, MaybeKnown<bool>>,
         grammar: &Grammar<Pat>,
     ) -> MaybeKnown<bool> {
         match cache.entry(self.clone()) {
@@ -349,8 +380,8 @@ impl<Pat: Ord + Hash + MatchesEmpty> Rule<Pat> {
     }
 
     fn check_non_empty_opt(
-        self: &Rc<Self>,
-        cache: &mut HashMap<Rc<Self>, MaybeKnown<bool>>,
+        &self,
+        cache: &mut HashMap<Self, MaybeKnown<bool>>,
         grammar: &Grammar<Pat>,
     ) {
         match &**self {
@@ -378,7 +409,7 @@ impl<Pat: Ord + Hash + MatchesEmpty> Rule<Pat> {
         }
     }
 
-    fn check_call_names(self: &Rc<Self>, grammar: &Grammar<Pat>) {
+    fn check_call_names(&self, grammar: &Grammar<Pat>) {
         match &**self {
             Rule::Empty | Rule::Eat(_) | Rule::NegativeLookahead(_) => {}
             Rule::Call(rule) => {

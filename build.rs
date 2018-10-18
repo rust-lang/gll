@@ -1,5 +1,3 @@
-#![feature(arbitrary_self_types)]
-
 extern crate indexing;
 extern crate ordermap;
 
