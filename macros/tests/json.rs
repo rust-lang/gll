@@ -1,11 +1,8 @@
-#![feature(proc_macro_hygiene)]
-
 extern crate gll;
 extern crate gll_macros;
 extern crate quote;
 
-#[test]
-fn json_like_proc_macro() {
+mod json_like {
     ::gll_macros::proc_macro_parser! {
         Value =
             Null:"null" |
@@ -17,8 +14,11 @@ fn json_like_proc_macro() {
             InterpolateRust:{ "(" TOKEN_TREE+ ")" };
         Field = name:IDENT ":" value:Value;
     }
+}
 
-    Value::parse_with(
+#[test]
+fn json_like_proc_macro() {
+    json_like::Value::parse_with(
         quote::quote! {
             // Example from `serde_json`.
             {

@@ -1,5 +1,3 @@
-#![feature(proc_macro_hygiene)]
-
 extern crate gll;
 extern crate gll_macros;
 
@@ -7,11 +5,12 @@ use std::fs::File;
 
 macro_rules! testcases {
     ($($name:ident { $($grammar:tt)* }: $rule:ident($input:expr) => $expected:expr),*) => {
-        $(#[test]
+        $(mod $name {
+            ::gll_macros::scannerless_parser!($($grammar)*);
+        }
+        #[test]
         fn $name() {
-           ::gll_macros::scannerless_parser!($($grammar)*);
-
-            $rule::parse_with($input, |parser, result| {
+            $name::$rule::parse_with($input, |parser, result| {
                 let result = format!("{:#?}", result.unwrap());
                 assert!(
                     result == $expected,
