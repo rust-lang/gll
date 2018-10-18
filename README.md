@@ -13,8 +13,6 @@ gll = "0.0.1"
 gll-macros = "0.0.1"
 ```
 ```rust
-#![feature(generators, generator_trait)]
-
 extern crate gll;
 extern crate gll_macros;
 ```

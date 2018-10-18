@@ -470,12 +470,32 @@ pub struct ParseForest<'i, P: ParseNodeKind> {
     pub possibilities: HashMap<ParseNode<'i, P>, BTreeSet<usize>>,
 }
 
+#[derive(Debug)]
+pub struct MoreThanOne;
+
 impl<'i, P: ParseNodeKind> ParseForest<'i, P> {
     pub fn add(&mut self, kind: P, range: Range<'i>, possibility: usize) {
         self.possibilities
             .entry(ParseNode { kind, range })
             .or_default()
             .insert(possibility);
+    }
+
+    pub fn one_choice(&self, node: ParseNode<'i, P>) -> Result<ParseNode<'i, P>, MoreThanOne> {
+        match node.kind.shape() {
+            ParseNodeShape::Choice => {
+                let choices = &self.possibilities[&node];
+                if choices.len() > 1 {
+                    return Err(MoreThanOne);
+                }
+                let &choice = choices.iter().next().unwrap();
+                Ok(ParseNode {
+                    kind: P::from_usize(choice),
+                    range: node.range,
+                })
+            }
+            shape => unreachable!("one_choice({}): non-choice shape {}", node, shape),
+        }
     }
 
     pub fn all_choices<'a>(
@@ -494,6 +514,33 @@ impl<'i, P: ParseNodeKind> ParseForest<'i, P> {
                     range: node.range,
                 }),
             shape => unreachable!("all_choices({}): non-choice shape {}", node, shape),
+        }
+    }
+
+    pub fn one_split(
+        &self,
+        node: ParseNode<'i, P>,
+    ) -> Result<(ParseNode<'i, P>, ParseNode<'i, P>), MoreThanOne> {
+        match node.kind.shape() {
+            ParseNodeShape::Split(left_kind, right_kind) => {
+                let splits = &self.possibilities[&node];
+                if splits.len() > 1 {
+                    return Err(MoreThanOne);
+                }
+                let &split = splits.iter().next().unwrap();
+                let (left, right, _) = node.range.split_at(split);
+                Ok((
+                    ParseNode {
+                        kind: left_kind,
+                        range: Range(left),
+                    },
+                    ParseNode {
+                        kind: right_kind,
+                        range: Range(right),
+                    },
+                ))
+            }
+            shape => unreachable!("one_split({}): non-split shape {}", node, shape),
         }
     }
 
@@ -659,23 +706,59 @@ macro_rules! traverse {
     (typeof($leaf:ty) { $($i:tt: $kind:pat => $shape:tt,)* }) => { ($(traverse!(typeof($leaf) $shape),)*) };
     (typeof($leaf:ty) [$shape:tt]) => { (traverse!(typeof($leaf) $shape),) };
 
-    ($sppf:ident, $node:ident, _, $result:pat => $cont:expr) => {
-        match $node { $result => $cont }
+    (one($sppf:ident, $node:ident) _) => {
+        $node
     };
-    ($sppf:ident, $node:ident, ?, $result:pat => $cont:expr) => {
-        match Some($node) { $result => $cont }
+    (one($sppf:ident, $node:ident) ?) => {
+        Some($node)
     };
-    ($sppf:ident, $node:ident, ($l_shape:tt, $r_shape:tt), $result:pat => $cont:expr) => {
-        for (left, right) in $sppf.all_splits($node) {
-            traverse!($sppf, left, $l_shape, left =>
-               traverse!($sppf, right, $r_shape, right => match (left, right) { $result => $cont }))
+    (one($sppf:ident, $node:ident) ($l_shape:tt, $r_shape:tt)) => {
+        {
+            let (left, right) = $sppf.one_split($node)?;
+            (
+                traverse!(one($sppf, left) $l_shape),
+                traverse!(one($sppf, right) $r_shape),
+            )
         }
     };
-    ($sppf:ident, $node:ident, { $($i:tt: $kind:pat => $shape:tt,)* }, $result:pat => $cont:expr) => {
+    (one($sppf:ident, $node:ident) { $($i:tt: $kind:pat => $shape:tt,)* }) => {
+        {
+            let node = $sppf.one_choice($node)?;
+            let mut r = <($(traverse!(typeof(_) $shape),)*)>::default();
+            match node.kind {
+                $($kind => r.$i = traverse!(one($sppf, node) $shape),)*
+                _ => unreachable!(),
+            }
+            r
+        }
+    };
+    (one($sppf:ident, $node:ident) [$shape:tt]) => {
+        {
+            let mut r = <(traverse!(typeof(_) $shape),)>::default();
+            if let Some(node) = $node.unpack_opt() {
+                r.0 = traverse!(one($sppf, node) $shape);
+            }
+            r
+        }
+    };
+
+    (all($sppf:ident, $node:ident) _, $result:pat => $cont:expr) => {
+        match $node { $result => $cont }
+    };
+    (all($sppf:ident, $node:ident) ?, $result:pat => $cont:expr) => {
+        match Some($node) { $result => $cont }
+    };
+    (all($sppf:ident, $node:ident) ($l_shape:tt, $r_shape:tt), $result:pat => $cont:expr) => {
+        for (left, right) in $sppf.all_splits($node) {
+            traverse!(all($sppf, left) $l_shape, left =>
+                traverse!(all($sppf, right) $r_shape, right => match (left, right) { $result => $cont }))
+        }
+    };
+    (all($sppf:ident, $node:ident) { $($i:tt: $kind:pat => $shape:tt,)* }, $result:pat => $cont:expr) => {
         for node in $sppf.all_choices($node) {
             let tuple_template = <($(traverse!(typeof(_) $shape),)*)>::default();
             match node.kind {
-                $($kind => traverse!($sppf, node, $shape, x => {
+                $($kind => traverse!(all($sppf, node) $shape, x => {
                     let mut r = tuple_template;
                     r.$i = x;
                     match r { $result => $cont }
@@ -684,12 +767,12 @@ macro_rules! traverse {
             }
         }
     };
-    ($sppf:ident, $node:ident, [$shape:tt], $result:pat => $cont:expr) => {
+    (all($sppf:ident, $node:ident) [$shape:tt], $result:pat => $cont:expr) => {
         {
             let tuple_template = <(traverse!(typeof(_) $shape),)>::default();
             match $node.unpack_opt() {
                 Some(node) => {
-                    traverse!($sppf, node, $shape, x => {
+                    traverse!(all($sppf, node) $shape, x => {
                         let mut r = tuple_template;
                         r.0 = x;
                         match r { $result => $cont }

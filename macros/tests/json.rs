@@ -1,4 +1,4 @@
-#![feature(generators, generator_trait, proc_macro_hygiene)]
+#![feature(proc_macro_hygiene)]
 
 extern crate gll;
 extern crate gll_macros;

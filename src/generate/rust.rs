@@ -219,9 +219,19 @@ impl fmt::Display for CodeLabel {
     }
 }
 
+#[derive(Default)]
+pub struct Options {
+    pub unstable: bool,
+
+    _nonexhaustive: (),
+}
+
 #[cfg_attr(rustfmt, rustfmt_skip)]
 impl<Pat: Ord + Hash + MatchesEmpty + RustInputPat> Grammar<Pat> {
     pub fn generate_rust(&self) -> String {
+        self.generate_rust_with_options(Options::default())
+    }
+    pub fn generate_rust_with_options(&self, options: Options) -> String {
         self.check();
 
         let mut out = String::new();
@@ -237,13 +247,17 @@ impl<Pat: Ord + Hash + MatchesEmpty + RustInputPat> Grammar<Pat> {
 use gll::runtime::{Call, Continuation, ParseNodeKind, CodeLabel, ParseNodeShape, ParseNode, Range, traverse};
 use std::any;
 use std::fmt;
-use std::marker::PhantomData;
+use std::marker::PhantomData;");
+        if options.unstable {
+            put!("
 use std::ops::{GeneratorState, Generator};
 ");
+        }
         // HACK(eddyb) see `out += out_body` at the end
         let out_imports = mem::replace(&mut out, String::new());
 
-        put!("
+        if options.unstable {
+            put!("
 struct GenIter<G>(G);
 
 impl<G: Generator<Return = ()>> Iterator for GenIter<G> {
@@ -256,7 +270,9 @@ impl<G: Generator<Return = ()>> Iterator for GenIter<G> {
         }
     }
 }
-
+");
+        }
+        put!("
 #[derive(Debug)]
 pub enum ParseError<T> {
     TooShort(T),
@@ -607,13 +623,14 @@ impl<'a, 'i, I: ::gll::runtime::Input> fmt::Debug for Handle<'a, 'i, I, ", name,
 impl<'a, 'i, I: ::gll::runtime::Input> fmt::Debug for Handle<'a, 'i, I, ", name, "<'a, 'i, I>> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, \"{:?} => \", self.source_info())?;
-        for (i, x) in self.all().enumerate() {
-            if i > 0 {
+        let mut first = true;
+        self.try_for_each(|x| {
+            if !first {
                 write!(f, \" | \")?;
             }
-            fmt::Debug::fmt(&x, f)?;
-        }
-        Ok(())
+            first = false;
+            fmt::Debug::fmt(&x, f)
+        })
     }
 }
 
@@ -722,53 +739,75 @@ impl<'a, 'i, I: ::gll::runtime::Input> ", name, "<'a, 'i, I> {");
 
 impl<'a, 'i, I: ::gll::runtime::Input> Handle<'a, 'i, I, ", name, "<'a, 'i, I>> {
     pub fn one(self) -> Result<", name, "<'a, 'i, I>, Ambiguity<Self>> {
-        let mut iter = self.all();
-        let first = iter.next().unwrap();
-        if iter.next().is_none() {
-            Ok(first)
-        } else {
-            Err(Ambiguity(self))
-        }
-    }
-    pub fn all(self) -> impl Iterator<Item = ", name, "<'a, 'i, I>> {
-        let _sppf = &self.parser.sppf;
-        GenIter(move || {
+        // HACK(eddyb) using a closure to catch `Err`s from `?`
+        (|| Ok({
+            let sppf = &self.parser.sppf;
             let node = self.node.unpack_alias();");
-            if let Some(variants) = &variants {
-                put!("
-            for node in self.parser.sppf.all_choices(node) {
-                match node.kind {");
-                for (rule, variant, _) in variants {
+                if let Some(variants) = &variants {
                     put!("
-                    ", rule.parse_node_kind(&parse_nodes), " => {
-                        traverse!(_sppf, node, ", rule.generate_traverse_shape(false, &parse_nodes), ",
-                            _r => yield ", name, "::", variant, "_from_sppf(self.parser, node, _r));
-                    }");
-                }
-                put!("
-                    _ => unreachable!(),
-                }
-            }");
-            } else {
-                put!("
-            traverse!(_sppf, node, ", rule.rule.generate_traverse_shape(false, &parse_nodes), ",
-                _r => yield ", name, "::from_sppf(self.parser, node, _r));");
-            }
-            put!("
-        })
-    }
-    pub fn for_each(self, mut f: impl FnMut(", name, "<'a, 'i, I>)) {
-        let _sppf = &self.parser.sppf;
-        let node = self.node.unpack_alias();");
-            if let Some(variants) = &variants {
-                put!("
-        for node in self.parser.sppf.all_choices(node) {
+            let node = sppf.one_choice(node)?;
             match node.kind {");
                 for (rule, variant, _) in variants {
                     put!("
                 ", rule.parse_node_kind(&parse_nodes), " => {
-                    traverse!(_sppf, node, ", rule.generate_traverse_shape(false, &parse_nodes), ",
-                        _r => f(", name, "::", variant, "_from_sppf(self.parser, node, _r)));
+                    let r = traverse!(one(sppf, node) ", rule.generate_traverse_shape(false, &parse_nodes), ");
+                    ", name, "::", variant, "_from_sppf(self.parser, node, r)
+                }");
+                }
+                put!("
+                _ => unreachable!(),
+            }");
+                } else {
+                put!("
+            let r = traverse!(one(sppf, node) ", rule.rule.generate_traverse_shape(false, &parse_nodes), ");
+            ", name, "::from_sppf(self.parser, node, r)");
+                }
+                put!("
+        }))().map_err(|::gll::runtime::MoreThanOne| Ambiguity(self))
+    }");
+            if options.unstable {
+                put!("
+    pub fn all(self) -> impl Iterator<Item = ", name, "<'a, 'i, I>> {
+        let sppf = &self.parser.sppf;
+        GenIter(move || {
+            let node = self.node.unpack_alias();");
+                if let Some(variants) = &variants {
+                    put!("
+            for node in sppf.all_choices(node) {
+                match node.kind {");
+                    for (rule, variant, _) in variants {
+                        put!("
+                    ", rule.parse_node_kind(&parse_nodes), " => {
+                        traverse!(all(sppf, node) ", rule.generate_traverse_shape(false, &parse_nodes), ",
+                            r => yield ", name, "::", variant, "_from_sppf(self.parser, node, r));
+                    }");
+                    }
+                    put!("
+                    _ => unreachable!(),
+                }
+            }");
+                } else {
+                    put!("
+            traverse!(all(sppf, node) ", rule.rule.generate_traverse_shape(false, &parse_nodes), ",
+                r => yield ", name, "::from_sppf(self.parser, node, r));");
+                }
+                put!("
+        })
+    }");
+            }
+            put!("
+    pub fn for_each(self, mut f: impl FnMut(", name, "<'a, 'i, I>)) {
+        let sppf = &self.parser.sppf;
+        let node = self.node.unpack_alias();");
+            if let Some(variants) = &variants {
+                put!("
+        for node in sppf.all_choices(node) {
+            match node.kind {");
+                for (rule, variant, _) in variants {
+                    put!("
+                ", rule.parse_node_kind(&parse_nodes), " => {
+                    traverse!(all(sppf, node) ", rule.generate_traverse_shape(false, &parse_nodes), ",
+                        r => f(", name, "::", variant, "_from_sppf(self.parser, node, r)));
                 }");
                 }
                 put!("
@@ -777,10 +816,24 @@ impl<'a, 'i, I: ::gll::runtime::Input> Handle<'a, 'i, I, ", name, "<'a, 'i, I>> 
         }");
             } else {
                 put!("
-        traverse!(_sppf, node, ", rule.rule.generate_traverse_shape(false, &parse_nodes), ",
-            _r => f(", name, "::from_sppf(self.parser, node, _r)));");
+        traverse!(all(sppf, node) ", rule.rule.generate_traverse_shape(false, &parse_nodes), ",
+            r => f(", name, "::from_sppf(self.parser, node, r)));");
             }
             put!("
+    }
+    pub fn try_for_each<E>(
+        self,
+        mut f: impl FnMut(", name, "<'a, 'i, I>) -> Result<(), E>,
+    ) -> Result<(), E> {
+        let mut r = Ok(());
+        self.for_each(|x| {
+            // FIXME(eddyb) this should stop the iteration early
+            if r.is_err() {
+                return;
+            }
+            r = f(x);
+        });
+        r
     }
 }");
         }
