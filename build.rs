@@ -1,4 +1,4 @@
-#![feature(arbitrary_self_types, macro_literal_matcher)]
+#![feature(arbitrary_self_types)]
 
 extern crate indexing;
 extern crate ordermap;
@@ -20,19 +20,13 @@ type Grammar = scannerless::Grammar<&'static str>;
 
 // HACK(eddyb) more explicit subset of the grammar, for bootstrapping.
 macro_rules! rule {
-    ($pat:literal) => {
-        eat($pat)
-    };
-    (..) => {
-        eat(..)
-    };
-    ({ $start:literal ..= $end:literal }) => {
+    ({ $start:tt ..= $end:tt }) => {
         eat($start..=$end)
     };
-    ({ ! $pat:literal }) => {
+    ({ ! $pat:tt }) => {
         negative_lookahead($pat)
     };
-    ({ ! $start:literal ..= $end:literal }) => {
+    ({ ! $start:tt ..= $end:tt }) => {
         negative_lookahead($start..=$end)
     };
     ($rule:ident) => {
@@ -58,6 +52,9 @@ macro_rules! rule {
     };
     ({ $rule0:tt $($rule:tt)* }) => {
         rule!($rule0) $(+ rule!($rule))*
+    };
+    ($pat:expr) => {
+        eat($pat)
     };
 }
 
