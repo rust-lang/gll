@@ -221,7 +221,10 @@ impl fmt::Display for CodeLabel {
 
 #[derive(Default)]
 pub struct Options {
+    /// Enable the use of unstable features, such as generators.
     pub unstable: bool,
+    /// Disable generating macros (e.g. `P!(...)` sugar for `_P::...`).
+    pub no_macros: bool,
 
     _nonexhaustive: (),
 }
@@ -333,12 +336,6 @@ impl<'a, 'i, I: ::gll::runtime::Input, T> From<Ambiguity<Handle<'a, 'i, I, [T]>>
 impl<'a, 'i, I: ::gll::runtime::Input> fmt::Debug for Handle<'a, 'i, I, ()> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, \"{:?}\", self.source_info())
-    }
-}
-
-impl<'a, 'i, I: ::gll::runtime::Input> fmt::Debug for Handle<'a, 'i, I, Any> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        handle_any_match_type!(self, |handle| write!(f, \"{:?}\", handle))
     }
 }
 
@@ -907,38 +904,26 @@ pub enum _P {");
         }
         put!("
 }
+");
 
-macro_rules! handle_any_match_type {
-    ($handle:expr, $case:expr) => {
-        match $handle.node.kind {");
-        for (kind, _, ty) in &all_parse_nodes {
-            if let Some(ty) = ty {
-                put!("
-            ", kind, " => $case(Handle::<_, ", ty, "> {
-                node: $handle.node,
-                parser: $handle.parser,
-                _marker: PhantomData,
-            }),");
-            }
-        }
-        put!("
-            _ => $case(Handle::<_, ()> {
-                node: $handle.node,
-                parser: $handle.parser,
-                _marker: PhantomData,
-            }),
-        }
-    }
-}
-
-macro_rules! P {");
-        for (i, (kind, _, _)) in all_parse_nodes.iter().enumerate() {
+        let mut substitute = vec![];
+        if options.no_macros {
+            substitute = all_parse_nodes.iter().enumerate().map(|(i, (kind, _, _))| {
+                (kind.to_string(), format!("_P::_{}", i))
+            }).collect();
+        } else {
             put!("
+macro_rules! P {");
+            for (i, (kind, _, _)) in all_parse_nodes.iter().enumerate() {
+                put!("
     (", kind.0, ") => (_P::_", i, ");");
-        }
-        put!("
+            }
+            put!("
 }
+");
+        }
 
+        put!("
 impl fmt::Display for _P {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let s = match *self {");
@@ -975,6 +960,29 @@ impl ParseNodeKind for _P {
     }
     fn to_usize(self) -> usize {
         self as usize
+    }
+}
+
+impl<'a, 'i, I: ::gll::runtime::Input> fmt::Debug for Handle<'a, 'i, I, Any> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self.node.kind {");
+        for (kind, _, ty) in &all_parse_nodes {
+            if let Some(ty) = ty {
+                put!("
+            ", kind, " => write!(f, \"{:?}\", Handle::<_, ", ty, "> {
+                node: self.node,
+                parser: self.parser,
+                _marker: PhantomData,
+            }),");
+            }
+        }
+        put!("
+            _ => write!(f, \"{:?}\", Handle::<_, ()> {
+                node: self.node,
+                parser: self.parser,
+                _marker: PhantomData,
+            }),
+        }
     }
 }
 
@@ -1016,6 +1024,11 @@ impl CodeLabel for _C {
         // HACK(eddyb) make sure the main part of the output is after any
         // `macro_rules!`, which are only visible after their definition.
         out += &out_body;
+
+        // HACK(eddyb) but in the case of `no_macros`, replace invocations
+        for (from, to) in substitute {
+            out = out.replace(&from, &to);
+        }
 
         // HACK(eddyb) don't try to feed input to `rustfmt` without
         // knowing that it will at least try to read it.
