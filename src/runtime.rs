@@ -501,7 +501,7 @@ impl<'i, P: ParseNodeKind> ParseForest<'i, P> {
     pub fn all_choices<'a>(
         &'a self,
         node: ParseNode<'i, P>,
-    ) -> impl Iterator<Item = ParseNode<'i, P>> + 'a {
+    ) -> impl Iterator<Item = ParseNode<'i, P>> + Clone + 'a {
         match node.kind.shape() {
             ParseNodeShape::Choice => self
                 .possibilities
@@ -547,7 +547,7 @@ impl<'i, P: ParseNodeKind> ParseForest<'i, P> {
     pub fn all_splits<'a>(
         &'a self,
         node: ParseNode<'i, P>,
-    ) -> impl Iterator<Item = (ParseNode<'i, P>, ParseNode<'i, P>)> + 'a {
+    ) -> impl Iterator<Item = (ParseNode<'i, P>, ParseNode<'i, P>)> + Clone + 'a {
         match node.kind.shape() {
             ParseNodeShape::Split(left_kind, right_kind) => self
                 .possibilities
@@ -695,6 +695,205 @@ pub trait CodeLabel: fmt::Debug + Ord + Hash + Copy + 'static {
     fn enclosing_fn(self) -> Self;
 }
 
+// FIXME(rust-lang/rust#54175) work around iterator adapter compile-time
+// blowup issues by using a makeshift "non-determinism arrow toolkit".
+pub mod nd {
+    use std::iter;
+    use std::marker::PhantomData;
+
+    pub trait Arrow: Copy {
+        type Input;
+        type Output;
+        type Iter: Iterator<Item = Self::Output> + Clone;
+        fn apply(&self, x: Self::Input) -> Self::Iter;
+
+        fn map<F: Fn(Self::Output) -> R, R>(self, f: F) -> Map<Self, F> {
+            Map(self, f)
+        }
+        fn then<B: Arrow<Input = Self::Output>>(self, b: B) -> Then<Self, B> {
+            Then(self, b)
+        }
+        fn pairs<B: Arrow>(self, b: B) -> Pairs<Self, B>
+        where
+            Self::Output: Copy,
+            B::Input: Copy,
+        {
+            Pairs(self, b)
+        }
+    }
+
+    macro_rules! derive_copy {
+        ($name:ident<$($param:ident $(: $bound:ident)*),*>) => {
+            impl<$($param $(: $bound)*),*> Copy for $name<$($param),*> {}
+            impl<$($param $(: $bound)*),*> Clone for $name<$($param),*> {
+                fn clone(&self) -> Self {
+                    *self
+                }
+            }
+        }
+    }
+
+    pub struct Id<T>(PhantomData<T>);
+    derive_copy!(Id<T>);
+    impl<T> Id<T> {
+        pub fn new() -> Self {
+            Id(PhantomData)
+        }
+    }
+    impl<T: Clone> Arrow for Id<T> {
+        type Input = T;
+        type Output = T;
+        type Iter = iter::Once<T>;
+        fn apply(&self, x: T) -> Self::Iter {
+            iter::once(x)
+        }
+    }
+
+    pub struct FromIter<T, F>(F, PhantomData<T>);
+    derive_copy!(FromIter<T, F: Copy>);
+    impl<T, F> FromIter<T, F> {
+        pub fn new(f: F) -> Self {
+            FromIter(f, PhantomData)
+        }
+    }
+    impl<T, F: Copy + Fn(T) -> I, I: Iterator + Clone> Arrow for FromIter<T, F> {
+        type Input = T;
+        type Output = I::Item;
+        type Iter = I;
+        fn apply(&self, x: T) -> I {
+            self.0(x)
+        }
+    }
+
+    pub struct FromIterK<K, T, F>(K, F, PhantomData<T>);
+    derive_copy!(FromIterK<K: Copy, T, F: Copy>);
+    impl<K, T, F> FromIterK<K, T, F> {
+        pub fn new(k: K, f: F) -> Self {
+            FromIterK(k, f, PhantomData)
+        }
+    }
+    impl<K: Copy, T, F: Copy + Fn(K, T) -> I, I: Iterator + Clone> Arrow for FromIterK<K, T, F> {
+        type Input = T;
+        type Output = I::Item;
+        type Iter = I;
+        fn apply(&self, x: T) -> I {
+            self.1(self.0, x)
+        }
+    }
+
+    #[derive(Copy, Clone)]
+    pub struct Map<A, F>(A, F);
+    impl<A: Arrow, F: Copy + Fn(A::Output) -> R, R> Arrow for Map<A, F> {
+        type Input = A::Input;
+        type Output = R;
+        type Iter = iter::Map<A::Iter, F>;
+        fn apply(&self, x: Self::Input) -> Self::Iter {
+            self.0.apply(x).map(self.1)
+        }
+    }
+
+    #[derive(Clone)]
+    pub struct ThenIter<A: Arrow, B: Arrow<Input = A::Output>> {
+        a_iter: A::Iter,
+        b_arrow: B,
+        b_iter: Option<B::Iter>,
+        // HACK(eddyb) this field is useless (never set to `Some`)
+        // (see `match self.b_iter_backwards` below for more details).
+        b_iter_backwards: Option<B::Iter>,
+    }
+    impl<A: Arrow, B: Arrow<Input = A::Output>> Iterator for ThenIter<A, B> {
+        type Item = B::Output;
+        fn next(&mut self) -> Option<Self::Item> {
+            loop {
+                if let Some(ref mut b_iter) = self.b_iter {
+                    if let x @ Some(_) = b_iter.next() {
+                        return x;
+                    }
+                }
+                match self.a_iter.next() {
+                    // HACK(eddyb) this never does anything, but without a *second*
+                    // call to `B::Iter::next`, LLVM spends more time optimizing.
+                    None => {
+                        return match self.b_iter_backwards {
+                            Some(ref mut b_iter) => b_iter.next(),
+                            None => None,
+                        }
+                    }
+                    Some(x) => self.b_iter = Some(self.b_arrow.apply(x)),
+                }
+            }
+        }
+    }
+
+    #[derive(Copy, Clone)]
+    pub struct Then<A, B>(A, B);
+    impl<A: Arrow, B: Arrow<Input = A::Output>> Arrow for Then<A, B> {
+        type Input = A::Input;
+        type Output = B::Output;
+        type Iter = ThenIter<A, B>;
+        fn apply(&self, x: Self::Input) -> Self::Iter {
+            ThenIter {
+                a_iter: self.0.apply(x),
+                b_arrow: self.1,
+                b_iter: None,
+                b_iter_backwards: None,
+            }
+        }
+    }
+
+    #[derive(Clone)]
+    pub struct PairsIter<A: Arrow, B: Arrow>
+    where
+        A::Output: Copy,
+        B::Input: Copy,
+    {
+        a_iter: A::Iter,
+        b_iter0: B::Iter,
+        a_output_b_iter: Option<(A::Output, B::Iter)>,
+    }
+    impl<A: Arrow, B: Arrow> Iterator for PairsIter<A, B>
+    where
+        A::Output: Copy,
+        B::Input: Copy,
+    {
+        type Item = (A::Output, B::Output);
+        fn next(&mut self) -> Option<Self::Item> {
+            loop {
+                if let Some((x, ref mut b_iter)) = self.a_output_b_iter {
+                    if let Some(y) = b_iter.next() {
+                        return Some((x, y));
+                    }
+                }
+                match self.a_iter.next() {
+                    None => return None,
+                    Some(x) => {
+                        self.a_output_b_iter = Some((x, self.b_iter0.clone()));
+                    }
+                }
+            }
+        }
+    }
+
+    #[derive(Copy, Clone)]
+    pub struct Pairs<A, B>(A, B);
+    impl<A: Arrow, B: Arrow> Arrow for Pairs<A, B>
+    where
+        A::Output: Copy,
+        B::Input: Copy,
+    {
+        type Input = (A::Input, B::Input);
+        type Output = (A::Output, B::Output);
+        type Iter = PairsIter<A, B>;
+        fn apply(&self, (x, y): Self::Input) -> Self::Iter {
+            PairsIter {
+                a_iter: self.0.apply(x),
+                b_iter0: self.1.apply(y),
+                a_output_b_iter: None,
+            }
+        }
+    }
+}
+
 // HACK(eddyb) work around `macro_rules` not being `use`-able.
 pub use crate::traverse;
 
@@ -703,7 +902,7 @@ macro_rules! traverse {
     (typeof($leaf:ty) _) => { $leaf };
     (typeof($leaf:ty) ?) => { Option<traverse!(typeof($leaf) _)> };
     (typeof($leaf:ty) ($l_shape:tt, $r_shape:tt)) => { (traverse!(typeof($leaf) $l_shape), traverse!(typeof($leaf) $r_shape)) };
-    (typeof($leaf:ty) { $($i:tt: $kind:pat => $shape:tt,)* }) => { ($(traverse!(typeof($leaf) $shape),)*) };
+    (typeof($leaf:ty) { $($i:tt $_i:ident: $kind:pat => $shape:tt,)* }) => { ($(traverse!(typeof($leaf) $shape),)*) };
     (typeof($leaf:ty) [$shape:tt]) => { (traverse!(typeof($leaf) $shape),) };
 
     (one($sppf:ident, $node:ident) _) => {
@@ -721,7 +920,7 @@ macro_rules! traverse {
             )
         }
     };
-    (one($sppf:ident, $node:ident) { $($i:tt: $kind:pat => $shape:tt,)* }) => {
+    (one($sppf:ident, $node:ident) { $($i:tt $_i:ident: $kind:pat => $shape:tt,)* }) => {
         {
             let node = $sppf.one_choice($node)?;
             let mut r = <($(traverse!(typeof(_) $shape),)*)>::default();
@@ -742,46 +941,53 @@ macro_rules! traverse {
         }
     };
 
-    (all($sppf:ident, $node:ident) _, $result:pat => $cont:expr) => {
-        match $node { $result => $cont }
+    (all($sppf:ident) _) => {
+        $crate::runtime::nd::Id::new()
     };
-    (all($sppf:ident, $node:ident) ?, $result:pat => $cont:expr) => {
-        match Some($node) { $result => $cont }
+    (all($sppf:ident) ?) => {
+        $crate::runtime::nd::Id::new().map(Some)
     };
-    (all($sppf:ident, $node:ident) ($l_shape:tt, $r_shape:tt), $result:pat => $cont:expr) => {
-        for (left, right) in $sppf.all_splits($node) {
-            traverse!(all($sppf, left) $l_shape, left =>
-                traverse!(all($sppf, right) $r_shape, right => match (left, right) { $result => $cont }))
-        }
+    (all($sppf:ident) ($l_shape:tt, $r_shape:tt)) => {
+        $crate::runtime::nd::FromIterK::new($sppf, $crate::runtime::ParseForest::all_splits)
+            .then(traverse!(all($sppf) $l_shape).pairs(traverse!(all($sppf) $r_shape)))
     };
-    (all($sppf:ident, $node:ident) { $($i:tt: $kind:pat => $shape:tt,)* }, $result:pat => $cont:expr) => {
-        for node in $sppf.all_choices($node) {
-            let tuple_template = <($(traverse!(typeof(_) $shape),)*)>::default();
-            match node.kind {
-                $($kind => traverse!(all($sppf, node) $shape, x => {
-                    let mut r = tuple_template;
-                    r.$i = x;
-                    match r { $result => $cont }
-                }),)*
-                _ => unreachable!(),
+    (all($sppf:ident) { $($i:tt $_i:ident: $kind:pat => $shape:tt,)* }) => {
+        $crate::runtime::nd::FromIter::new(move |node| {
+            #[derive(Clone)]
+            enum Iter<$($_i),*> {
+                $($_i($_i)),*
             }
-        }
+            impl<$($_i: Iterator),*> Iterator for Iter<$($_i),*>
+                where $($_i::Item: Default),*
+            {
+                type Item = ($($_i::Item),*);
+                fn next(&mut self) -> Option<Self::Item> {
+                    let mut r = Self::Item::default();
+                    match self {
+                        $(Iter::$_i(iter) => r.$i = iter.next()?),*
+                    }
+                    Some(r)
+                }
+            }
+            $sppf.all_choices(node).flat_map(move |node| {
+                match node.kind {
+                    $($kind => Iter::$_i(traverse!(all($sppf) $shape).apply(node)),)*
+                    _ => unreachable!(),
+                }
+            })
+        })
     };
-    (all($sppf:ident, $node:ident) [$shape:tt], $result:pat => $cont:expr) => {
-        {
-            let tuple_template = <(traverse!(typeof(_) $shape),)>::default();
-            match $node.unpack_opt() {
+    (all($sppf:ident) [$shape:tt]) => {
+        $crate::runtime::nd::FromIter::new(move |node| {
+            match $crate::runtime::ParseNode::unpack_opt(node) {
                 Some(node) => {
-                    traverse!(all($sppf, node) $shape, x => {
-                        let mut r = tuple_template;
-                        r.0 = x;
-                        match r { $result => $cont }
-                    })
+                    Some(traverse!(all($sppf) $shape).apply(node).map(|x| (x,)))
+                        .into_iter().flatten().chain(None)
                 }
                 None => {
-                    match tuple_template { $result => $cont }
+                    None.into_iter().flatten().chain(Some(<_>::default()))
                 }
             }
-        }
+        })
     }
 }
