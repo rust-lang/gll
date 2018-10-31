@@ -9,8 +9,8 @@
 Easiest way to get started is through `gll-macros`:
 ```toml
 [dependencies]
-gll = "0.0.1"
-gll-macros = "0.0.1"
+gll = "0.0.2"
+gll-macros = "0.0.2"
 ```
 ```rust
 extern crate gll;
