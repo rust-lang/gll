@@ -1,6 +1,6 @@
 [package]
 name = "gll"
-version = "0.0.1"
+version = "0.0.2"
 authors = [
     "Ana-Maria <mihalacheana.maria@yahoo.com>",
     "Eduard-Mihai Burtescu <edy.burt@gmail.com>"

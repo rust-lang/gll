@@ -1,6 +1,6 @@
 [package]
 name = "gll-macros"
-version = "0.0.1"
+version = "0.0.2"
 authors = [
     "Ana-Maria <mihalacheana.maria@yahoo.com>",
     "Eduard-Mihai Burtescu <edy.burt@gmail.com>"
@@ -11,7 +11,7 @@ description = "Macros used with the gll crate."
 
 [dependencies.gll]
 path = ".."
-version = "0.0.1"
+version = "0.0.2"
 
 [dev-dependencies]
 quote = "0.6"
