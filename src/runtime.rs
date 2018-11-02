@@ -1,6 +1,6 @@
 pub use grammar::ParseNodeShape;
 
-use indexing::container_traits::{Contiguous, Trustworthy};
+use indexing::container_traits::Trustworthy;
 use indexing::{self, scope, Container};
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BTreeSet, BinaryHeap, HashMap, VecDeque};
@@ -80,33 +80,6 @@ impl fmt::Debug for LineColumnRange {
     }
 }
 
-pub struct Str(str);
-
-impl<'a> From<&'a str> for &'a Str {
-    fn from(s: &'a str) -> Self {
-        unsafe { &*(s as *const str as *const Str) }
-    }
-}
-
-unsafe impl Trustworthy for Str {
-    type Item = u8;
-    fn base_len(&self) -> usize {
-        self.0.len()
-    }
-}
-
-unsafe impl Contiguous for Str {
-    fn begin(&self) -> *const Self::Item {
-        self.0.as_ptr()
-    }
-    fn end(&self) -> *const Self::Item {
-        unsafe { self.begin().offset(self.0.len() as isize) }
-    }
-    fn as_slice(&self) -> &[Self::Item] {
-        self.0.as_bytes()
-    }
-}
-
 pub trait Input: Sized {
     type Container: Trustworthy;
     type Slice: ?Sized;
@@ -141,7 +114,7 @@ impl<'a, T> Input for &'a [T] {
 }
 
 impl<'a> Input for &'a str {
-    type Container = &'a Str;
+    type Container = &'a ::indexing_str::Str;
     type Slice = str;
     type SourceInfo = LineColumnRange;
     fn to_container(self) -> Self::Container {
@@ -151,7 +124,7 @@ impl<'a> Input for &'a str {
         input: &'b Container<'i, Self::Container>,
         range: Range<'i>,
     ) -> &'b Self::Slice {
-        unsafe { str::from_utf8_unchecked(&input[range.0]) }
+        ::indexing_str::Str::slice(input, range.0)
     }
     fn source_info<'i>(
         input: &Container<'i, Self::Container>,
