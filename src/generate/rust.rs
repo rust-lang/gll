@@ -563,7 +563,7 @@ fn ret() -> Thunk<impl ContFn> {
 }
 
 fn sppf_add(parse_node_kind: &ParseNodeKind, child: Src) -> Thunk<impl ContFn> {
-    thunk!(p.sppf.add(#parse_node_kind, c.fn_input.subtract_suffix(_range), #child);)
+    thunk!(p.sppf_add(#parse_node_kind, c.fn_input.subtract_suffix(_range), #child);)
 }
 
 trait ForEachThunk {

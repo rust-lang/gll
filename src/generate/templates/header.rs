@@ -28,10 +28,10 @@ impl<'a, 'i, I: ::gll::runtime::Input, T: ?Sized> Clone for Handle<'a, 'i, I, T>
 
 impl<'a, 'i, I: ::gll::runtime::Input, T: ?Sized> Handle<'a, 'i, I, T> {
     pub fn source(self) -> &'a I::Slice {
-        self.parser.input(self.node.range)
+        self.parser.sppf.input(self.node.range)
     }
     pub fn source_info(self) -> I::SourceInfo {
-        self.parser.source_info(self.node.range)
+        self.parser.sppf.source_info(self.node.range)
     }
 }
 

@@ -248,11 +248,10 @@ impl InputMatch<RangeInclusive<char>> for str {
 }
 
 pub struct Parser<'i, P: ParseNodeKind, C: CodeLabel, I: Input> {
-    input: Container<'i, I::Container>,
     pub threads: Threads<'i, C>,
     pub gss: GraphStack<'i, C>,
     pub memoizer: Memoizer<'i, C>,
-    pub sppf: ParseForest<'i, P>,
+    pub sppf: ParseForest<'i, P, I>,
 }
 
 impl<'i, P: ParseNodeKind, C: CodeLabel, I: Input> Parser<'i, P, C, I> {
@@ -261,7 +260,6 @@ impl<'i, P: ParseNodeKind, C: CodeLabel, I: Input> Parser<'i, P, C, I> {
             let range = input.range();
             f(
                 Parser {
-                    input,
                     threads: Threads {
                         queue: BinaryHeap::new(),
                         seen: BTreeSet::new(),
@@ -273,6 +271,7 @@ impl<'i, P: ParseNodeKind, C: CodeLabel, I: Input> Parser<'i, P, C, I> {
                         lengths: HashMap::new(),
                     },
                     sppf: ParseForest {
+                        input,
                         possibilities: HashMap::new(),
                     },
                 },
@@ -280,28 +279,35 @@ impl<'i, P: ParseNodeKind, C: CodeLabel, I: Input> Parser<'i, P, C, I> {
             )
         })
     }
-    pub fn input(&self, range: Range<'i>) -> &I::Slice {
-        I::slice(&self.input, range)
-    }
-    pub fn source_info(&self, range: Range<'i>) -> I::SourceInfo {
-        I::source_info(&self.input, range)
-    }
+
     pub fn input_consume_left<Pat>(&self, range: Range<'i>, pat: Pat) -> Option<Range<'i>>
     where
         I::Slice: InputMatch<Pat>,
     {
-        self.input(range)
+        self.sppf
+            .input(range)
             .match_left(pat)
             .map(|n| Range(range.split_at(n).1))
     }
+
     pub fn input_consume_right<Pat>(&self, range: Range<'i>, pat: Pat) -> Option<Range<'i>>
     where
         I::Slice: InputMatch<Pat>,
     {
-        self.input(range)
+        self.sppf
+            .input(range)
             .match_right(pat)
             .map(|n| Range(range.split_at(range.len() - n).0))
     }
+
+    pub fn sppf_add(&mut self, kind: P, range: Range<'i>, possibility: usize) {
+        self.sppf
+            .possibilities
+            .entry(ParseNode { kind, range })
+            .or_default()
+            .insert(possibility);
+    }
+
     pub fn call(&mut self, call: Call<'i, C>, next: Continuation<'i, C>) {
         let returns = self.gss.returns.entry(call).or_default();
         if returns.insert(next) {
@@ -323,6 +329,7 @@ impl<'i, P: ParseNodeKind, C: CodeLabel, I: Input> Parser<'i, P, C, I> {
             }
         }
     }
+
     pub fn ret(&mut self, from: Continuation<'i, C>, remaining: Range<'i>) {
         let call = Call {
             callee: from.code.enclosing_fn(),
@@ -466,19 +473,21 @@ impl<'i, C: CodeLabel> Memoizer<'i, C> {
     }
 }
 
-pub struct ParseForest<'i, P: ParseNodeKind> {
+pub struct ParseForest<'i, P: ParseNodeKind, I: Input> {
+    input: Container<'i, I::Container>,
     pub possibilities: HashMap<ParseNode<'i, P>, BTreeSet<usize>>,
 }
 
 #[derive(Debug)]
 pub struct MoreThanOne;
 
-impl<'i, P: ParseNodeKind> ParseForest<'i, P> {
-    pub fn add(&mut self, kind: P, range: Range<'i>, possibility: usize) {
-        self.possibilities
-            .entry(ParseNode { kind, range })
-            .or_default()
-            .insert(possibility);
+impl<'i, P: ParseNodeKind, I: Input> ParseForest<'i, P, I> {
+    pub fn input(&self, range: Range<'i>) -> &I::Slice {
+        I::slice(&self.input, range)
+    }
+
+    pub fn source_info(&self, range: Range<'i>) -> I::SourceInfo {
+        I::source_info(&self.input, range)
     }
 
     pub fn one_choice(&self, node: ParseNode<'i, P>) -> Result<ParseNode<'i, P>, MoreThanOne> {
