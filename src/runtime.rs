@@ -895,10 +895,10 @@ pub mod nd {
 }
 
 // HACK(eddyb) work around `macro_rules` not being `use`-able.
-pub use crate::traverse;
+pub use crate::__runtime_traverse as traverse;
 
 #[macro_export]
-macro_rules! traverse {
+macro_rules! __runtime_traverse {
     (typeof($leaf:ty) _) => { $leaf };
     (typeof($leaf:ty) ?) => { Option<traverse!(typeof($leaf) _)> };
     (typeof($leaf:ty) ($l_shape:tt, $r_shape:tt)) => { (traverse!(typeof($leaf) $l_shape), traverse!(typeof($leaf) $r_shape)) };
