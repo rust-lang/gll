@@ -19,31 +19,30 @@ mod json_like {
 
 #[test]
 fn json_like_proc_macro() {
-    json_like::Value::parse_with(
-        quote::quote! {
-            // Example from `serde_json`.
-            {
-                name: "John Doe",
-                age: 43,
-                address: {
-                    street: "10 Downing Street",
-                    city: "London"
-                },
-                phones: [
-                    "+44 1234567",
-                    "+44 2345678"
-                ],
+    let tokens: ::gll::proc_macro::TokenStream = quote::quote! {
+        // Example from `serde_json`.
+        {
+            name: "John Doe",
+            age: 43,
+            address: {
+                street: "10 Downing Street",
+                city: "London"
+            },
+            phones: [
+                "+44 1234567",
+                "+44 2345678"
+            ],
 
-                test: [null, false, true, (format!("{:?}", Some(1 + 2)))]
-            }
-        },
-        |_, result| {
-            let result = format!("{:#?}", result.unwrap());
-            // HACK(eddyb) clean up the result, as we have no span info.
-            let result = result
-                .replace("Span..Span => ", "")
-                .replace("Span..Span", "?");
-            let expected = "\
+            test: [null, false, true, (format!("{:?}", Some(1 + 2)))]
+        }
+    };
+    json_like::Value::parse_with(tokens, |_, result| {
+        let result = format!("{:#?}", result.unwrap());
+        // HACK(eddyb) clean up the result, as we have no span info.
+        let result = result
+            .replace("Span..Span => ", "")
+            .replace("Span..Span", "?");
+        let expected = "\
 Value::Object {
     fields: [
         Field {
@@ -116,12 +115,11 @@ Value::Object {
             let normalize = |s: &str| {
                 s.replace(",\n", "\n")
             };
-            assert!(
-                normalize(&result) == normalize(expected),
-                "mismatched output, expected:\n{}\n\nfound:\n{}",
-                expected,
-                result
-            );
-        },
-    )
+        assert!(
+            normalize(&result) == normalize(expected),
+            "mismatched output, expected:\n{}\n\nfound:\n{}",
+            expected,
+            result
+        );
+    })
 }

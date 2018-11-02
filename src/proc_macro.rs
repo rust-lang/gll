@@ -1,7 +1,7 @@
 use generate::rust::RustInputPat;
 use grammar::{self, call, eat, MatchesEmpty, MaybeKnown};
 use indexing::Container;
-use proc_macro2::{
+pub use proc_macro2::{
     Delimiter, Ident, LexError, Literal, Punct, Spacing, Span, TokenStream, TokenTree,
 };
 use runtime::{Input, InputMatch, Range};
