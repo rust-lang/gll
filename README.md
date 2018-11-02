@@ -41,7 +41,7 @@ You can also use a build script to generate the parser (**TODO**: document).
 To parse a string with that grammar:
 ```rust
 let tokens = string.parse::<::gll::proc_macro::TokenStream>().unwrap();
-json_like::Value::parse_with(tokens, |parser, result| {
+json_like::Value::parse_with(tokens, |result| {
     let value = result.unwrap();
     // ...
 });

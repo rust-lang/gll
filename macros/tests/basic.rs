@@ -10,8 +10,10 @@ macro_rules! testcases {
         }
         #[test]
         fn $name() {
-            $name::$rule::parse_with($input, |parser, result| {
-                let result = format!("{:#?}", result.unwrap());
+            $name::$rule::parse_with($input, |result| {
+                let result = result.unwrap();
+                let forest = result.forest;
+                let result = format!("{:#?}", result);
                 // FIXME(eddyb) Remove this trailing-comma-ignoring hack
                 // once rust-lang/rust#59076 reaches the stable channel.
                 let normalize = |s: &str| {
@@ -23,8 +25,9 @@ macro_rules! testcases {
                     $expected,
                     result
                 );
-                parser
-                    .gss
+                // FIXME(eddyb) find a way to do this, given that
+                // the GSS is no longer exposed in the public API.
+                /*gss
                     .dump_graphviz(
                         &mut File::create(concat!(
                             env!("CARGO_MANIFEST_DIR"),
@@ -32,9 +35,8 @@ macro_rules! testcases {
                             stringify!($name),
                             "-gss.dot"
                         )).unwrap(),
-                    ).unwrap();
-                parser
-                    .sppf
+                    ).unwrap();*/
+                forest
                     .dump_graphviz(
                         &mut File::create(concat!(
                             env!("CARGO_MANIFEST_DIR"),

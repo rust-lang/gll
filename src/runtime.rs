@@ -249,7 +249,7 @@ impl InputMatch<RangeInclusive<char>> for str {
 
 pub struct Parser<'i, P: ParseNodeKind, C: CodeLabel, I: Input> {
     pub threads: Threads<'i, C>,
-    pub gss: GraphStack<'i, C>,
+    gss: GraphStack<'i, C>,
     pub memoizer: Memoizer<'i, C>,
     pub sppf: ParseForest<'i, P, I>,
 }
@@ -429,7 +429,10 @@ pub struct GraphStack<'i, C: CodeLabel> {
 }
 
 impl<'i, C: CodeLabel> GraphStack<'i, C> {
-    pub fn dump_graphviz(&self, out: &mut Write) -> io::Result<()> {
+    // FIXME(eddyb) figure out what to do here, now that
+    // the GSS is no longer exposed in the public API.
+    #[allow(unused)]
+    fn dump_graphviz(&self, out: &mut Write) -> io::Result<()> {
         writeln!(out, "digraph gss {{")?;
         writeln!(out, "    graph [rankdir=RL]")?;
         for (call, returns) in &self.returns {

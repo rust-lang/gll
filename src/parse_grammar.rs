@@ -10,7 +10,7 @@ use std::str::FromStr;
 impl<Pat: From<SPat>> FromStr for ::grammar::Grammar<Pat> {
     type Err = ::runtime::LineColumn;
     fn from_str(src: &str) -> Result<Self, Self::Err> {
-        Grammar::parse_with(src, |_, g| {
+        Grammar::parse_with(src, |g| {
             g.map_err(|err| match err {
                 ParseError::TooShort(handle) => handle.source_info().end,
                 ParseError::NoParse => ::runtime::LineColumn::default(),
