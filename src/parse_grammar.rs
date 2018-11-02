@@ -8,21 +8,16 @@ use std::ops::Bound;
 use std::str::FromStr;
 
 impl<Pat: From<SPat>> FromStr for ::grammar::Grammar<Pat> {
-    type Err = ::runtime::LineColumn;
+    type Err = ::runtime::ParseError<::runtime::LineColumnRange>;
     fn from_str(src: &str) -> Result<Self, Self::Err> {
         Grammar::parse_with(src, |g| {
-            g.map_err(|err| match err {
-                ParseError::TooShort(handle) => handle.source_info().end,
-                ParseError::NoParse => ::runtime::LineColumn::default(),
-            })
-            .map(|g| {
-                let mut grammar = ::grammar::Grammar::new();
-                for rule_def in g.one().unwrap().rules {
-                    let rule_def = rule_def.unwrap().one().unwrap();
-                    grammar.define(rule_def.name.source(), rule_def.rule.one().unwrap().lower());
-                }
-                grammar
-            })
+            let g = g.map_err(|err| err.map_partial(|handle| handle.source_info()))?;
+            let mut grammar = ::grammar::Grammar::new();
+            for rule_def in g.one().unwrap().rules {
+                let rule_def = rule_def.unwrap().one().unwrap();
+                grammar.define(rule_def.name.source(), rule_def.rule.one().unwrap().lower());
+            }
+            Ok(grammar)
         })
     }
 }

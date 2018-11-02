@@ -825,41 +825,25 @@ where
     {
         pub fn parse_with<R>(
             input: I,
-            f: impl for<'a, 'i> FnOnce(ParseResult<'a, 'i, I, #ident<'a, 'i, I>>) -> R,
+            f: impl for<'a, 'i> FnOnce(::gll::runtime::ParseResult<Handle<'a, 'i, I, #ident<'a, 'i, I>>>) -> R,
         ) -> R {
-            ::gll::runtime::Parser::with(input, |mut parser, range| {
-                let call = Call {
-                    callee: #code_label,
-                    range,
-                };
-                parser.threads.spawn(
-                    Continuation {
-                        code: call.callee,
-                        fn_input: call.range,
-                        state: 0,
-                    },
-                    call.range,
-                );
-                parse(&mut parser);
-                let result = parser.memoizer.longest_result(call);
-                let ref forest = {
-                    // HACK(eddyb) shrink the scope of `parser` so it drops early
-                    let parser = parser;
-                    parser.sppf
-                };
-                f(result.ok_or(ParseError::NoParse).and_then(|range| {
-                    let handle = Handle {
-                        node: ParseNode { kind: #parse_node_kind, range },
+            ::gll::runtime::Parser::parse_with(
+                input,
+                #code_label,
+                #parse_node_kind,
+                |result| f(match result {
+                    Ok((ref forest, node)) => Ok(Handle {
+                        node,
                         forest,
                         _marker: PhantomData,
-                    };
-                    if range == call.range {
-                        Ok(handle)
-                    } else {
-                        Err(ParseError::TooShort(handle))
-                    }
-                }))
-            })
+                    }),
+                    Err(ref err) => Err(err.as_ref_partial().map_partial(|&(ref forest, node)| Handle {
+                        node,
+                        forest,
+                        _marker: PhantomData,
+                    })),
+                }),
+            )
         }
     })
 }
@@ -1269,10 +1253,14 @@ where
     }
 
     let rust_slice_ty = Pat::rust_slice_ty();
-    quote!(fn parse<I>(p: &mut ::gll::runtime::Parser<_P, _C, I>)
+    quote!(impl<I> ::gll::runtime::CodeStep<_P, I> for _C
         where I: ::gll::runtime::Input<Slice = #rust_slice_ty>,
     {
-        while let Some(Call { callee: mut c, range: _range }) = p.threads.steal() {
+        fn step<'i>(
+            p: &mut ::gll::runtime::Parser<'i, _P, _C, I>,
+            mut c: ::gll::runtime::Continuation<'i, _C>,
+            _range: ::gll::runtime::Range<'i>,
+        ) {
             match c.code {
                 #(#code_label_arms)*
             }

@@ -254,29 +254,95 @@ pub struct Parser<'i, P: ParseNodeKind, C: CodeLabel, I: Input> {
     pub sppf: ParseForest<'i, P, I>,
 }
 
-impl<'i, P: ParseNodeKind, C: CodeLabel, I: Input> Parser<'i, P, C, I> {
-    pub fn with<R>(input: I, f: impl for<'i2> FnOnce(Parser<'i2, P, C, I>, Range<'i2>) -> R) -> R {
+#[derive(Debug)]
+pub struct ParseError<T> {
+    pub partial: Option<T>,
+}
+
+impl<T> ParseError<T> {
+    pub fn map_partial<U>(self, f: impl FnOnce(T) -> U) -> ParseError<U> {
+        let ParseError { partial } = self;
+        ParseError {
+            partial: partial.map(f),
+        }
+    }
+
+    // FIXME(eddyb) remove this when `generate::rust` stops using it
+    pub fn as_ref_partial<'a>(&'a self) -> ParseError<&'a T> {
+        let ParseError { partial } = self;
+        ParseError {
+            partial: partial.as_ref(),
+        }
+    }
+}
+
+pub type ParseResult<T> = Result<T, ParseError<T>>;
+
+impl<'i, P: ParseNodeKind, C: CodeStep<P, I>, I: Input> Parser<'i, P, C, I> {
+    pub fn parse_with<R>(
+        input: I,
+        callee: C,
+        kind: P,
+        f: impl for<'i2> FnOnce(ParseResult<(ParseForest<'i2, P, I>, ParseNode<'i2, P>)>) -> R,
+    ) -> R {
         scope(input.to_container(), |input| {
-            let range = input.range();
-            f(
-                Parser {
-                    threads: Threads {
-                        queue: BinaryHeap::new(),
-                        seen: BTreeSet::new(),
-                    },
-                    gss: GraphStack {
-                        returns: HashMap::new(),
-                    },
-                    memoizer: Memoizer {
-                        lengths: HashMap::new(),
-                    },
-                    sppf: ParseForest {
-                        input,
-                        possibilities: HashMap::new(),
-                    },
+            let call = Call {
+                callee,
+                range: Range(input.range()),
+            };
+            let mut parser = Parser {
+                threads: Threads {
+                    queue: BinaryHeap::new(),
+                    seen: BTreeSet::new(),
                 },
-                Range(range),
-            )
+                gss: GraphStack {
+                    returns: HashMap::new(),
+                },
+                memoizer: Memoizer {
+                    lengths: HashMap::new(),
+                },
+                sppf: ParseForest {
+                    input,
+                    possibilities: HashMap::new(),
+                },
+            };
+
+            // Start with one thread, at the provided entry-point.
+            parser.threads.spawn(
+                Continuation {
+                    code: call.callee,
+                    fn_input: call.range,
+                    state: 0,
+                },
+                call.range,
+            );
+
+            // Run all threads to completion.
+            while let Some(Call { callee, range }) = parser.threads.steal() {
+                C::step(&mut parser, callee, range);
+            }
+
+            // If the function call we started with ever returned,
+            // we will find an entry for it in the memoizer, from
+            // which we pick the longest match, which is only a
+            // successful parse *only if* it's as long as the input.
+            // FIXME(eddyb) actually record information about errors
+            let result = match parser.memoizer.longest_result(call) {
+                None => Err(ParseError { partial: None }),
+                Some(range) => {
+                    let result = (parser.sppf, ParseNode { kind, range });
+
+                    if range == call.range {
+                        Ok(result)
+                    } else {
+                        Err(ParseError {
+                            partial: Some(result),
+                        })
+                    }
+                }
+            };
+
+            f(result)
         })
     }
 
@@ -705,6 +771,10 @@ pub trait ParseNodeKind: fmt::Display + Ord + Hash + Copy + 'static {
 
 pub trait CodeLabel: fmt::Debug + Ord + Hash + Copy + 'static {
     fn enclosing_fn(self) -> Self;
+}
+
+pub trait CodeStep<P: ParseNodeKind, I: Input>: CodeLabel {
+    fn step<'i>(p: &mut Parser<'i, P, Self, I>, c: Continuation<'i, Self>, range: Range<'i>);
 }
 
 // FIXME(rust-lang/rust#54175) work around iterator adapter compile-time

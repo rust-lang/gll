@@ -1,12 +1,3 @@
-#[derive(Debug)]
-pub enum ParseError<T> {
-    TooShort(T),
-    NoParse,
-}
-
-pub type ParseResult<'a, 'i, I, T> =
-    Result<Handle<'a, 'i, I, T>, ParseError<Handle<'a, 'i, I, T>>>;
-
 pub type Any = dyn any::Any;
 
 #[derive(Debug)]
