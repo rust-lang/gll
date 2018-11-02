@@ -1,5 +1,6 @@
 //! String slice support for the `indexing` crate.
-// FIXME(eddyb) ensure `indexing::Range` can't break `str`'s UTF-8 requirement
+// FIXME(eddyb) ensure `indexing::Range` can't break
+// `str`'s UTF-8 requirement, without overhead
 
 use indexing::container_traits::{Contiguous, Trustworthy};
 use indexing::{Container, Range};
@@ -41,6 +42,22 @@ unsafe impl Contiguous for Str {
 
 impl Str {
     pub fn slice<'a, 'b, 'i>(input: &'b Container<'i, &'a Self>, range: Range<'i>) -> &'b Self {
-        unsafe { &*(&input[range] as *const [u8] as *const Str) }
+        // NOTE(eddyb) following code is copied from `str::is_char_boundary`:
+        let valid_utf8_start = |bytes: &[u8]| {
+            match bytes.first() {
+                None => true,
+                // This is bit magic equivalent to: b < 128 || b >= 192
+                Some(&b) => (b as i8) >= -0x40,
+            }
+        };
+
+        let (_, after) = input.split_around(range);
+        let (bytes, bytes_after) = (&input[range], &input[after]);
+
+        // HACK(eddyb) ensure the range is still a valid `str`
+        assert!(valid_utf8_start(bytes));
+        assert!(valid_utf8_start(bytes_after));
+
+        unsafe { &*(bytes as *const [u8] as *const Str) }
     }
 }
