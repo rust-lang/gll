@@ -10,8 +10,7 @@ macro_rules! testcases {
         }
         #[test]
         fn $name() {
-            $name::$rule::parse_with($input, |result| {
-                let result = result.unwrap();
+            $name::$rule::parse($input).unwrap().with(|result| {
                 let forest = result.forest;
                 let result = format!("{:#?}", result);
                 // FIXME(eddyb) Remove this trailing-comma-ignoring hack

@@ -3,6 +3,20 @@ pub type Any = dyn any::Any;
 #[derive(Debug)]
 pub struct Ambiguity<T>(T);
 
+pub struct OwnedHandle<I: ::gll::runtime::Input, T: ?Sized> {
+    forest_and_node: ::gll::runtime::OwnedParseForestAndNode<_P, I>,
+    _marker: PhantomData<T>,
+}
+
+impl<I: ::gll::runtime::Input, T: ?Sized> OwnedHandle<I, T> {
+    pub fn source_info(&self) -> I::SourceInfo {
+        self.forest_and_node.unpack_ref(|_, forest_and_node| {
+            let (ref forest, node) = *forest_and_node;
+            forest.source_info(node.range)
+        })
+    }
+}
+
 pub struct Handle<'a, 'i: 'a, I: 'a + ::gll::runtime::Input, T: ?Sized> {
     pub node: ParseNode<'i, _P>,
     pub forest: &'a ::gll::runtime::ParseForest<'i, _P, I>,

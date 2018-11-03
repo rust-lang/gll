@@ -1,7 +1,8 @@
 pub use grammar::ParseNodeShape;
 
+use high::{type_lambda, ErasableL, ExistsL, PairL};
 use indexing::container_traits::Trustworthy;
-use indexing::{self, scope, Container};
+use indexing::{self, Container};
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BTreeSet, BinaryHeap, HashMap, VecDeque};
 use std::fmt;
@@ -223,8 +224,8 @@ impl InputMatch<RangeInclusive<char>> for str {
 pub struct Parser<'i, P: ParseNodeKind, C: CodeLabel, I: Input> {
     pub threads: Threads<'i, C>,
     gss: GraphStack<'i, C>,
-    pub memoizer: Memoizer<'i, C>,
-    pub sppf: ParseForest<'i, P, I>,
+    memoizer: Memoizer<'i, C>,
+    sppf: ParseForest<'i, P, I>,
 }
 
 #[derive(Debug)]
@@ -239,26 +240,20 @@ impl<T> ParseError<T> {
             partial: partial.map(f),
         }
     }
-
-    // FIXME(eddyb) remove this when `generate::rust` stops using it
-    pub fn as_ref_partial<'a>(&'a self) -> ParseError<&'a T> {
-        let ParseError { partial } = self;
-        ParseError {
-            partial: partial.as_ref(),
-        }
-    }
 }
 
 pub type ParseResult<T> = Result<T, ParseError<T>>;
 
+type_lambda! {
+    pub type<'i> ParseForestL<P: ParseNodeKind, I: Input> = ParseForest<'i, P, I>;
+    pub type<'i> ParseNodeL<P: ParseNodeKind> = ParseNode<'i, P>;
+}
+
+pub type OwnedParseForestAndNode<P, I> = ExistsL<PairL<ParseForestL<P, I>, ParseNodeL<P>>>;
+
 impl<'i, P: ParseNodeKind, C: CodeStep<P, I>, I: Input> Parser<'i, P, C, I> {
-    pub fn parse_with<R>(
-        input: I,
-        callee: C,
-        kind: P,
-        f: impl for<'i2> FnOnce(ParseResult<(ParseForest<'i2, P, I>, ParseNode<'i2, P>)>) -> R,
-    ) -> R {
-        scope(input.to_container(), |input| {
+    pub fn parse(input: I, callee: C, kind: P) -> ParseResult<OwnedParseForestAndNode<P, I>> {
+        ErasableL::indexing_scope(input.to_container(), |lifetime, input| {
             let call = Call {
                 callee,
                 range: Range(input.range()),
@@ -300,10 +295,13 @@ impl<'i, P: ParseNodeKind, C: CodeStep<P, I>, I: Input> Parser<'i, P, C, I> {
             // which we pick the longest match, which is only a
             // successful parse *only if* it's as long as the input.
             // FIXME(eddyb) actually record information about errors
-            let result = match parser.memoizer.longest_result(call) {
+            match parser.memoizer.longest_result(call) {
                 None => Err(ParseError { partial: None }),
                 Some(range) => {
-                    let result = (parser.sppf, ParseNode { kind, range });
+                    let result = OwnedParseForestAndNode::pack(
+                        lifetime,
+                        (parser.sppf, ParseNode { kind, range }),
+                    );
 
                     if range == call.range {
                         Ok(result)
@@ -313,9 +311,7 @@ impl<'i, P: ParseNodeKind, C: CodeStep<P, I>, I: Input> Parser<'i, P, C, I> {
                         })
                     }
                 }
-            };
-
-            f(result)
+            }
         })
     }
 

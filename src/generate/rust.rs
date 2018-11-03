@@ -820,32 +820,38 @@ where
     let code_label = Rc::new(CodeLabel::NamedRule(name.to_string()));
     let parse_node_kind = ParseNodeKind::NamedRule(name.to_string());
     let rust_slice_ty = Pat::rust_slice_ty();
-    quote!(impl<'_a, I> #ident<'_a, 'static, I>
-        where I: ::gll::runtime::Input<Slice = #rust_slice_ty>,
-    {
-        pub fn parse_with<R>(
-            input: I,
-            f: impl for<'a, 'i> FnOnce(::gll::runtime::ParseResult<Handle<'a, 'i, I, #ident<'a, 'i, I>>>) -> R,
-        ) -> R {
-            ::gll::runtime::Parser::parse_with(
-                input,
-                #code_label,
-                #parse_node_kind,
-                |result| f(match result {
-                    Ok((ref forest, node)) => Ok(Handle {
-                        node,
-                        forest,
-                        _marker: PhantomData,
-                    }),
-                    Err(ref err) => Err(err.as_ref_partial().map_partial(|&(ref forest, node)| Handle {
-                        node,
-                        forest,
-                        _marker: PhantomData,
-                    })),
-                }),
-            )
+    quote!(
+        impl<'_a, I> #ident<'_a, 'static, I>
+            where I: ::gll::runtime::Input<Slice = #rust_slice_ty>,
+        {
+            pub fn parse(input: I)
+                -> ::gll::runtime::ParseResult<OwnedHandle<I, #ident<'_a, 'static, I>>>
+            {
+                let handle = |forest_and_node| OwnedHandle {
+                    forest_and_node,
+                    _marker: PhantomData,
+                };
+                ::gll::runtime::Parser::parse(
+                    input,
+                    #code_label,
+                    #parse_node_kind,
+                ).map(handle).map_err(|err| err.map_partial(handle))
+            }
         }
-    })
+
+        impl<'_a, I: ::gll::runtime::Input> OwnedHandle<I, #ident<'_a, 'static, I>> {
+            pub fn with<R>(&self, f: impl for<'a, 'i> FnOnce(Handle<'a, 'i, I, #ident<'a, 'i, I>>) -> R) -> R {
+                self.forest_and_node.unpack_ref(|_, forest_and_node| {
+                    let (ref forest, node) = *forest_and_node;
+                    f(Handle {
+                        node,
+                        forest,
+                        _marker: PhantomData,
+                    })
+                })
+            }
+        }
+    )
 }
 
 fn declare_rule<Pat>(name: &str, rule: &RuleWithNamedFields<Pat>, rules: &RuleMap<Pat>) -> Src
@@ -1217,13 +1223,21 @@ fn rule_handle_debug_impl(name: &str, has_fields: bool) -> Src {
             }
         )
     };
-    quote!(impl<'a, 'i, I: ::gll::runtime::Input> fmt::Debug for Handle<'a, 'i, I, #ident<'a, 'i, I>> {
-        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-            write!(f, "{:?}", self.source_info())?;
-            #body
-            Ok(())
+    quote!(
+        impl<'a, 'i, I: ::gll::runtime::Input> fmt::Debug for Handle<'a, 'i, I, #ident<'a, 'i, I>> {
+            fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                write!(f, "{:?}", self.source_info())?;
+                #body
+                Ok(())
+            }
         }
-    })
+
+        impl<'_a, I: ::gll::runtime::Input> fmt::Debug for OwnedHandle<I, #ident<'_a, 'static, I>> {
+            fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                self.with(|handle| handle.fmt(f))
+            }
+        }
+    )
 }
 
 fn define_parse_fn<Pat>(
