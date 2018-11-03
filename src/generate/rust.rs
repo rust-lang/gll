@@ -711,11 +711,11 @@ impl<Pat: Ord + Hash + RustInputPat> Rule<Pat> {
             (Rule::Empty, _) => cont,
             (Rule::Eat(pat), _) => {
                 let pat = pat.rust_matcher();
-                check(quote!(let Some(_range) = p.input_consume_left(_range, #pat))).apply(cont)
+                check(quote!(let Some(_range) = p.input_consume_left(_range, &(#pat)))).apply(cont)
             }
             (Rule::NegativeLookahead(pat), _) => {
                 let pat = pat.rust_matcher();
-                check(quote!(p.input_consume_left(_range, #pat).is_none())).apply(cont)
+                check(quote!(!p.input_lookahead_left(_range, &(#pat)))).apply(cont)
             }
             (Rule::Call(r), _) => call(Rc::new(CodeLabel::NamedRule(r.clone()))).apply(cont),
             (Rule::Concat([left, right]), None) => {
@@ -857,7 +857,12 @@ where
         impl<I> #ident<'_, '_, I>
             where I: gll::runtime::Input<Slice = #rust_slice_ty>,
         {
-            pub fn parse(input: I) -> gll::runtime::ParseResult<OwnedHandle<I, Self>> {
+            pub fn parse(input: I)
+                -> Result<
+                    OwnedHandle<I, Self>,
+                    gll::runtime::ParseError<I::SourceInfoPoint, I::SourceInfo>,
+                >
+            {
                 let handle = |forest_and_node| OwnedHandle {
                     forest_and_node,
                     _marker: PhantomData,
@@ -866,7 +871,7 @@ where
                     input,
                     #code_label,
                     #parse_node_kind,
-                ).map(handle).map_err(|err| err.map_partial(handle))
+                ).map(handle).map_err(|err| err.map_partial(|x| handle(x).source_info()))
             }
         }
 
