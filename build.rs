@@ -96,7 +96,7 @@ fn main() {
             // Main grammar.
             Grammar = { {Shebang?} {rules:{RuleDef*}} Whitespace };
             RuleDef = { {name:Ident} "=" {rule:Or} ";" };
-            Or = {rules:{Concat+ % "|"}};
+            Or = {{"|"?} {rules:{Concat+ % "|"}}};
             Concat = {rules:{Rule+}};
             Rule = { {{ {field:Ident} ":" }?} {rule:Primary} {{modifier:Modifier}?} };
             Primary =
