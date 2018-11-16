@@ -26,13 +26,14 @@ and allows values to be parenthesized Rust expressions:
 mod json_like {
     ::gll_macros::proc_macro_parser! {
         Value =
-            Null:"null" |
-            False:"false" |
-            True:"true" |
-            Literal:LITERAL |
-            Array:{ "[" elems:Value* % "," "]" } |
-            Object:{ "{" fields:Field* % "," "}" } |
-            InterpolateRust:{ "(" TOKEN_TREE+ ")" };
+            | Null:"null"
+            | False:"false"
+            | True:"true"
+            | Literal:LITERAL
+            | Array:{ "[" elems:Value* % "," "]" }
+            | Object:{ "{" fields:Field* % "," "}" }
+            | InterpolateRust:{ "(" TOKEN_TREE+ ")" }
+            ;
         Field = name:IDENT ":" value:Value;
     }
 }
