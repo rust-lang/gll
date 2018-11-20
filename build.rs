@@ -69,7 +69,7 @@ fn main() {
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
 
-    let mut grammar = grammar!{
+    let mut grammar = grammar! {
         // Lexical grammar.
         Whitespace = {
             {{
@@ -92,7 +92,7 @@ fn main() {
     };
 
     grammar.extend(
-        grammar!{
+        grammar! {
             // Main grammar.
             Grammar = { {Shebang?} {rules:{RuleDef*}} Whitespace };
             RuleDef = { {name:Ident} "=" {rule:Or} ";" };
