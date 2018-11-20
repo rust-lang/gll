@@ -45,9 +45,7 @@ struct Variant<'a, Pat> {
 }
 
 impl<Pat: PartialEq> RuleWithNamedFields<Pat> {
-    fn find_variant_fields(
-        &self,
-    ) -> Option<Vec<Variant<'_, Pat>>> {
+    fn find_variant_fields(&self) -> Option<Vec<Variant<'_, Pat>>> {
         if let Rule::Or(rules) = &*self.rule {
             if self.fields.is_empty() {
                 return None;
@@ -123,10 +121,7 @@ impl<Pat> Rule<Pat> {
 }
 
 impl<Pat: Ord + Hash + RustInputPat> Rc<Rule<Pat>> {
-    fn parse_node_kind(
-        &self,
-        parse_nodes: &RefCell<ParseNodeMap<Pat>>,
-    ) -> ParseNodeKind {
+    fn parse_node_kind(&self, parse_nodes: &RefCell<ParseNodeMap<Pat>>) -> ParseNodeKind {
         if let Some((kind, _)) = parse_nodes.borrow().get(self) {
             return kind.clone();
         }
@@ -172,19 +167,14 @@ impl<Pat: Ord + Hash + RustInputPat> Rc<Rule<Pat>> {
                 sep.parse_node_kind(parse_nodes).0
             )),
         };
-        assert!(
-            parse_nodes
-                .borrow_mut()
-                .insert(self.clone(), (kind.clone(), None))
-                .is_none()
-        );
+        assert!(parse_nodes
+            .borrow_mut()
+            .insert(self.clone(), (kind.clone(), None))
+            .is_none());
         kind
     }
 
-    fn fill_parse_node_shape(
-        &self,
-        parse_nodes: &RefCell<ParseNodeMap<Pat>>,
-    ) {
+    fn fill_parse_node_shape(&self, parse_nodes: &RefCell<ParseNodeMap<Pat>>) {
         if parse_nodes.borrow()[self].1.is_some() {
             return;
         }
@@ -247,7 +237,7 @@ macro_rules! put {
     ($out:ident, $($x:expr),*) => {{ $(write!($out, "{}", $x).unwrap();)* }}
 }
 
-#[cfg_attr(rustfmt, rustfmt_skip)]
+#[rustfmt::skip]
 impl<Pat: Ord + Hash + MatchesEmpty + RustInputPat> Grammar<Pat> {
     pub fn generate_rust(&self) -> String {
         self.generate_rust_with_options(Options::default())
@@ -296,7 +286,7 @@ impl<Pat: Ord + Hash + MatchesEmpty + RustInputPat> Grammar<Pat> {
         put!(out, "#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]");
         put!(out, "pub enum _P {");
         for i in 0..all_parse_nodes.len() {
-            put!(out," _", i, ",");
+            put!(out, " _", i, ",");
         }
         put!(out, "}");
 
@@ -408,7 +398,7 @@ impl<'a> Continuation<'a> {
         }
     }
 
-    #[cfg_attr(rustfmt, rustfmt_skip)]
+    #[rustfmt::skip]
     fn reify_as(&mut self, label: CodeLabel) {
         let code = format!("{} => {{{}}}", label, self.to_inline());
         self.code_label_arms.push_str(&code);
@@ -471,18 +461,19 @@ macro_rules! thunk {
 }
 
 fn pop_state<F: ContFn>(f: impl FnOnce(&str) -> Thunk<F>) -> Thunk<impl ContFn> {
-    f("c.state") + Thunk::new(|mut cont| {
-        if let Some(&None) = cont.nested_frames.last() {
-            *cont.nested_frames.last_mut().unwrap() =
-                Some((cont.to_label().clone(), cont.fn_code_label.clone()));
-            *cont.fn_code_label = cont.next_code_label();
-            cont.code_labels.insert(cont.fn_code_label.clone(), 0);
-            cont.code = Code::Inline(String::new());
-            cont = ret().apply(cont);
-        }
-        cont.nested_frames.push(None);
-        cont
-    })
+    f("c.state")
+        + Thunk::new(|mut cont| {
+            if let Some(&None) = cont.nested_frames.last() {
+                *cont.nested_frames.last_mut().unwrap() =
+                    Some((cont.to_label().clone(), cont.fn_code_label.clone()));
+                *cont.fn_code_label = cont.next_code_label();
+                cont.code_labels.insert(cont.fn_code_label.clone(), 0);
+                cont.code = Code::Inline(String::new());
+                cont = ret().apply(cont);
+            }
+            cont.nested_frames.push(None);
+            cont
+        })
 }
 
 fn push_state(state: &str) -> Thunk<impl ContFn> {
@@ -659,7 +650,7 @@ fn reify_as(label: CodeLabel) -> Thunk<impl ContFn> {
 }
 
 impl<Pat: Ord + Hash + RustInputPat> Rc<Rule<Pat>> {
-    #[cfg_attr(rustfmt, rustfmt_skip)]
+    #[rustfmt::skip]
     fn generate_parse<'a>(
         &'a self,
         parse_nodes: Option<&'a RefCell<ParseNodeMap<Pat>>>
@@ -800,7 +791,8 @@ impl<Pat: Ord + Hash + RustInputPat> Rule<Pat> {
                         i,
                         rule.parse_node_kind(parse_nodes),
                         rule.generate_traverse_shape(true, parse_nodes)
-                    ).unwrap();
+                    )
+                    .unwrap();
                 }
                 write!(s, " }}").unwrap();
                 s
@@ -810,6 +802,9 @@ impl<Pat: Ord + Hash + RustInputPat> Rule<Pat> {
     }
 }
 
+// FIXME(eddyb) clean up formatting in these helper functions:
+
+#[rustfmt::skip]
 fn impl_parse_with(name: &str, rust_slice_ty: &str, out: &mut String) {
     put!(out, "
     impl<'a, 'i, I: ::gll::runtime::Input<Slice = ", rust_slice_ty, ">> ", name, "<'a, 'i, I> {
@@ -852,6 +847,7 @@ fn impl_parse_with(name: &str, rust_slice_ty: &str, out: &mut String) {
     }")
 }
 
+#[rustfmt::skip]
 fn declare_rule<Pat>(
     name: &str,
     rule: &RuleWithNamedFields<Pat>,
@@ -920,6 +916,7 @@ where
     put!(out, "}");
 }
 
+#[rustfmt::skip]
 fn impl_rule_from_sppf<Pat>(
     name: &str,
     rule: &RuleWithNamedFields<Pat>,
@@ -1013,6 +1010,7 @@ where
     put!(out, "}"); // -- end impl
 }
 
+#[rustfmt::skip]
 fn impl_rule_one<Pat>(
     name: &str,
     rule: &RuleWithNamedFields<Pat>,
@@ -1054,6 +1052,7 @@ where
         }");
 }
 
+#[rustfmt::skip]
 fn impl_rule_all<Pat>(
     name: &str,
     rule: &RuleWithNamedFields<Pat>,
@@ -1124,6 +1123,7 @@ where
     put!(out, "}");
 }
 
+#[rustfmt::skip]
 fn rule_debug_impls<Pat>(
     name: &str,
     rule: &RuleWithNamedFields<Pat>,
@@ -1134,6 +1134,7 @@ fn rule_debug_impls<Pat>(
     rule_handle_debug_impl(name, !rule.fields.is_empty(), out);
 }
 
+#[rustfmt::skip]
 fn rule_debug_impl<Pat>(
     name: &str,
     rule: &RuleWithNamedFields<Pat>,
@@ -1188,6 +1189,7 @@ fn rule_debug_impl<Pat>(
     put!(out, "}"); // end of `Debug for ...`
 }
 
+#[rustfmt::skip]
 fn rule_handle_debug_impl(name: &str, has_fields: bool, out: &mut String) {
     if !has_fields {
         put!(out, "
@@ -1217,6 +1219,7 @@ fn rule_handle_debug_impl(name: &str, has_fields: bool, out: &mut String) {
     }
 }
 
+#[rustfmt::skip]
 fn define_parse_fn<Pat>(
     named_parse_nodes: &mut Vec<(ParseNodeKind, ParseNodeShape<ParseNodeKind>)>,
     parse_nodes: &RefCell<ParseNodeMap<Pat>>,
@@ -1263,6 +1266,7 @@ where
     put!(out, "} } }");
 }
 
+#[rustfmt::skip]
 fn p_impls(all_parse_nodes: &[ParseNode], out: &mut String) {
     put!(out, "impl fmt::Display for _P {
         fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -1295,6 +1299,7 @@ fn p_impls(all_parse_nodes: &[ParseNode], out: &mut String) {
     put!(out, "}"); // -- end ParseNodeKind for _P
 }
 
+#[rustfmt::skip]
 fn impl_debug_for_handle_any(all_parse_nodes: &[ParseNode], out: &mut String) {
     put!(out, "impl<'a, 'i, I: ::gll::runtime::Input> fmt::Debug for Handle<'a, 'i, I, Any> {
         fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -1318,6 +1323,7 @@ fn impl_debug_for_handle_any(all_parse_nodes: &[ParseNode], out: &mut String) {
     put!(out, "} } }"); // -- end fmt::Debug -- end fn fmt -- end match
 }
 
+#[rustfmt::skip]
 fn c_declaration_and_impls<Pat>(
     rules: &OrderMap<String, RuleWithNamedFields<Pat>>,
     code_labels: &OrderMap<CodeLabel, usize>,
@@ -1366,7 +1372,9 @@ fn rustfmt(out: &mut String) {
         .and_then(|child| child.wait_with_output().map(|o| o.status.success()))
         .unwrap_or(false);
 
-    if !has_rustfmt { return; }
+    if !has_rustfmt {
+        return;
+    }
 
     let rustfmt = Command::new("rustfmt")
         .stdin(Stdio::piped())
