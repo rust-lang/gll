@@ -464,7 +464,7 @@ pub enum ", name, "<'a, 'i: 'a, I: 'a + ::gll::runtime::Input> {");
 }");
             } else {
                 put!("
-
+#[allow(non_camel_case_types)]
 pub struct ", name, "<'a, 'i: 'a, I: 'a + ::gll::runtime::Input> {");
                 for (field_name, paths) in &rule.fields {
                     let refutable = rule.rule.field_pathset_is_refutable(paths);
@@ -716,6 +716,7 @@ impl<'a, 'i, I: ::gll::runtime::Input> Handle<'a, 'i, I, ", name, "<'a, 'i, I>> 
     pub fn one(self) -> Result<", name, "<'a, 'i, I>, Ambiguity<Self>> {
         // HACK(eddyb) using a closure to catch `Err`s from `?`
         (|| Ok({
+            #[allow(unused_variables)]
             let sppf = &self.parser.sppf;
             let node = self.node.unpack_alias();");
                 if let Some(variants) = &variants {
@@ -741,6 +742,7 @@ impl<'a, 'i, I: ::gll::runtime::Input> Handle<'a, 'i, I, ", name, "<'a, 'i, I>> 
         }))().map_err(|::gll::runtime::MoreThanOne| Ambiguity(self))
     }
     pub fn all(self) -> impl Iterator<Item = ", name, "<'a, 'i, I>> {
+        #[allow(unused_variables)]
         let sppf = &self.parser.sppf;
         let node = self.node.unpack_alias();");
                 if let Some(variants) = &variants {
@@ -1481,9 +1483,9 @@ impl<Pat: Ord + Hash + RustInputPat> Rule<Pat> {
                         i,
                         rule.parse_node_kind(parse_nodes),
                         rule.generate_traverse_shape(true, parse_nodes)
-                    );
+                    ).unwrap();
                 }
-                write!(s, " }}");
+                write!(s, " }}").unwrap();
                 s
             }
             Rule::Opt(rule) => format!("[{}]", rule.generate_traverse_shape(true, parse_nodes)),
