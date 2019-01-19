@@ -28,17 +28,37 @@ impl<S: AsRef<str>> RustInputPat for scannerless::Pat<S> {
     }
 }
 
+type ParseNodeMap<Pat> =
+    OrderMap<Rc<Rule<Pat>>, (ParseNodeKind, Option<ParseNodeShape<ParseNodeKind>>)>;
+
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+struct ParseNode {
+    kind: ParseNodeKind,
+    shape: ParseNodeShape<ParseNodeKind>,
+    ty: Option<String>,
+}
+
+struct Variant<'a, Pat> {
+    rule: Rc<Rule<Pat>>,
+    name: &'a str,
+    fields: OrderMap<&'a str, OrderSet<Vec<usize>>>,
+}
+
 impl<Pat: PartialEq> RuleWithNamedFields<Pat> {
     fn find_variant_fields(
         &self,
-    ) -> Option<Vec<(Rc<Rule<Pat>>, &str, OrderMap<&str, OrderSet<Vec<usize>>>)>> {
+    ) -> Option<Vec<Variant<'_, Pat>>> {
         if let Rule::Or(rules) = &*self.rule {
             if self.fields.is_empty() {
                 return None;
             }
             let mut variants: Vec<_> = rules
                 .iter()
-                .map(|rule| (rule.clone(), "", OrderMap::new()))
+                .map(|rule| Variant {
+                    rule: rule.clone(),
+                    name: "",
+                    fields: OrderMap::new(),
+                })
                 .collect();
             for (field, paths) in &self.fields {
                 for path in paths {
@@ -46,20 +66,20 @@ impl<Pat: PartialEq> RuleWithNamedFields<Pat> {
                         return None;
                     }
                     if path.len() == 1 {
-                        if variants[path[0]].1 != "" {
+                        if variants[path[0]].name != "" {
                             return None;
                         }
-                        variants[path[0]].1 = field;
+                        variants[path[0]].name = field;
                     } else {
                         variants[path[0]]
-                            .2
+                            .fields
                             .entry(&field[..])
                             .or_insert_with(OrderSet::new)
                             .insert(path[1..].to_vec());
                     }
                 }
             }
-            if variants.iter().any(|x| x.1 == "") {
+            if variants.iter().any(|x| x.name == "") {
                 return None;
             }
             Some(variants)
@@ -105,9 +125,7 @@ impl<Pat> Rule<Pat> {
 impl<Pat: Ord + Hash + RustInputPat> Rc<Rule<Pat>> {
     fn parse_node_kind(
         &self,
-        parse_nodes: &RefCell<
-            OrderMap<Self, (ParseNodeKind, Option<ParseNodeShape<ParseNodeKind>>)>,
-        >,
+        parse_nodes: &RefCell<ParseNodeMap<Pat>>,
     ) -> ParseNodeKind {
         if let Some((kind, _)) = parse_nodes.borrow().get(self) {
             return kind.clone();
@@ -227,6 +245,10 @@ pub struct Options {
     _nonexhaustive: (),
 }
 
+macro_rules! put {
+    ($out:ident, $($x:expr),*) => {{ $(write!($out, "{}", $x).unwrap();)* }}
+}
+
 #[cfg_attr(rustfmt, rustfmt_skip)]
 impl<Pat: Ord + Hash + MatchesEmpty + RustInputPat> Grammar<Pat> {
     pub fn generate_rust(&self) -> String {
@@ -235,600 +257,19 @@ impl<Pat: Ord + Hash + MatchesEmpty + RustInputPat> Grammar<Pat> {
     pub fn generate_rust_with_options(&self, options: Options) -> String {
         self.check();
 
-        let mut out = String::new();
-        macro_rules! put {
-            ($($x:expr),*) => {{ $(write!(out, "{}", $x).unwrap();)* }}
-        }
-
         let parse_nodes = RefCell::new(OrderMap::new());
         let mut named_parse_nodes = vec![];
         let mut code_labels = OrderMap::new();
 
-        put!("
-use gll::runtime::{Call, Continuation, ParseNodeKind, CodeLabel, ParseNodeShape, ParseNode, Range, traverse, nd::Arrow};
-use std::any;
-use std::fmt;
-use std::marker::PhantomData;");
-        // HACK(eddyb) see `out += out_body` at the end
-        let out_imports = mem::replace(&mut out, String::new());
+        let mut out = String::new();
 
-        put!("
-#[derive(Debug)]
-pub enum ParseError<T> {
-    TooShort(T),
-    NoParse,
-}
-
-pub type ParseResult<'a, 'i, I, T> =
-    Result<Handle<'a, 'i, I, T>, ParseError<Handle<'a, 'i, I, T>>>;
-
-pub type Any = dyn any::Any;
-
-#[derive(Debug)]
-pub struct Ambiguity<T>(T);
-
-pub struct Handle<'a, 'i: 'a, I: 'a + ::gll::runtime::Input, T: ?Sized> {
-    pub node: ParseNode<'i, _P>,
-    pub parser: &'a ::gll::runtime::Parser<'i, _P, _C, I>,
-    _marker: PhantomData<T>,
-}
-
-impl<'a, 'i, I: ::gll::runtime::Input, T: ?Sized> Copy for Handle<'a, 'i, I, T> {}
-
-impl<'a, 'i, I: ::gll::runtime::Input, T: ?Sized> Clone for Handle<'a, 'i, I, T> {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-
-impl<'a, 'i, I: ::gll::runtime::Input, T: ?Sized> Handle<'a, 'i, I, T> {
-    pub fn source(self) -> &'a I::Slice {
-        self.parser.input(self.node.range)
-    }
-    pub fn source_info(self) -> I::SourceInfo {
-        self.parser.source_info(self.node.range)
-    }
-}
-
-impl<'a, 'i, I: ::gll::runtime::Input, T> From<Ambiguity<Handle<'a, 'i, I, T>>> for Ambiguity<Handle<'a, 'i, I, Any>> {
-    fn from(x: Ambiguity<Handle<'a, 'i, I, T>>) -> Self {
-        Ambiguity(Handle {
-            node: x.0.node,
-            parser: x.0.parser,
-            _marker: PhantomData,
-        })
-    }
-}
-
-impl<'a, 'i, I: ::gll::runtime::Input, T> From<Ambiguity<Handle<'a, 'i, I, [T]>>> for Ambiguity<Handle<'a, 'i, I, Any>> {
-    fn from(x: Ambiguity<Handle<'a, 'i, I, [T]>>) -> Self {
-        Ambiguity(Handle {
-            node: x.0.node,
-            parser: x.0.parser,
-            _marker: PhantomData,
-        })
-    }
-}
-
-impl<'a, 'i, I: ::gll::runtime::Input> fmt::Debug for Handle<'a, 'i, I, ()> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, \"{:?}\", self.source_info())
-    }
-}
-
-impl<'a, 'i, I: ::gll::runtime::Input, T> fmt::Debug for Handle<'a, 'i, I, [T]>
-    where Handle<'a, 'i, I, T>: fmt::Debug,
-{
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, \"{:?} => \", self.source_info())?;
-        match self.all_list_heads() {
-            ListHead::Cons(cons) => {
-                for (i, (elem, rest)) in cons.enumerate() {
-                    if i > 0 {
-                        write!(f, \" | \")?;
-                    }
-                    enum Elem<T, L> {
-                        One(T),
-                        Spread(L),
-                    }
-                    impl<T: fmt::Debug, L: fmt::Debug> fmt::Debug for Elem<T, L> {
-                        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-                            match self {
-                                Elem::One(x) => fmt::Debug::fmt(x, f),
-                                Elem::Spread(xs) => {
-                                    write!(f, \"..(\")?;
-                                    fmt::Debug::fmt(xs, f)?;
-                                    write!(f, \")\")
-                                }
-                            }
-                        }
-                    }
-                    f.debug_list().entries(::std::iter::once(Elem::One(elem)).chain(rest.map(|r| {
-                        match r {
-                            Ok(x) => Elem::One(x),
-                            Err(Ambiguity(xs)) => Elem::Spread(xs),
-                        }
-                    }))).finish()?;
-                }
-            }
-            ListHead::Nil => {
-                f.debug_list().entries(None::<()>).finish()?;
-            }
-        }
-        Ok(())
-    }
-}
-
-impl<'a, 'i, I: ::gll::runtime::Input, T> Iterator for Handle<'a, 'i, I, [T]> {
-    type Item = Result<Handle<'a, 'i, I, T>, Ambiguity<Self>>;
-    fn next(&mut self) -> Option<Self::Item> {
-        match self.all_list_heads() {
-            ListHead::Cons(mut iter) => {
-                let (elem, rest) = iter.next().unwrap();
-                let original = *self;
-                *self = rest;
-                if iter.next().is_none() {
-                    Some(Ok(elem))
-                } else {
-                    match self.node.kind.shape() {
-                        ParseNodeShape::Opt(_) => {
-                            self.node.range = Range(original.node.range.split_at(0).0);
-                        }
-                        _ => unreachable!(),
-                    }
-                    match self.one_list_head() {
-                        ListHead::Nil => {}
-                        _ => unreachable!(),
-                    }
-                    Some(Err(Ambiguity(original)))
-                }
-            }
-            ListHead::Nil => None,
-        }
-    }
-}
-
-pub enum ListHead<C> {
-    Cons(C),
-    Nil,
-}
-
-impl<'a, 'i, I: ::gll::runtime::Input, T> Handle<'a, 'i, I, [T]> {
-    fn one_list_head(self) -> ListHead<Result<(Handle<'a, 'i, I, T>, Handle<'a, 'i, I, [T]>), Ambiguity<Self>>> {
-        match self.all_list_heads() {
-            ListHead::Cons(mut iter) => {
-                let first = iter.next().unwrap();
-                if iter.next().is_none() {
-                    ListHead::Cons(Ok(first))
-                } else {
-                    ListHead::Cons(Err(Ambiguity(self)))
-                }
-            }
-            ListHead::Nil => ListHead::Nil,
-        }
-    }
-    fn all_list_heads(mut self) -> ListHead<impl Iterator<Item = (Handle<'a, 'i, I, T>, Handle<'a, 'i, I, [T]>)>> {
-        if let ParseNodeShape::Opt(_) = self.node.kind.shape() {
-            if let Some(opt_child) = self.node.unpack_opt() {
-                self.node = opt_child;
-            } else {
-                return ListHead::Nil;
-            }
-        }
-        ListHead::Cons(self.parser.sppf.all_splits(self.node).flat_map(move |(elem, rest)| {
-            if let ParseNodeShape::Split(..) = rest.kind.shape() {
-                Some(self.parser.sppf.all_splits(rest)).into_iter().flatten().chain(None)
-            } else {
-                None.into_iter().flatten().chain(Some((elem, rest)))
-            }
-        }).map(move |(elem, rest)| {
-            (Handle {
-                node: elem,
-                parser: self.parser,
-                _marker: PhantomData,
-            }, Handle { node: rest, ..self })
-        }))
-    }
-}");
+        let rust_slice_ty = Pat::rust_slice_ty();
         for (name, rule) in &self.rules {
-            let variants = rule.find_variant_fields();
-            if let Some(variants) = &variants {
-                put!("
-
-pub enum ", name, "<'a, 'i: 'a, I: 'a + ::gll::runtime::Input> {");
-                for (rule, variant, fields) in variants {
-                    if fields.is_empty() {
-                        put!("
-    ", variant, "(Handle<'a, 'i, I, ", rule.field_type(&[]), ">),");
-                    } else {
-                        put!("
-    ", variant, " {");
-                        for (field_name, paths) in fields {
-                            let refutable = rule.field_pathset_is_refutable(paths);
-                            put!("
-        ", field_name, ": ");
-                            if refutable {
-                                put!("Option<");
-                            }
-                            put!("Handle<'a, 'i, I, ", rule.field_pathset_type(paths), ">");
-                            if refutable {
-                                put!(">");
-                            }
-                            put!(",");
-                        }
-                        put!("
-    },");
-                    }
-                }
-                put!("
-}");
-            } else {
-                put!("
-#[allow(non_camel_case_types)]
-pub struct ", name, "<'a, 'i: 'a, I: 'a + ::gll::runtime::Input> {");
-                for (field_name, paths) in &rule.fields {
-                    let refutable = rule.rule.field_pathset_is_refutable(paths);
-                    put!("
-    pub ", field_name, ": ");
-                    if refutable {
-                        put!("Option<");
-                    }
-                    put!("Handle<'a, 'i, I, ", rule.rule.field_pathset_type(paths), ">");
-                    if refutable {
-                        put!(">");
-                    }
-                    put!(",");
-                }
-                if rule.fields.is_empty() {
-                    put!("
-    _marker: PhantomData<(&'a (), &'i (), I)>,");
-                }
-                put!("
-}");
-            }
-            put!("
-
-impl<'a, 'i, I: ::gll::runtime::Input<Slice = ", Pat::rust_slice_ty() ,">> ", name, "<'a, 'i, I> {
-    pub fn parse_with<R>(
-        input: I,
-        f: impl for<'b, 'i2> FnOnce(
-            &'b ::gll::runtime::Parser<'i2, _P, _C, I>,
-            ParseResult<'b, 'i2, I, ", name, "<'b, 'i2, I>>,
-        ) -> R,
-    ) -> R {
-        ::gll::runtime::Parser::with(input, |mut parser, range| {
-            let call = Call {
-                callee: ", CodeLabel(name.clone()), ",
-                range,
-            };
-            parser.threads.spawn(
-                Continuation {
-                    code: call.callee,
-                    fn_input: call.range,
-                    state: 0,
-                },
-                call.range,
-            );
-            parse(&mut parser);
-            let result = parser.memoizer.longest_result(call);
-            f(&parser, result.ok_or(ParseError::NoParse).and_then(|range| {
-                let handle = Handle {
-                    node: ParseNode { kind: ", ParseNodeKind(name.clone()), ", range },
-                    parser: &parser,
-                    _marker: PhantomData,
-                };
-                if range == call.range {
-                    Ok(handle)
-                } else {
-                    Err(ParseError::TooShort(handle))
-                }
-            }))
-        })
-    }
-}
-
-impl<'a, 'i, I: ::gll::runtime::Input> fmt::Debug for ", name, "<'a, 'i, I> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {");
-            if let Some(variants) = &variants {
-                put!("
-        match self {");
-                for (rule, variant, fields) in variants {
-                    if fields.is_empty() {
-                        put!("
-            ", name, "::", variant, "(x) => f.debug_tuple(\"", name, "::", variant, "\").field(x).finish(),");
-                    } else {
-                        put!("
-            ", name, "::", variant, " { ");
-                        for field_name in fields.keys() {
-                            put!(field_name, ": f_", field_name, ", ");
-                        }
-                        put!(" } => {
-                let mut d = f.debug_struct(\"", name, "::", variant, "\");");
-                        for (field_name, paths) in fields {
-                            if rule.field_pathset_is_refutable(paths) {
-                                put!("
-                if let Some(field) = f_", field_name, " {
-                    d.field(\"", field_name,"\", field);
-                }");
-                            } else {
-                            put!("
-                d.field(\"", field_name,"\", f_", field_name, ");");
-                            }
-                        }
-                put!("
-                d.finish()
-            }");
-                    }
-                }
-                put!("
-        }");
-            } else {
-                put!("
-        let mut d = f.debug_struct(\"", name, "\");");
-                for (field_name, paths) in &rule.fields {
-                    if rule.rule.field_pathset_is_refutable(paths) {
-                        put!("
-        if let Some(ref field) = self.", field_name, " {
-            d.field(\"", field_name,"\", field);
-        }");
-                    } else {
-                    put!("
-        d.field(\"", field_name,"\", &self.", field_name, ");");
-                    }
-                }
-                put!("
-        d.finish()");
-            }
-            put!("
-    }
-}");
-            if rule.fields.is_empty() {
-                put!("
-
-impl<'a, 'i, I: ::gll::runtime::Input> fmt::Debug for Handle<'a, 'i, I, ", name, "<'a, 'i, I>> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, \"{:?}\", self.source_info())
-    }
-}");
-                continue;
-            }
-            put!("
-
-impl<'a, 'i, I: ::gll::runtime::Input> fmt::Debug for Handle<'a, 'i, I, ", name, "<'a, 'i, I>> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, \"{:?} => \", self.source_info())?;
-        let mut first = true;
-        for x in self.all() {
-            if !first {
-                write!(f, \" | \")?;
-            }
-            first = false;
-            fmt::Debug::fmt(&x, f)?;
+            declare_rule(name, rule, &parse_nodes, &mut out);
+            impl_parse_with(name, &rust_slice_ty, &mut out);
         }
-        Ok(())
-    }
-}
 
-impl<'a, 'i, I: ::gll::runtime::Input> ", name, "<'a, 'i, I> {");
-            if let Some(variants) = &variants {
-                for (rule, variant, fields) in variants {
-                    put!("
-    #[allow(non_snake_case)]
-    fn ", variant, "_from_sppf(
-        parser: &'a ::gll::runtime::Parser<'i, _P, _C, I>,
-        _node: ParseNode<'i, _P>,
-        _r: traverse!(typeof(ParseNode<'i, _P>) ", rule.generate_traverse_shape(false, &parse_nodes), "),
-    ) -> Self {");
-                    if fields.is_empty() {
-                        put!("
-        ", name, "::", variant, "(Handle {
-            node: _node,
-            parser,
-            _marker: PhantomData,
-        })");
-                    } else {
-                        put!("
-        ", name, "::", variant, " {");
-                        for (field_name, paths) in fields {
-                            if rule.field_pathset_is_refutable(&paths) {
-                                put!("
-            ", field_name, ": None.or(_r");
-                                for path in paths {
-                                    for p in path {
-                                        put!(" .", p);
-                                    }
-                                }
-                                put!(").map(|node| Handle {
-                node,
-                parser,
-                _marker: PhantomData,
-            }),");
-                            } else {
-                                put!("
-            ", field_name, ": Handle {
-                node: _r");
-                                assert_eq!(paths.len(), 1);
-                                for p in paths.get_index(0).unwrap() {
-                                    put!(" .", p);
-                                }
-                                put!(",
-                parser,
-                _marker: PhantomData,
-            },");
-                            }
-                        }
-                        put!("
-        }");
-                    }
-                    put!("
-    }");
-                }
-            } else {
-                put!("
-    fn from_sppf(
-        parser: &'a ::gll::runtime::Parser<'i, _P, _C, I>,
-        _node: ParseNode<'i, _P>,
-        _r: traverse!(typeof(ParseNode<'i, _P>) ", rule.rule.generate_traverse_shape(false, &parse_nodes), "),
-    ) -> Self {
-        ", name, " {");
-                for (field_name, paths) in &rule.fields {
-                    if rule.rule.field_pathset_is_refutable(paths) {
-                        put!("
-            ", field_name, ": None");
-                        for path in paths {
-                            put!(".or(_r");
-                            for p in path {
-                                put!(" .", p);
-                            }
-                            put!(")");
-                        }
-                        put!(".map(|node| Handle {
-                node,
-                parser,
-                _marker: PhantomData,
-            }),");
-                    } else {
-                        put!("
-            ", field_name, ": Handle {
-                node: _r");
-                        assert_eq!(paths.len(), 1);
-                        for p in paths.get_index(0).unwrap() {
-                            put!(" .", p);
-                        }
-                    put!(",
-                parser,
-                _marker: PhantomData,
-            },");
-                    }
-                }
-                if rule.fields.is_empty() {
-                    put!("
-            _marker: PhantomData,");
-                }
-                put!("
-        }
-    }");
-            }
-            put!("
-}
-
-impl<'a, 'i, I: ::gll::runtime::Input> Handle<'a, 'i, I, ", name, "<'a, 'i, I>> {
-    pub fn one(self) -> Result<", name, "<'a, 'i, I>, Ambiguity<Self>> {
-        // HACK(eddyb) using a closure to catch `Err`s from `?`
-        (|| Ok({
-            #[allow(unused_variables)]
-            let sppf = &self.parser.sppf;
-            let node = self.node.unpack_alias();");
-                if let Some(variants) = &variants {
-                    put!("
-            let node = sppf.one_choice(node)?;
-            match node.kind {");
-                for (rule, variant, _) in variants {
-                    put!("
-                ", rule.parse_node_kind(&parse_nodes), " => {
-                    let r = traverse!(one(sppf, node) ", rule.generate_traverse_shape(false, &parse_nodes), ");
-                    ", name, "::", variant, "_from_sppf(self.parser, node, r)
-                }");
-                }
-                put!("
-                _ => unreachable!(),
-            }");
-                } else {
-                put!("
-            let r = traverse!(one(sppf, node) ", rule.rule.generate_traverse_shape(false, &parse_nodes), ");
-            ", name, "::from_sppf(self.parser, node, r)");
-                }
-                put!("
-        }))().map_err(|::gll::runtime::MoreThanOne| Ambiguity(self))
-    }
-    pub fn all(self) -> impl Iterator<Item = ", name, "<'a, 'i, I>> {
-        #[allow(unused_variables)]
-        let sppf = &self.parser.sppf;
-        let node = self.node.unpack_alias();");
-                if let Some(variants) = &variants {
-                    put!("
-        #[derive(Clone)]
-        enum Iter<"); for i in 0..variants.len() { put!("_", i, ","); } put!("> {
-            "); for i in 0..variants.len() { put!("_", i, "(_", i, "),"); } put!("
-        }
-        impl<T, "); for i in 0..variants.len() { put!("_", i, ": Iterator<Item = T>,"); } put!("> Iterator
-            for Iter<"); for i in 0..variants.len() { put!("_", i, ","); } put!(">
-        {
-            type Item = T;
-            fn next(&mut self) -> Option<T> {
-                match self {");
-                    for i in 0..variants.len() {
-                        put!("
-                    Iter::_", i, "(iter) => iter.next(),");
-                    }
-                    put!("
-                }
-            }
-        }
-        sppf.all_choices(node).flat_map(move |node| {
-            match node.kind {");
-                    for (i, (rule, variant, _)) in variants.iter().enumerate() {
-                        put!("
-                ", rule.parse_node_kind(&parse_nodes), " => Iter::_", i, "(
-                    traverse!(all(sppf) ", rule.generate_traverse_shape(false, &parse_nodes), ")
-                        .apply(node)
-                        .map(move |r| ", name, "::", variant, "_from_sppf(self.parser, node, r))
-                ),");
-                    }
-                    put!("
-                _ => unreachable!(),
-            }
-        })");
-                } else {
-                    put!("
-        traverse!(all(sppf) ", rule.rule.generate_traverse_shape(false, &parse_nodes), ")
-            .apply(node)
-            .map(move |r| ", name, "::from_sppf(self.parser, node, r))");
-                }
-                put!("
-    }
-}");
-        }
-        put!("
-fn parse<I>(p: &mut ::gll::runtime::Parser<_P, _C, I>)
-where I: ::gll::runtime::Input<Slice = ", Pat::rust_slice_ty() ,">
-{
-    while let Some(Call { callee: mut c, range: _range }) = p.threads.steal() {
-        match c.code {");
-        for (name, rule) in &self.rules {
-            let parse_nodes = if rule.fields.is_empty() {
-                None
-            } else {
-                Some(&parse_nodes)
-            };
-            let code_label = CodeLabel(name.clone());
-            let parse_node_kind = ParseNodeKind(name.clone());
-            let shape = if let Some(parse_nodes) = parse_nodes {
-                ParseNodeShape::Alias(rule.rule.parse_node_kind(parse_nodes))
-            } else {
-                ParseNodeShape::Opaque
-            };
-            named_parse_nodes.push((parse_node_kind.clone(), shape));
-
-            put!((
-                reify_as(code_label.clone()) +
-                rule.rule.generate_parse(parse_nodes) +
-                ret()
-            ).apply(Continuation {
-                code_labels: &mut code_labels,
-                fn_code_label: &mut code_label.clone(),
-                code_label_arms: &mut String::new(),
-                code: Code::Inline(String::new()),
-                nested_frames: vec![],
-            }).code_label_arms);
-        }
-        put!("
-        }
-    }
-}
-");
-        // HACK(eddyb) see `out += out_body` at the end
-        let out_body = mem::replace(&mut out, out_imports);
+        define_parse_fn(&mut named_parse_nodes, &parse_nodes, &mut code_labels, &self.rules, &mut out);
 
         let mut i = 0;
         while i < parse_nodes.borrow().len() {
@@ -836,188 +277,68 @@ where I: ::gll::runtime::Input<Slice = ", Pat::rust_slice_ty() ,">
             rule.fill_parse_node_shape(&parse_nodes);
             i += 1;
         }
-        let mut all_parse_nodes: Vec<_> = named_parse_nodes.into_iter().map(|(k, s)| {
-            (k.clone(), s, Some(format!("{}<_>", k.0)))
+        let mut all_parse_nodes: Vec<ParseNode> = named_parse_nodes.into_iter().map(|(k, s)| {
+            ParseNode { kind: k.clone(), shape: s, ty: Some(format!("{}<_>", k.0)) }
         }).chain(parse_nodes.into_inner().into_iter().map(|(r, (k, s))| {
-            (k, s.unwrap(), match &*r {
-                Rule::RepeatMany(rule, _) | Rule::RepeatMore(rule, _) => match &**rule {
-                    Rule::Eat(_) => Some("[()]".to_string()),
-                    Rule::Call(r) => Some(format!("[{}<_>]", r)),
+            ParseNode {
+                kind: k,
+                shape: s.unwrap(),
+                ty: match &*r {
+                    Rule::RepeatMany(rule, _) | Rule::RepeatMore(rule, _) => match &**rule {
+                        Rule::Eat(_) => Some("[()]".to_string()),
+                        Rule::Call(r) => Some(format!("[{}<_>]", r)),
+                        _ => None,
+                    },
                     _ => None,
                 },
-                _ => None,
-            })
+            }
         })).collect();
         all_parse_nodes.sort();
-        put!("
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
-pub enum _P {");
-        for i in 0..all_parse_nodes.len() {
-            put!(
-                "
-    _", i, ",");
-        }
-        put!("
-}
-");
 
-        let mut substitute = vec![];
+        put!(out, "#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]");
+        put!(out, "pub enum _P {");
+        for i in 0..all_parse_nodes.len() {
+            put!(out," _", i, ",");
+        }
+        put!(out, "}");
+
+        // substitution mappings to use if macros are disabled
+        let substitute_opt: Option<Vec<(String, String)>>;
+        let mut macros = String::new();
         if options.no_macros {
-            substitute = all_parse_nodes.iter().enumerate().map(|(i, (kind, _, _))| {
+            substitute_opt = Some(all_parse_nodes.iter().enumerate().map(|(i, ParseNode { kind, .. })| {
                 (kind.to_string(), format!("_P::_{}", i))
-            }).collect();
+            }).collect());
         } else {
-            put!("
-macro_rules! P {");
-            for (i, (kind, _, _)) in all_parse_nodes.iter().enumerate() {
-                put!("
-    (", kind.0, ") => (_P::_", i, ");");
+            substitute_opt = None;
+
+            put!(macros, "macro_rules! P {");
+            for (i, ParseNode { kind, .. }) in all_parse_nodes.iter().enumerate() {
+                put!(macros, "(", kind.0, ") => (_P::_", i, ");");
             }
-            put!("
-}
-");
+            put!(macros, "}");
         }
 
-        put!("
-impl fmt::Display for _P {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let s = match *self {");
-        for (kind, _, _) in &all_parse_nodes {
-            put!("
-            ", kind, " => ", format!("{:?}", kind.0), ",");
-        }
-        put!("
-        };
-        write!(f, \"{}\", s)
-    }
-}
+        p_impls(&all_parse_nodes, &mut out);
+        impl_debug_for_handle_any(&all_parse_nodes, &mut out);
+        c_declaration_and_impls(&self.rules, &code_labels, &mut out);
 
-impl ParseNodeKind for _P {
-    fn shape(self) -> ParseNodeShape<Self> {
-        match self {");
-        for (kind, shape, _) in &all_parse_nodes {
-            put!("
-                ", kind, " => ParseNodeShape::", shape, ",");
-        }
-        put!("
-        }
-    }
-    fn from_usize(i: usize) -> Self {
-        match i {");
+        let prefix = String::from(concat!(
+            include_str!("templates/imports.rs"),
+            include_str!("templates/header.rs")
+        ));
 
-        for i in 0..all_parse_nodes.len() {
-            put!("
-            ", i, " => _P::_", i, ",");
-        }
-        put!("
-            _ => unreachable!(),
-        }
-    }
-    fn to_usize(self) -> usize {
-        self as usize
-    }
-}
-
-impl<'a, 'i, I: ::gll::runtime::Input> fmt::Debug for Handle<'a, 'i, I, Any> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self.node.kind {");
-        for (kind, _, ty) in &all_parse_nodes {
-            if let Some(ty) = ty {
-                put!("
-            ", kind, " => write!(f, \"{:?}\", Handle::<_, ", ty, "> {
-                node: self.node,
-                parser: self.parser,
-                _marker: PhantomData,
-            }),");
+        // Macros must be defined before any usages. The `prefix` does not use any macros.
+        let mut out = prefix + &*macros + &*out;
+ 
+        // In the case of `no_macros`, replace macro invocations of `P!(...)` with `_P::...`
+        if let Some(substitute) = substitute_opt {
+            for (from, to) in substitute {
+                out = out.replace(&from, &to);
             }
         }
-        put!("
-            _ => write!(f, \"{:?}\", Handle::<_, ()> {
-                node: self.node,
-                parser: self.parser,
-                _marker: PhantomData,
-            }),
-        }
-    }
-}
 
-#[allow(non_camel_case_types)]
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
-pub enum _C {");
-        for (name, _) in &self.rules {
-            put!("
-    ", name, ",");
-        }
-        for (fn_label, &counter) in &code_labels {
-            for i in 0..counter {
-                put!("
-    ", fn_label.0, "__", i, ",");
-            }
-        }
-        put!("
-}
-
-impl CodeLabel for _C {
-    fn enclosing_fn(self) -> Self {
-        match self {");
-        for (name, _) in &self.rules {
-            put!("
-            _C::", name, " => _C::", name, ",");
-        }
-        for (fn_label, &counter) in &code_labels {
-            for i in 0..counter {
-                let label = CodeLabel(format!("{}__{}", fn_label.0, i));
-                put!("
-            ", label, " => ", if code_labels.contains_key(&label) { &label } else { fn_label }, ",");
-            }
-        }
-        put!("
-        }
-    }
-}
-");
-        // HACK(eddyb) make sure the main part of the output is after any
-        // `macro_rules!`, which are only visible after their definition.
-        out += &out_body;
-
-        // HACK(eddyb) but in the case of `no_macros`, replace invocations
-        for (from, to) in substitute {
-            out = out.replace(&from, &to);
-        }
-
-        // HACK(eddyb) don't try to feed input to `rustfmt` without
-        // knowing that it will at least try to read it.
-        // *Somehow* (despite libstd ignoring it) we can get SIGPIPE.
-        let has_rustfmt = Command::new("rustfmt")
-            .arg("-V")
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .and_then(|child| child.wait_with_output().map(|o| o.status.success()))
-            .unwrap_or(false);
-
-        if !has_rustfmt {
-            return out;
-        }
-
-        let rustfmt = Command::new("rustfmt")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn();
-
-        if let Ok(mut rustfmt) = rustfmt {
-            let stdin_result = {
-                let stdin = rustfmt.stdin.as_mut().unwrap();
-                stdin.write_all(out.as_bytes())
-            };
-
-            if let Ok(output) = rustfmt.wait_with_output() {
-                if output.status.success() {
-                    stdin_result.unwrap();
-                    out = String::from_utf8_lossy(&output.stdout).to_string();
-                }
-            }
-        }
+        rustfmt(&mut out);
         out
     }
 }
@@ -1489,6 +810,543 @@ impl<Pat: Ord + Hash + RustInputPat> Rule<Pat> {
                 s
             }
             Rule::Opt(rule) => format!("[{}]", rule.generate_traverse_shape(true, parse_nodes)),
+        }
+    }
+}
+
+fn impl_parse_with(name: &str, rust_slice_ty: &str, out: &mut String) {
+    put!(out, "
+    impl<'a, 'i, I: ::gll::runtime::Input<Slice = ", rust_slice_ty, ">> ", name, "<'a, 'i, I> {
+        pub fn parse_with<R>(
+            input: I,
+            f: impl for<'b, 'i2> FnOnce(
+                &'b ::gll::runtime::Parser<'i2, _P, _C, I>,
+                ParseResult<'b, 'i2, I, ", name, "<'b, 'i2, I>>,
+            ) -> R,
+        ) -> R {
+            ::gll::runtime::Parser::with(input, |mut parser, range| {
+                let call = Call {
+                    callee: ", CodeLabel(name.to_string()), ",
+                    range,
+                };
+                parser.threads.spawn(
+                    Continuation {
+                        code: call.callee,
+                        fn_input: call.range,
+                        state: 0,
+                    },
+                    call.range,
+                );
+                parse(&mut parser);
+                let result = parser.memoizer.longest_result(call);
+                f(&parser, result.ok_or(ParseError::NoParse).and_then(|range| {
+                    let handle = Handle {
+                        node: ParseNode { kind: ", ParseNodeKind(name.to_string()), ", range },
+                        parser: &parser,
+                        _marker: PhantomData,
+                    };
+                    if range == call.range {
+                        Ok(handle)
+                    } else {
+                        Err(ParseError::TooShort(handle))
+                    }
+                }))
+            })
+        }
+    }")
+}
+
+fn declare_rule<Pat>(
+    name: &str,
+    rule: &RuleWithNamedFields<Pat>,
+    parse_nodes: &RefCell<ParseNodeMap<Pat>>,
+    out: &mut String,
+)
+where
+    Pat: Ord + Hash + RustInputPat,
+{
+    let variants = rule.find_variant_fields();
+
+    // Declare rule type
+    if let Some(variants) = &variants {
+        put!(out, "pub enum ", name, "<'a, 'i: 'a, I: 'a + ::gll::runtime::Input> {");
+        for Variant { rule, name: variant_name, fields } in variants {
+            if fields.is_empty() {
+                put!(out, variant_name, "(Handle<'a, 'i, I, ", rule.field_type(&[]), ">),");
+            } else {
+                put!(out, variant_name, " {");
+                for (field_name, paths) in fields {
+                    let refutable = rule.field_pathset_is_refutable(paths);
+                    put!(out, field_name, ": ");
+                    if refutable {
+                        put!(out, "Option<");
+                    }
+                    put!(out, "Handle<'a, 'i, I, ", rule.field_pathset_type(paths), ">");
+                    if refutable {
+                        put!(out, ">");
+                    }
+                    put!(out, ",");
+                }
+                put!(out, "},");
+            }
+        }
+        put!(out, "}");
+    } else {
+        put!(out, "#[allow(non_camel_case_types)]");
+        put!(out, "pub struct ", name, "<'a, 'i: 'a, I: 'a + ::gll::runtime::Input> {");
+        for (field_name, paths) in &rule.fields {
+            let refutable = rule.rule.field_pathset_is_refutable(paths);
+            put!(out, "pub ", field_name, ": ");
+            if refutable {
+                put!(out, "Option<");
+            }
+            put!(out, "Handle<'a, 'i, I, ", rule.rule.field_pathset_type(paths), ">");
+            if refutable {
+                put!(out, ">");
+            }
+            put!(out, ",");
+        }
+        if rule.fields.is_empty() {
+            put!(out, "_marker: PhantomData<(&'a (), &'i (), I)>,");
+        }
+        put!(out, "}");
+    }
+
+    // Implement `Debug`;
+    rule_debug_impls(name, &rule, variants.as_ref().map(|x| &**x), out);
+
+    put!(out, "impl<'a, 'i, I: ::gll::runtime::Input> ", name, "<'a, 'i, I> {"); // -- start impl
+    if let Some(variants) = &variants {
+        for Variant { rule, name: variant_name, fields } in variants {
+            put!(out, "
+                #[allow(non_snake_case)]
+                fn ", variant_name, "_from_sppf(
+                    parser: &'a ::gll::runtime::Parser<'i, _P, _C, I>,
+                    _node: ParseNode<'i, _P>,
+                    _r: traverse!(typeof(ParseNode<'i, _P>) ", rule.generate_traverse_shape(false, parse_nodes), "),
+                ) -> Self {" //-- start fn
+            );
+            if fields.is_empty() {
+                put!(out, name, "::", variant_name, "(Handle { node: _node, parser, _marker: PhantomData, })");
+            } else {
+                put!(out, name, "::", variant_name, " {"); // --start variant
+                for (field_name, paths) in fields {
+                    if rule.field_pathset_is_refutable(&paths) {
+                        put!(out, field_name, ": None.or(_r"); // -- start paren
+                        for path in paths {
+                            for p in path {
+                                put!(out, " .", p);
+                            }
+                        }
+                        put!(out, ").map(|node| Handle {
+                            node,
+                            parser,
+                            _marker: PhantomData,
+                        }),"); // -- end paren
+                    } else {
+                        put!(out, field_name, ": Handle { node: _r");
+                        assert_eq!(paths.len(), 1);
+                        for p in paths.get_index(0).unwrap() {
+                            put!(out, " .", p);
+                        }
+                        put!(out, ", parser, _marker: PhantomData, },");
+                    }
+                }
+                put!(out, "}"); // -- end variant
+            }
+            put!(out, "}"); // -- end fn
+        }
+    } else {
+        put!(out, "
+            fn from_sppf(
+                parser: &'a ::gll::runtime::Parser<'i, _P, _C, I>,
+                _node: ParseNode<'i, _P>,
+                _r: traverse!(typeof(ParseNode<'i, _P>) ", rule.rule.generate_traverse_shape(false, &parse_nodes), "),
+            ) -> Self {", // -- start fn
+            name,
+            "{"); // -- start struct
+        for (field_name, paths) in &rule.fields {
+            if rule.rule.field_pathset_is_refutable(paths) {
+                put!(out, field_name, ": None");
+                for path in paths {
+                    put!(out, ".or(_r");
+                    for p in path {
+                        put!(out, " .", p);
+                    }
+                    put!(out, ")");
+                }
+                put!(out, ".map(|node| Handle {
+                    node,
+                    parser,
+                    _marker: PhantomData,
+                }),");
+            } else {
+                put!(out, field_name, ": Handle { node: _r");
+                assert_eq!(paths.len(), 1);
+                for p in paths.get_index(0).unwrap() {
+                    put!(out, " .", p);
+                }
+                put!(out, ", parser, _marker: PhantomData, },");
+            }
+        }
+
+        if rule.fields.is_empty() {
+            put!(out, "_marker: PhantomData,");
+        }
+        put!(out, "}}"); // -- end struct -- end fn
+    }
+    put!(out, "}"); // -- end impl
+
+    put!(out, "
+        impl<'a, 'i, I: ::gll::runtime::Input> Handle<'a, 'i, I, ", name, "<'a, 'i, I>> {
+            pub fn one(self) -> Result<", name, "<'a, 'i, I>, Ambiguity<Self>> {
+                // HACK(eddyb) using a closure to catch `Err`s from `?`
+                (|| Ok({
+                    #[allow(unused_variables)]
+                    let sppf = &self.parser.sppf;
+                    let node = self.node.unpack_alias();");
+    {
+        if let Some(variants) = &variants {
+            put!(out, "
+                let node = sppf.one_choice(node)?;
+                match node.kind {");
+            for Variant { rule, name: variant_name, .. } in variants {
+                put!(out, rule.parse_node_kind(&parse_nodes), " => {
+                    let r = traverse!(one(sppf, node) ", rule.generate_traverse_shape(false, &parse_nodes), ");
+                    ", name, "::", variant_name, "_from_sppf(self.parser, node, r)
+                }");
+            }
+            put!(out, "_ => unreachable!()");
+            put!(out, "}");
+        } else {
+            put!(out, "
+                let r = traverse!(one(sppf, node) ", rule.rule.generate_traverse_shape(false, &parse_nodes), ");
+                ", name, "::from_sppf(self.parser, node, r)");
+        }
+    }
+    put!(out, "
+        }))().map_err(|::gll::runtime::MoreThanOne| Ambiguity(self))
+        }
+        pub fn all(self) -> impl Iterator<Item = ", name, "<'a, 'i, I>> {
+            #[allow(unused_variables)]
+            let sppf = &self.parser.sppf;
+            let node = self.node.unpack_alias();");
+    if let Some(variants) = &variants {
+        put!(out, "#[derive(Clone)] enum Iter<");
+        for i in 0..variants.len() {
+            put!(out, "_", i, ",");
+        }
+        put!(out, "> {");
+        for i in 0..variants.len() {
+            put!(out, "_", i, "(_", i, "),");
+        }
+        put!(out, "}");
+        put!(out, "impl<T, ");
+        for i in 0..variants.len() {
+            put!(out, "_", i, ": Iterator<Item = T>,");
+        }
+        put!(out, "> Iterator for Iter<");
+        for i in 0..variants.len() {
+            put!(out, "_", i, ",");
+        }
+        put!(out, ">
+        {
+            type Item = T;
+            fn next(&mut self) -> Option<T> {
+                match self {");
+                    for i in 0..variants.len() {
+                        put!(out, "
+                    Iter::_", i, "(iter) => iter.next(),");
+                    }
+                    put!(out, "
+                }
+            }
+        }
+        sppf.all_choices(node).flat_map(move |node| {
+            match node.kind {");
+                    for (i, Variant { rule, name: variant_name,  .. }) in
+                        variants.iter().enumerate()
+                    {
+                        put!(out, "
+                ", rule.parse_node_kind(&parse_nodes), " => Iter::_", i, "(
+                    traverse!(all(sppf) ", rule.generate_traverse_shape(false, &parse_nodes), ")
+                        .apply(node)
+                        .map(move |r| ", name, "::", variant_name, "_from_sppf(self.parser, node, r))
+                ),");
+                    }
+                    put!(out, "
+                _ => unreachable!(),
+            }
+        })");
+    } else {
+        put!(out, "
+            traverse!(all(sppf) ", rule.rule.generate_traverse_shape(false, &parse_nodes), ")
+                .apply(node)
+                .map(move |r| ", name, "::from_sppf(self.parser, node, r))");
+    }
+    put!(out, "} }");
+}
+
+fn rule_debug_impls<Pat>(
+    name: &str,
+    rule: &RuleWithNamedFields<Pat>,
+    variants: Option<&[Variant<'_, Pat>]>,
+    out: &mut String
+) {
+    rule_debug_impl(name, rule, variants, out);
+    rule_handle_debug_impl(name, !rule.fields.is_empty(), out);
+}
+
+fn rule_debug_impl<Pat>(
+    name: &str,
+    rule: &RuleWithNamedFields<Pat>,
+    variants: Option<&[Variant<'_, Pat>]>,
+    out: &mut String
+) {
+    put!(out, "impl<'a, 'i, I: ::gll::runtime::Input> fmt::Debug for ", name, "<'a, 'i, I> {");
+    put!(out, "fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {");
+    if let Some(variants) = variants {
+        put!(out, "match self {");
+        for Variant { rule: variant_rule, name: variant_name, fields } in variants {
+            if fields.is_empty() {
+                put!(out, name, "::", variant_name,
+                    "(x) => f.debug_tuple(\"",
+                    name, "::", variant_name, 
+                    "\").field(x).finish(),");
+            } else {
+                put!(out, name, "::", variant_name, " { ");
+                for field_name in fields.keys() {
+                    put!(out, field_name, ": f_", field_name, ", ");
+                }
+                put!(out, "} => {");
+                {
+                    put!(out, "let mut d = f.debug_struct(\"", name, "::", variant_name, "\");");
+                    for (field_name, paths) in fields {
+                        if variant_rule.field_pathset_is_refutable(paths) {
+                            put!(out, "if let Some(field) = f_", field_name, " { d.field(\"", field_name,"\", field); }");
+                        } else {
+                            put!(out, "d.field(\"", field_name,"\", f_", field_name, ");");
+                        }
+                    }
+                    put!(out, "d.finish()");
+                }
+                put!(out, "}");
+            }
+        }
+        put!(out, "}");
+    } else {
+        put!(out, "let mut d = f.debug_struct(\"", name, "\");");
+        for (field_name, paths) in &rule.fields {
+            if rule.rule.field_pathset_is_refutable(paths) {
+                put!(out, "if let Some(ref field) = self.", field_name, " {
+                    d.field(\"", field_name,"\", field);
+                }");
+            } else {
+                put!(out, "d.field(\"", field_name,"\", &self.", field_name, ");");
+            }
+        }
+        put!(out, "d.finish()");
+    }
+    put!(out, "}"); // end of `fmt`
+    put!(out, "}"); // end of `Debug for ...`
+}
+
+fn rule_handle_debug_impl(name: &str, has_fields: bool, out: &mut String) {
+    if !has_fields {
+        put!(out, "
+            impl<'a, 'i, I: ::gll::runtime::Input> fmt::Debug for Handle<'a, 'i, I, ", name, "<'a, 'i, I>> {
+                fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                    write!(f, \"{:?}\", self.source_info())
+                }
+            }
+        ");
+    } else {
+        put!(out, "
+            impl<'a, 'i, I: ::gll::runtime::Input> fmt::Debug for Handle<'a, 'i, I, ", name, "<'a, 'i, I>> {
+                fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                    write!(f, \"{:?} => \", self.source_info())?;
+                    let mut first = true;
+                    for x in self.all() {
+                        if !first {
+                            write!(f, \" | \")?;
+                        }
+                        first = false;
+                        fmt::Debug::fmt(&x, f)?;
+                    }
+                    Ok(())
+                }
+            }
+        ")
+    }
+}
+
+fn define_parse_fn<Pat>(
+    named_parse_nodes: &mut Vec<(ParseNodeKind, ParseNodeShape<ParseNodeKind>)>,
+    parse_nodes: &RefCell<ParseNodeMap<Pat>>,
+    code_labels: &mut OrderMap<CodeLabel, usize>,
+    rules: &OrderMap<String, RuleWithNamedFields<Pat>>,
+    out: &mut String,
+)
+where
+    Pat: Ord + Hash + RustInputPat,
+{
+    put!(out, "
+        fn parse<I>(p: &mut ::gll::runtime::Parser<_P, _C, I>)
+        where I: ::gll::runtime::Input<Slice = ", Pat::rust_slice_ty() ,">
+        {
+            while let Some(Call { callee: mut c, range: _range }) = p.threads.steal() {
+                match c.code {");
+    for (name, rule) in rules {
+        let parse_nodes = if rule.fields.is_empty() {
+            None
+        } else {
+            Some(parse_nodes)
+        };
+        let code_label = CodeLabel(name.to_string());
+        let parse_node_kind = ParseNodeKind(name.to_string());
+        let shape = if let Some(parse_nodes) = parse_nodes {
+            ParseNodeShape::Alias(rule.rule.parse_node_kind(parse_nodes))
+        } else {
+            ParseNodeShape::Opaque
+        };
+        named_parse_nodes.push((parse_node_kind.clone(), shape));
+
+        put!(out, (
+            reify_as(code_label.clone()) +
+            rule.rule.generate_parse(parse_nodes) +
+            ret()
+        ).apply(Continuation {
+            code_labels,
+            fn_code_label: &mut code_label.clone(),
+            code_label_arms: &mut String::new(),
+            code: Code::Inline(String::new()),
+            nested_frames: vec![],
+        }).code_label_arms);
+    }
+    put!(out, "} } }");
+}
+
+fn p_impls(all_parse_nodes: &[ParseNode], out: &mut String) {
+    put!(out, "impl fmt::Display for _P {
+        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            let s = match *self {"); // -- start fmt::Display -- start fn fmt -- start match
+    for ParseNode { kind, .. } in all_parse_nodes {
+        put!(out, kind, " => ", format!("{:?}", kind.0), ",");
+    }
+    put!(out, "};"); // -- end match
+    put!(out, "write!(f, \"{}\", s)");
+    put!(out, "} }"); // -- end fn fmt -- end fmt::Display
+
+    put!(out, "impl ParseNodeKind for _P {
+        fn shape(self) -> ParseNodeShape<Self> {
+            match self {"); // -- start ParseNodeKind for _P -- start fn shape -- start match
+    for ParseNode { kind, shape, .. } in all_parse_nodes {
+        put!(out, kind, " => ParseNodeShape::", shape, ",");
+    }
+    put!(out, "} }"); // -- end match --end fn shape
+
+    put!(out, "fn from_usize(i: usize) -> Self {
+        match i {"); // -- start from_usize -- start match
+
+    for i in 0..all_parse_nodes.len() {
+        put!(out, "
+        ", i, " => _P::_", i, ",");
+    }
+    put!(out, "_ => unreachable!(),");
+    put!(out, "} }"); // -- end match -- end from_usize
+    put!(out, "fn to_usize(self) -> usize { self as usize }");
+    put!(out, "}"); // -- end ParseNodeKind for _P
+}
+
+fn impl_debug_for_handle_any(all_parse_nodes: &[ParseNode], out: &mut String) {
+    put!(out, "impl<'a, 'i, I: ::gll::runtime::Input> fmt::Debug for Handle<'a, 'i, I, Any> {
+        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            match self.node.kind {"); // -- start fmt::Debug -- start fn fmt -- start match
+    for ParseNode { kind, shape: _, ty } in all_parse_nodes {
+        if let Some(ty) = ty {
+            put!(out, "
+        ", kind, " => write!(f, \"{:?}\", Handle::<_, ", ty, "> {
+            node: self.node,
+            parser: self.parser,
+            _marker: PhantomData,
+        }),");
+        }
+    }
+    put!(out, "
+        _ => write!(f, \"{:?}\", Handle::<_, ()> {
+            node: self.node,
+            parser: self.parser,
+            _marker: PhantomData,
+        }),");
+    put!(out, "} } }"); // -- end fmt::Debug -- end fn fmt -- end match
+}
+
+fn c_declaration_and_impls<Pat>(
+    rules: &OrderMap<String, RuleWithNamedFields<Pat>>,
+    code_labels: &OrderMap<CodeLabel, usize>,
+    out: &mut String,
+)
+{
+    put!(out, "
+        #[allow(non_camel_case_types)]
+        #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
+        pub enum _C {");
+    for (name, _) in rules {
+        put!(out, name, ",");
+    }
+    for (fn_label, &counter) in code_labels {
+        for i in 0..counter {
+            put!(out, fn_label.0, "__", i, ",");
+        }
+    }
+    put!(out, "}");
+
+    put!(out, "impl CodeLabel for _C {
+        fn enclosing_fn(self) -> Self {
+            match self {"); // -- start CodeLabel -- start fn enclosing_fn -- start match
+    for (name, _) in rules {
+        put!(out, "_C::", name, " => _C::", name, ",");
+    }
+    for (fn_label, &counter) in code_labels {
+        for i in 0..counter {
+            let label = CodeLabel(format!("{}__{}", fn_label.0, i));
+            let code_label = if code_labels.contains_key(&label) { &label } else { fn_label };
+            put!(out, label, " => ", code_label, ",");
+        }
+    }
+    put!(out, "} } }"); // -- end match -- end fn enclosing_fn -- end CodeLabel
+}
+
+fn rustfmt(out: &mut String) {
+    // HACK(eddyb) don't try to feed input to `rustfmt` without
+    // knowing that it will at least try to read it.
+    // *Somehow* (despite libstd ignoring it) we can get SIGPIPE.
+    let has_rustfmt = Command::new("rustfmt")
+        .arg("-V")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .and_then(|child| child.wait_with_output().map(|o| o.status.success()))
+        .unwrap_or(false);
+
+    if !has_rustfmt { return; }
+
+    let rustfmt = Command::new("rustfmt")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn();
+
+    if let Ok(mut rustfmt) = rustfmt {
+        let stdin_result = {
+            let stdin = rustfmt.stdin.as_mut().unwrap();
+            stdin.write_all(out.as_bytes())
+        };
+
+        if let Ok(output) = rustfmt.wait_with_output() {
+            if output.status.success() {
+                stdin_result.unwrap();
+                *out = String::from_utf8_lossy(&output.stdout).to_string();
+            }
         }
     }
 }
