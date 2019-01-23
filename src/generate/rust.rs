@@ -183,9 +183,7 @@ impl<Pat: Ord + Hash + RustInputPat> Rc<Rule<Pat>> {
 
     fn fill_parse_node_shape(
         &self,
-        parse_nodes: &RefCell<
-            OrderMap<Self, (ParseNodeKind, Option<ParseNodeShape<ParseNodeKind>>)>,
-        >,
+        parse_nodes: &RefCell<ParseNodeMap<Pat>>,
     ) {
         if parse_nodes.borrow()[self].1.is_some() {
             return;
@@ -279,10 +277,10 @@ impl<Pat: Ord + Hash + MatchesEmpty + RustInputPat> Grammar<Pat> {
         }
         let mut all_parse_nodes: Vec<ParseNode> = named_parse_nodes.into_iter().map(|(k, s)| {
             ParseNode { kind: k.clone(), shape: s, ty: Some(format!("{}<_>", k.0)) }
-        }).chain(parse_nodes.into_inner().into_iter().map(|(r, (k, s))| {
+        }).chain(parse_nodes.into_inner().into_iter().map(|(r, (kind, shape))| {
             ParseNode {
-                kind: k,
-                shape: s.unwrap(),
+                kind,
+                shape: shape.unwrap(),
                 ty: match &*r {
                     Rule::RepeatMany(rule, _) | Rule::RepeatMore(rule, _) => match &**rule {
                         Rule::Eat(_) => Some("[()]".to_string()),
@@ -330,7 +328,7 @@ impl<Pat: Ord + Hash + MatchesEmpty + RustInputPat> Grammar<Pat> {
 
         // Macros must be defined before any usages. The `prefix` does not use any macros.
         let mut out = prefix + &*macros + &*out;
- 
+
         // In the case of `no_macros`, replace macro invocations of `P!(...)` with `_P::...`
         if let Some(substitute) = substitute_opt {
             for (from, to) in substitute {
@@ -412,9 +410,7 @@ impl<'a> Continuation<'a> {
 
     #[cfg_attr(rustfmt, rustfmt_skip)]
     fn reify_as(&mut self, label: CodeLabel) {
-        let code = format!("
-            {} => {{{}
-            }}", label, self.to_inline());
+        let code = format!("{} => {{{}}}", label, self.to_inline());
         self.code_label_arms.push_str(&code);
         self.code = Code::Label(label);
     }
@@ -666,7 +662,7 @@ impl<Pat: Ord + Hash + RustInputPat> Rc<Rule<Pat>> {
     #[cfg_attr(rustfmt, rustfmt_skip)]
     fn generate_parse<'a>(
         &'a self,
-        parse_nodes: Option<&'a RefCell<OrderMap<Self, (ParseNodeKind, Option<ParseNodeShape<ParseNodeKind>>)>>>
+        parse_nodes: Option<&'a RefCell<ParseNodeMap<Pat>>>
     ) -> Thunk<impl ContFn + 'a> {
         Thunk::new(move |cont| match (&**self, parse_nodes) {
             (Rule::Empty, _) => cont,
@@ -866,9 +862,10 @@ where
     Pat: Ord + Hash + RustInputPat,
 {
     let variants = rule.find_variant_fields();
+    let variants: Option<&[Variant<'_, Pat>]>  = variants.as_ref().map(|x| &**x);
 
     // Declare rule type
-    if let Some(variants) = &variants {
+    if let Some(variants) = variants {
         put!(out, "pub enum ", name, "<'a, 'i: 'a, I: 'a + ::gll::runtime::Input> {");
         for Variant { rule, name: variant_name, fields } in variants {
             if fields.is_empty() {
@@ -913,10 +910,28 @@ where
     }
 
     // Implement `Debug`;
-    rule_debug_impls(name, &rule, variants.as_ref().map(|x| &**x), out);
+    rule_debug_impls(name, &rule, variants, out);
 
+    impl_rule_from_sppf(name, &rule, variants, parse_nodes, out);
+
+    put!(out, "impl<'a, 'i, I: ::gll::runtime::Input> Handle<'a, 'i, I, ", name, "<'a, 'i, I>> {");
+    impl_rule_one(name, &rule, variants, parse_nodes, out);
+    impl_rule_all(name, &rule, variants, parse_nodes, out);
+    put!(out, "}");
+}
+
+fn impl_rule_from_sppf<Pat>(
+    name: &str,
+    rule: &RuleWithNamedFields<Pat>,
+    variants: Option<&[Variant<'_, Pat>]>,
+    parse_nodes: &RefCell<ParseNodeMap<Pat>>,
+    out: &mut String,
+)
+where
+    Pat: Ord + Hash + RustInputPat,
+{
     put!(out, "impl<'a, 'i, I: ::gll::runtime::Input> ", name, "<'a, 'i, I> {"); // -- start impl
-    if let Some(variants) = &variants {
+    if let Some(variants) = variants {
         for Variant { rule, name: variant_name, fields } in variants {
             put!(out, "
                 #[allow(non_snake_case)]
@@ -996,25 +1011,35 @@ where
         put!(out, "}}"); // -- end struct -- end fn
     }
     put!(out, "}"); // -- end impl
+}
 
-    put!(out, "
-        impl<'a, 'i, I: ::gll::runtime::Input> Handle<'a, 'i, I, ", name, "<'a, 'i, I>> {
-            pub fn one(self) -> Result<", name, "<'a, 'i, I>, Ambiguity<Self>> {
-                // HACK(eddyb) using a closure to catch `Err`s from `?`
-                (|| Ok({
-                    #[allow(unused_variables)]
-                    let sppf = &self.parser.sppf;
-                    let node = self.node.unpack_alias();");
+fn impl_rule_one<Pat>(
+    name: &str,
+    rule: &RuleWithNamedFields<Pat>,
+    variants: Option<&[Variant<'_, Pat>]>,
+    parse_nodes: &RefCell<ParseNodeMap<Pat>>,
+    out: &mut String,
+)
+where
+    Pat: Ord + Hash + RustInputPat,
+{
+    put!(out, "pub fn one(self) -> Result<", name, "<'a, 'i, I>, Ambiguity<Self>> {
+            // HACK(eddyb) using a closure to catch `Err`s from `?`
+            (|| Ok({
+                #[allow(unused_variables)]
+                let sppf = &self.parser.sppf;
+                let node = self.node.unpack_alias();");
     {
-        if let Some(variants) = &variants {
+        if let Some(variants) = variants {
             put!(out, "
                 let node = sppf.one_choice(node)?;
                 match node.kind {");
             for Variant { rule, name: variant_name, .. } in variants {
                 put!(out, rule.parse_node_kind(&parse_nodes), " => {
-                    let r = traverse!(one(sppf, node) ", rule.generate_traverse_shape(false, &parse_nodes), ");
-                    ", name, "::", variant_name, "_from_sppf(self.parser, node, r)
-                }");
+                    let r = traverse!(one(sppf, node) ",
+                    rule.generate_traverse_shape(false, &parse_nodes), ");",
+                    name, "::", variant_name, "_from_sppf(self.parser, node, r)
+                    }");
             }
             put!(out, "_ => unreachable!()");
             put!(out, "}");
@@ -1026,12 +1051,24 @@ where
     }
     put!(out, "
         }))().map_err(|::gll::runtime::MoreThanOne| Ambiguity(self))
-        }
-        pub fn all(self) -> impl Iterator<Item = ", name, "<'a, 'i, I>> {
+        }");
+}
+
+fn impl_rule_all<Pat>(
+    name: &str,
+    rule: &RuleWithNamedFields<Pat>,
+    variants: Option<&[Variant<'_, Pat>]>,
+    parse_nodes: &RefCell<ParseNodeMap<Pat>>,
+    out: &mut String,
+)
+where
+    Pat: Ord + Hash + RustInputPat,
+{
+    put!(out, "pub fn all(self) -> impl Iterator<Item = ", name, "<'a, 'i, I>> {
             #[allow(unused_variables)]
             let sppf = &self.parser.sppf;
             let node = self.node.unpack_alias();");
-    if let Some(variants) = &variants {
+    if let Some(variants) = variants {
         put!(out, "#[derive(Clone)] enum Iter<");
         for i in 0..variants.len() {
             put!(out, "_", i, ",");
@@ -1084,14 +1121,14 @@ where
                 .apply(node)
                 .map(move |r| ", name, "::from_sppf(self.parser, node, r))");
     }
-    put!(out, "} }");
+    put!(out, "}");
 }
 
 fn rule_debug_impls<Pat>(
     name: &str,
     rule: &RuleWithNamedFields<Pat>,
     variants: Option<&[Variant<'_, Pat>]>,
-    out: &mut String
+    out: &mut String,
 ) {
     rule_debug_impl(name, rule, variants, out);
     rule_handle_debug_impl(name, !rule.fields.is_empty(), out);
@@ -1101,7 +1138,7 @@ fn rule_debug_impl<Pat>(
     name: &str,
     rule: &RuleWithNamedFields<Pat>,
     variants: Option<&[Variant<'_, Pat>]>,
-    out: &mut String
+    out: &mut String,
 ) {
     put!(out, "impl<'a, 'i, I: ::gll::runtime::Input> fmt::Debug for ", name, "<'a, 'i, I> {");
     put!(out, "fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {");
@@ -1111,7 +1148,7 @@ fn rule_debug_impl<Pat>(
             if fields.is_empty() {
                 put!(out, name, "::", variant_name,
                     "(x) => f.debug_tuple(\"",
-                    name, "::", variant_name, 
+                    name, "::", variant_name,
                     "\").field(x).finish(),");
             } else {
                 put!(out, name, "::", variant_name, " { ");
