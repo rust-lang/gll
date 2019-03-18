@@ -13,8 +13,11 @@ description = "Macros used with the gll crate."
 path = ".."
 version = "0.0.2"
 
+[dependencies]
+proc-quote = "0.2.0"
+
 [dev-dependencies]
-quote = "0.6"
+proc-quote = "0.2.0"
 
 [lib]
 doctest = false
