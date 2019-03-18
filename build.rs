@@ -1,5 +1,7 @@
 extern crate indexing;
 extern crate ordermap;
+extern crate proc_macro2;
+extern crate proc_quote;
 
 // HACK(eddyb) bootstrap by including a subset of the `gll` crate.
 #[path = "src/generate/mod.rs"]
@@ -118,5 +120,9 @@ fn main() {
         .insert_whitespace(grammar::call("Whitespace")),
     );
 
-    fs::write(&out_dir.join("parse_grammar.rs"), grammar.generate_rust()).unwrap();
+    fs::write(
+        &out_dir.join("parse_grammar.rs"),
+        grammar.generate_rust().to_rustfmt_or_pretty_string(),
+    )
+    .unwrap();
 }

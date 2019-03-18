@@ -1,4 +1,5 @@
 use generate::rust::RustInputPat;
+use generate::src::{quotable_to_src, quote, Src, ToSrc};
 use grammar::{self, call, eat, MatchesEmpty, MaybeKnown};
 use indexing::Container;
 pub use proc_macro2::{
@@ -6,7 +7,7 @@ pub use proc_macro2::{
 };
 use runtime::{Input, InputMatch, Range};
 use scannerless::Pat as SPat;
-use std::{fmt::Write, ops, str::FromStr};
+use std::{ops, str::FromStr};
 
 pub type Grammar = grammar::Grammar<Pat>;
 
@@ -77,17 +78,12 @@ impl MatchesEmpty for Pat {
 }
 
 impl RustInputPat for Pat {
-    fn rust_slice_ty() -> String {
-        "[::gll::proc_macro::FlatToken]".to_string()
+    fn rust_slice_ty() -> Src {
+        quote!([::gll::proc_macro::FlatToken])
     }
-    fn rust_matcher(&self) -> String {
-        let mut out = String::new();
-        write!(out, "&[").unwrap();
-        for pat in &self.0 {
-            write!(out, "::gll::proc_macro::FlatTokenPat::{:?},", pat).unwrap();
-        }
-        write!(out, "]").unwrap();
-        out
+    fn rust_matcher(&self) -> Src {
+        let pats = self.0.iter();
+        quote!(&[#(#pats),*])
     }
 }
 
@@ -108,6 +104,28 @@ pub enum FlatTokenPat<S: AsRef<str>> {
     },
     Literal,
 }
+
+impl ToSrc for FlatTokenPat<String> {
+    fn to_src(&self) -> Src {
+        let variant = match self {
+            FlatTokenPat::Delim(c) => quote!(Delim(#c)),
+            FlatTokenPat::Ident(s) => {
+                let s = s
+                    .as_ref()
+                    .map_or_else(|| quote!(None), |x| quote!(Some(#x)));
+                quote!(Ident(#s))
+            }
+            FlatTokenPat::Punct { ch, joint } => {
+                let ch = ch.map_or_else(|| quote!(None), |x| quote!(Some(#x)));
+                let joint = joint.map_or_else(|| quote!(None), |x| quote!(Some(#x)));
+                quote!(Punct { ch: #ch, joint: #joint })
+            }
+            FlatTokenPat::Literal => quote!(Literal),
+        };
+        quote!(::gll::proc_macro::FlatTokenPat::#variant)
+    }
+}
+quotable_to_src!(FlatTokenPat<String>);
 
 impl FlatToken {
     pub fn span(&self) -> Span {
