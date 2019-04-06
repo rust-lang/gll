@@ -12,8 +12,13 @@ macro_rules! testcases {
         fn $name() {
             $name::$rule::parse_with($input, |parser, result| {
                 let result = format!("{:#?}", result.unwrap());
+                // FIXME(eddyb) Remove this trailing-comma-ignoring hack
+                // once rust-lang/rust#59076 reaches the stable channel.
+                let normalize = |s: &str| {
+                    s.replace(",\n", "\n")
+                };
                 assert!(
-                    result == $expected,
+                    normalize(&result) == normalize($expected),
                     "mismatched output, expected:\n{}\n\nfound:\n{}",
                     $expected,
                     result
