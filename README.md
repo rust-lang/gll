@@ -1,6 +1,6 @@
 # GLL parsing framework
 
-[![Build Status](https://travis-ci.com/lykenware/gll.svg?branch=master)](https://travis-ci.com/lykenware/gll)
+[![Build Status](https://travis-ci.com/rust-lang/gll.svg?branch=master)](https://travis-ci.com/rust-lang/gll)
 [![Latest Version](https://img.shields.io/crates/v/gll.svg)](https://crates.io/crates/gll)
 [![Rust Documentation](https://img.shields.io/badge/api-rustdoc-blue.svg)](https://docs.rs/gll)
 
