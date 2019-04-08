@@ -11,12 +11,10 @@ Easiest way to get started is through `gll-macros`:
 [dependencies]
 gll = "0.0.2"
 gll-macros = "0.0.2"
-proc-macro2 = "0.4.20"
 ```
 ```rust
 extern crate gll;
 extern crate gll_macros;
-extern crate proc_macro2;
 ```
 
 As an example, this is what you might write for a JSON-like syntax,
@@ -42,9 +40,7 @@ You can also use a build script to generate the parser (**TODO**: document).
 
 To parse a string with that grammar:
 ```rust
-use proc_macro2::TokenStream;
-
-let tokens: TokenStream = string.parse().unwrap();
+let tokens = string.parse::<::gll::proc_macro::TokenStream>().unwrap();
 json_like::Value::parse_with(tokens, |parser, result| {
     let value = result.unwrap();
     // ...
