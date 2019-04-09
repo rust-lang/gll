@@ -1,36 +1,26 @@
 extern crate gll;
 extern crate proc_macro;
+extern crate proc_quote;
 
-use gll::generate::rust::Options;
 use proc_macro::TokenStream;
-
-fn options() -> Options {
-    let mut options = Options::default();
-    options.no_macros = true;
-    options
-}
+use proc_quote::ToTokens as _;
 
 #[proc_macro]
 pub fn scannerless_parser(input: TokenStream) -> TokenStream {
     // FIXME(eddyb) parse the `proc_macro` tokens instead of strings.
-    // Also, avoid running `rustfmt` here, it's wasteful and unnecessary.
     input
         .to_string()
         .parse::<gll::scannerless::Grammar>()
         .unwrap()
-        .generate_rust_with_options(options())
-        .parse()
-        .unwrap()
+        .generate_rust()
+        .into_token_stream()
+        .into()
 }
 
 #[proc_macro]
 pub fn proc_macro_parser(input: TokenStream) -> TokenStream {
     // FIXME(eddyb) parse the `proc_macro` tokens instead of strings.
-    // Also, avoid running `rustfmt` here, it's wasteful and unnecessary.
     let mut grammar = gll::proc_macro::builtin();
     grammar.extend(input.to_string().parse().unwrap());
-    grammar
-        .generate_rust_with_options(options())
-        .parse()
-        .unwrap()
+    grammar.generate_rust().into_token_stream().into()
 }

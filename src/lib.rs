@@ -1,6 +1,7 @@
 extern crate indexing;
 extern crate ordermap;
 extern crate proc_macro2;
+extern crate proc_quote;
 
 pub mod generate;
 pub mod grammar;

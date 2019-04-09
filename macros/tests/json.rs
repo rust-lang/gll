@@ -1,6 +1,6 @@
 extern crate gll;
 extern crate gll_macros;
-extern crate quote;
+extern crate proc_quote;
 
 mod json_like {
     ::gll_macros::proc_macro_parser! {
@@ -19,7 +19,7 @@ mod json_like {
 
 #[test]
 fn json_like_proc_macro() {
-    let tokens: ::gll::proc_macro::TokenStream = quote::quote! {
+    let tokens: ::gll::proc_macro::TokenStream = proc_quote::quote! {
         // Example from `serde_json`.
         {
             name: "John Doe",

@@ -15,10 +15,13 @@ description = "GLL parsing framework."
 indexing = "0.3.1"
 ordermap = "0.3.0"
 proc-macro2 = "0.4.0"
+proc-quote = "0.2.0"
 
 [build-dependencies]
 indexing = "0.3.1"
 ordermap = "0.3.0"
+proc-macro2 = "0.4.0"
+proc-quote = "0.2.0"
 
 [lib]
 doctest = false
