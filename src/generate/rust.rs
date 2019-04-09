@@ -1,7 +1,7 @@
 use crate::generate::src::{quotable_to_src, quote, Src, ToSrc};
-use crate::grammar::ParseNodeShape;
-use crate::grammar::{Grammar, MatchesEmpty, Rule, RuleWithNamedFields};
+use crate::parse_node::ParseNodeShape;
 use crate::scannerless::Pat as SPat;
+use grammer::{Grammar, MatchesEmpty, Rule, RuleWithNamedFields};
 
 use ordermap::{Entry, OrderMap, OrderSet};
 use std::borrow::Cow;
@@ -49,7 +49,11 @@ struct Variant<'a, Pat> {
     fields: OrderMap<&'a str, OrderSet<Vec<usize>>>,
 }
 
-impl<Pat: PartialEq> RuleWithNamedFields<Pat> {
+trait RuleWithNamedFieldsMethods<Pat> {
+    fn find_variant_fields(&self) -> Option<Vec<Variant<'_, Pat>>>;
+}
+
+impl<Pat: PartialEq> RuleWithNamedFieldsMethods<Pat> for RuleWithNamedFields<Pat> {
     fn find_variant_fields(&self) -> Option<Vec<Variant<'_, Pat>>> {
         if let Rule::Or(cases) = &*self.rule {
             if self.fields.is_empty() {
@@ -90,7 +94,12 @@ impl<Pat: PartialEq> RuleWithNamedFields<Pat> {
     }
 }
 
-impl<Pat> Rule<Pat> {
+trait RuleTypeMethods {
+    fn field_pathset_type(&self, paths: &OrderSet<Vec<usize>>) -> Src;
+    fn field_type(&self, path: &[usize]) -> Src;
+}
+
+impl<Pat> RuleTypeMethods for Rule<Pat> {
     fn field_pathset_type(&self, paths: &OrderSet<Vec<usize>>) -> Src {
         let ty = self.field_type(paths.get_index(0).unwrap());
         if paths.len() > 1 {
@@ -177,7 +186,15 @@ impl<Pat: Ord + Hash + RustInputPat> RcRuleRuleMapMethods<Pat> for Rc<Rule<Pat>>
     }
 }
 
-impl<Pat: Ord + Hash + RustInputPat> Rule<Pat> {
+trait RuleRuleMapMethods<Pat> {
+    fn parse_node_desc_uncached(&self, rules: &RuleMap<'_, Pat>) -> String;
+    fn parse_node_shape_uncached(
+        rc_self: &Rc<Self>,
+        rules: &RuleMap<'_, Pat>,
+    ) -> ParseNodeShape<ParseNodeKind>;
+}
+
+impl<Pat: Ord + Hash + RustInputPat> RuleRuleMapMethods<Pat> for Rule<Pat> {
     fn parse_node_desc_uncached(&self, rules: &RuleMap<'_, Pat>) -> String {
         match self {
             Rule::Empty => "".to_string(),
@@ -314,8 +331,17 @@ impl ToSrc for CodeLabel {
 }
 quotable_to_src!(CodeLabel);
 
-impl<Pat: Ord + Hash + MatchesEmpty + RustInputPat> Grammar<Pat> {
-    pub fn generate_rust(&self) -> Src {
+// FIXME(eddyb) this is a bit pointless, as it's exported as a free function.
+trait GrammarGenerateMethods {
+    fn generate_rust(&self) -> Src;
+}
+
+pub fn generate<Pat: Ord + Hash + MatchesEmpty + RustInputPat>(g: &Grammar<Pat>) -> Src {
+    g.generate_rust()
+}
+
+impl<Pat: Ord + Hash + MatchesEmpty + RustInputPat> GrammarGenerateMethods for Grammar<Pat> {
+    fn generate_rust(&self) -> Src {
         self.check();
 
         let rules = &RuleMap {
@@ -484,6 +510,13 @@ impl<F> Thunk<F> {
         F: FnOnce(Continuation<'_>) -> Continuation<'_>,
     {
         Thunk(f)
+    }
+
+    fn boxed<'a>(self) -> Thunk<Box<dyn FnOnce(Continuation<'_>) -> Continuation<'_> + 'a>>
+    where
+        F: FnOnce(Continuation<'_>) -> Continuation<'_> + 'a,
+    {
+        Thunk(Box::new(self.0))
     }
 }
 
@@ -681,13 +714,24 @@ fn reify_as(label: Rc<CodeLabel>) -> Thunk<impl ContFn> {
     })
 }
 
-impl<Pat: Ord + Hash + RustInputPat> Rule<Pat> {
-    // HACK(eddyb) the `Rc<Self>` points to the same `Self` value as `self`,
-    // but can't be `self` itself without `#![feature(arbitrary_self_types)]`.
+trait RuleGenerateMethods<Pat> {
     fn generate_parse<'a>(
         &'a self,
         rc_self_and_rules: Option<(&'a Rc<Self>, &'a RuleMap<'_, Pat>)>,
-    ) -> Thunk<impl ContFn + 'a> {
+    ) -> Thunk<Box<dyn FnOnce(Continuation<'_>) -> Continuation<'_> + 'a>>;
+
+    fn generate_traverse_shape(&self, refutable: bool, rules: &RuleMap<'_, Pat>) -> Src;
+}
+
+impl<Pat: Ord + Hash + RustInputPat> RuleGenerateMethods<Pat> for Rule<Pat> {
+    // HACK(eddyb) the `Rc<Self>` points to the same `Self` value as `self`,
+    // but can't be `self` itself without `#![feature(arbitrary_self_types)]`.
+    // HACK(eddyb) this should be using `Thunk<impl ContFn + 'a>` but that
+    // doesn't work with traits yet. Ideally we'll just move to having an IR.
+    fn generate_parse<'a>(
+        &'a self,
+        rc_self_and_rules: Option<(&'a Rc<Self>, &'a RuleMap<'_, Pat>)>,
+    ) -> Thunk<Box<dyn FnOnce(Continuation<'_>) -> Continuation<'_> + 'a>> {
         if let Some((rc_self, _)) = rc_self_and_rules {
             assert!(std::ptr::eq(self, &**rc_self));
         }
@@ -782,10 +826,9 @@ impl<Pat: Ord + Hash + RustInputPat> Rule<Pat> {
             })
             .apply(cont),
         })
+        .boxed()
     }
-}
 
-impl<Pat: Ord + Hash + RustInputPat> Rule<Pat> {
     fn generate_traverse_shape(&self, refutable: bool, rules: &RuleMap<'_, Pat>) -> Src {
         match self {
             Rule::Empty

@@ -1,3 +1,4 @@
+extern crate grammer;
 extern crate indexing;
 extern crate ordermap;
 extern crate proc_macro2;
@@ -6,17 +7,18 @@ extern crate proc_quote;
 // HACK(eddyb) bootstrap by including a subset of the `gll` crate.
 #[path = "src/generate/mod.rs"]
 mod generate;
-#[path = "src/grammar.rs"]
-mod grammar;
+#[path = "src/parse_node.rs"]
+mod parse_node;
 #[path = "src/scannerless.rs"]
-mod scannerless;
+pub mod scannerless;
 
-use grammar::{call, eat, negative_lookahead};
+use grammer::{call, eat, negative_lookahead};
 use std::env;
 use std::fs;
 use std::path::PathBuf;
 
-type Grammar = scannerless::Grammar<&'static str>;
+// FIXME(eddyb) use `scannerless::Grammar` when that wrapper hack is fixed.
+type Grammar = grammer::Grammar<scannerless::Pat<&'static str>>;
 
 // HACK(eddyb) more explicit subset of the grammar, for bootstrapping.
 macro_rules! rule {
@@ -117,12 +119,12 @@ fn main() {
                 {CharRange:{ {{start:CharLit}?} ".." {{end:CharLit}?} }} |
                 {CharRangeInclusive:{ {{start:CharLit}?} "..=" {end:CharLit} }};
         }
-        .insert_whitespace(grammar::call("Whitespace")),
+        .insert_whitespace(grammer::call("Whitespace")),
     );
 
     fs::write(
         &out_dir.join("parse_grammar.rs"),
-        grammar.generate_rust().to_rustfmt_or_pretty_string(),
+        generate::rust::generate(&grammar).to_rustfmt_or_pretty_string(),
     )
     .unwrap();
 }

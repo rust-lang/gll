@@ -1,8 +1,27 @@
-use crate::grammar::{self, MatchesEmpty, MaybeKnown};
+use grammer::{self, MatchesEmpty, MaybeKnown};
 use std::char;
 use std::ops::{self, Bound, RangeBounds};
 
-pub type Grammar<S = String> = grammar::Grammar<Pat<S>>;
+// HACK(eddyb) we want e.g. `.parse::<scannerless::Grammar>()` to keep working,
+// but `Grammar` comes from the `grammer` crate now - so we wrap it in order to
+// implement `FromStr` on the wrapper and use `Deref` to make it more seamless.
+// Also, it's here, and not in `parse_grammar`, so it exists during bootstrap.
+pub struct WrapperHack<T>(pub T);
+
+impl<T> std::ops::Deref for WrapperHack<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
+impl<T> std::ops::DerefMut for WrapperHack<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        &mut self.0
+    }
+}
+
+pub type Grammar<S = String> = WrapperHack<grammer::Grammar<Pat<S>>>;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Pat<S = String, C = char> {

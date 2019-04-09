@@ -1,4 +1,4 @@
-pub use crate::grammar::ParseNodeShape;
+pub use crate::parse_node::ParseNodeShape;
 
 use crate::high::{type_lambda, ErasableL, ExistsL, PairL};
 use crate::indexing_str;
