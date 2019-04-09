@@ -4,36 +4,8 @@ use std::collections::HashMap;
 use std::fmt;
 use std::hash::Hash;
 use std::iter;
-use std::ops::{Add, BitAnd, BitOr, Deref};
-
-// HACK(eddyb) newtype to avoid needing `arbitrary_self_types`
-#[derive(PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Rc<T>(::std::rc::Rc<T>);
-
-impl<T> Rc<T> {
-    pub fn new(x: T) -> Self {
-        Rc(::std::rc::Rc::new(x))
-    }
-}
-
-impl<T> Clone for Rc<T> {
-    fn clone(&self) -> Self {
-        Rc(self.0.clone())
-    }
-}
-
-impl<T> Deref for Rc<T> {
-    type Target = T;
-    fn deref(&self) -> &T {
-        &self.0
-    }
-}
-
-impl<T: fmt::Debug> fmt::Debug for Rc<T> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        self.0.fmt(f)
-    }
-}
+use std::ops::{Add, BitAnd, BitOr};
+use std::rc::Rc;
 
 pub struct Grammar<Pat> {
     pub(crate) rules: OrderMap<String, RuleWithNamedFields<Pat>>,
@@ -344,7 +316,17 @@ impl<Pat> Rule<Pat> {
     }
 }
 
-impl<Pat: Ord + Hash + MatchesEmpty> Rc<Rule<Pat>> {
+// FIXME(eddyb) this should just work with `self: &Rc<Self>` on inherent methods,
+// but that still requires `#![feature(arbitrary_self_types)]`.
+trait RcRuleMethods<Pat>: Sized {
+    fn can_be_empty(
+        &self,
+        cache: &mut HashMap<Self, MaybeKnown<bool>>,
+        grammar: &Grammar<Pat>,
+    ) -> MaybeKnown<bool>;
+}
+
+impl<Pat: Ord + Hash + MatchesEmpty> RcRuleMethods<Pat> for Rc<Rule<Pat>> {
     fn can_be_empty(
         &self,
         cache: &mut HashMap<Self, MaybeKnown<bool>>,
@@ -355,8 +337,25 @@ impl<Pat: Ord + Hash + MatchesEmpty> Rc<Rule<Pat>> {
             Entry::Vacant(entry) => {
                 entry.insert(MaybeKnown::Unknown);
             }
+        };
+        let r = self.can_be_empty_uncached(cache, grammar);
+        match r {
+            MaybeKnown::Known(_) => *cache.get_mut(self).unwrap() = r,
+            MaybeKnown::Unknown => {
+                cache.remove(self);
+            }
         }
-        let r = match &**self {
+        r
+    }
+}
+
+impl<Pat: Ord + Hash + MatchesEmpty> Rule<Pat> {
+    fn can_be_empty_uncached(
+        &self,
+        cache: &mut HashMap<Rc<Self>, MaybeKnown<bool>>,
+        grammar: &Grammar<Pat>,
+    ) -> MaybeKnown<bool> {
+        match self {
             Rule::Empty | Rule::NegativeLookahead(_) | Rule::Opt(_) | Rule::RepeatMany(..) => {
                 MaybeKnown::Known(true)
             }
@@ -369,22 +368,15 @@ impl<Pat: Ord + Hash + MatchesEmpty> Rc<Rule<Pat>> {
                 prev | rule.can_be_empty(cache, grammar)
             }),
             Rule::RepeatMore(elem, _) => elem.can_be_empty(cache, grammar),
-        };
-        match r {
-            MaybeKnown::Known(_) => *cache.get_mut(self).unwrap() = r,
-            MaybeKnown::Unknown => {
-                cache.remove(self);
-            }
         }
-        r
     }
 
     fn check_non_empty_opt(
         &self,
-        cache: &mut HashMap<Self, MaybeKnown<bool>>,
+        cache: &mut HashMap<Rc<Self>, MaybeKnown<bool>>,
         grammar: &Grammar<Pat>,
     ) {
-        match &**self {
+        match self {
             Rule::Empty | Rule::Eat(_) | Rule::NegativeLookahead(_) | Rule::Call(_) => {}
             Rule::Concat([left, right]) => {
                 left.check_non_empty_opt(cache, grammar);
@@ -410,7 +402,7 @@ impl<Pat: Ord + Hash + MatchesEmpty> Rc<Rule<Pat>> {
     }
 
     fn check_call_names(&self, grammar: &Grammar<Pat>) {
-        match &**self {
+        match self {
             Rule::Empty | Rule::Eat(_) | Rule::NegativeLookahead(_) => {}
             Rule::Call(rule) => {
                 assert!(grammar.rules.contains_key(rule), "no rule named `{}`", rule);
