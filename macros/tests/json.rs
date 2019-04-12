@@ -36,13 +36,13 @@ fn json_like_proc_macro() {
             test: [null, false, true, (format!("{:?}", Some(1 + 2)))]
         }
     };
-    json_like::Value::parse_with(tokens, |_, result| {
-        let result = format!("{:#?}", result.unwrap());
-        // HACK(eddyb) clean up the result, as we have no span info.
-        let result = result
-            .replace("Span..Span => ", "")
-            .replace("Span..Span", "?");
-        let expected = "\
+
+    let result = format!("{:#?}", json_like::Value::parse(tokens).unwrap());
+    // HACK(eddyb) clean up the result, as we have no span info.
+    let result = result
+        .replace("Span..Span => ", "")
+        .replace("Span..Span", "?");
+    let expected = "\
 Value::Object {
     fields: [
         Field {
@@ -110,16 +110,15 @@ Value::Object {
         }
     ]
 }";
-            // FIXME(eddyb) Remove this trailing-comma-ignoring hack
-            // once rust-lang/rust#59076 reaches the stable channel.
-            let normalize = |s: &str| {
-                s.replace(",\n", "\n")
-            };
-        assert!(
-            normalize(&result) == normalize(expected),
-            "mismatched output, expected:\n{}\n\nfound:\n{}",
-            expected,
-            result
-        );
-    })
+    // FIXME(eddyb) Remove this trailing-comma-ignoring hack
+    // once rust-lang/rust#59076 reaches the stable channel.
+    let normalize = |s: &str| {
+        s.replace(",\n", "\n")
+    };
+    assert!(
+        normalize(&result) == normalize(expected),
+        "mismatched output, expected:\n{}\n\nfound:\n{}",
+        expected,
+        result
+    );
 }

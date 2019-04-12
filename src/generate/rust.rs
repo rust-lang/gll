@@ -563,7 +563,7 @@ fn ret() -> Thunk<impl ContFn> {
 }
 
 fn sppf_add(parse_node_kind: &ParseNodeKind, child: Src) -> Thunk<impl ContFn> {
-    thunk!(p.sppf.add(#parse_node_kind, c.fn_input.subtract_suffix(_range), #child);)
+    thunk!(p.sppf_add(#parse_node_kind, c.fn_input.subtract_suffix(_range), #child);)
 }
 
 trait ForEachThunk {
@@ -820,46 +820,38 @@ where
     let code_label = Rc::new(CodeLabel::NamedRule(name.to_string()));
     let parse_node_kind = ParseNodeKind::NamedRule(name.to_string());
     let rust_slice_ty = Pat::rust_slice_ty();
-    quote!(impl<'a, 'i, I> #ident<'a, 'i, I>
-        where I: ::gll::runtime::Input<Slice = #rust_slice_ty>,
-    {
-        pub fn parse_with<R>(
-            input: I,
-            f: impl for<'b, 'i2> FnOnce(
-                &'b ::gll::runtime::Parser<'i2, _P, _C, I>,
-                ParseResult<'b, 'i2, I, #ident<'b, 'i2, I>>,
-            ) -> R,
-        ) -> R {
-            ::gll::runtime::Parser::with(input, |mut parser, range| {
-                let call = Call {
-                    callee: #code_label,
-                    range,
+    quote!(
+        impl<'_a, I> #ident<'_a, 'static, I>
+            where I: ::gll::runtime::Input<Slice = #rust_slice_ty>,
+        {
+            pub fn parse(input: I)
+                -> ::gll::runtime::ParseResult<OwnedHandle<I, #ident<'_a, 'static, I>>>
+            {
+                let handle = |forest_and_node| OwnedHandle {
+                    forest_and_node,
+                    _marker: PhantomData,
                 };
-                parser.threads.spawn(
-                    Continuation {
-                        code: call.callee,
-                        fn_input: call.range,
-                        state: 0,
-                    },
-                    call.range,
-                );
-                parse(&mut parser);
-                let result = parser.memoizer.longest_result(call);
-                f(&parser, result.ok_or(ParseError::NoParse).and_then(|range| {
-                    let handle = Handle {
-                        node: ParseNode { kind: #parse_node_kind, range },
-                        parser: &parser,
-                        _marker: PhantomData,
-                    };
-                    if range == call.range {
-                        Ok(handle)
-                    } else {
-                        Err(ParseError::TooShort(handle))
-                    }
-                }))
-            })
+                ::gll::runtime::Parser::parse(
+                    input,
+                    #code_label,
+                    #parse_node_kind,
+                ).map(handle).map_err(|err| err.map_partial(handle))
+            }
         }
-    })
+
+        impl<'_a, I: ::gll::runtime::Input> OwnedHandle<I, #ident<'_a, 'static, I>> {
+            pub fn with<R>(&self, f: impl for<'a, 'i> FnOnce(Handle<'a, 'i, I, #ident<'a, 'i, I>>) -> R) -> R {
+                self.forest_and_node.unpack_ref(|_, forest_and_node| {
+                    let (ref forest, node) = *forest_and_node;
+                    f(Handle {
+                        node,
+                        forest,
+                        _marker: PhantomData,
+                    })
+                })
+            }
+        }
+    )
 }
 
 fn declare_rule<Pat>(name: &str, rule: &RuleWithNamedFields<Pat>, rules: &RuleMap<Pat>) -> Src
@@ -950,14 +942,14 @@ where
         if rule.field_pathset_is_refutable(paths) {
             quote!(None #(.or(#paths_expr))* .map(|node| Handle {
                 node,
-                parser,
+                forest,
                 _marker: PhantomData,
             }))
         } else {
             assert_eq!(paths.len(), 1);
             quote!(Handle {
                 node: #(#paths_expr)*,
-                parser,
+                forest,
                 _marker: PhantomData,
             })
         }
@@ -975,7 +967,7 @@ where
             if v.fields.is_empty() {
                 quote!(#ident::#variant_ident(Handle {
                     node: _node,
-                    parser,
+                    forest,
                     _marker: PhantomData,
                 }))
             } else {
@@ -993,7 +985,7 @@ where
         quote!(#(
             #[allow(non_snake_case)]
             fn #variants_from_sppf_ident(
-                parser: &'a ::gll::runtime::Parser<'i, _P, _C, I>,
+                forest: &'a ::gll::runtime::ParseForest<'i, _P, I>,
                 _node: ParseNode<'i, _P>,
                 _r: traverse!(typeof(ParseNode<'i, _P>) #variants_shape),
             ) -> Self {
@@ -1008,13 +1000,13 @@ where
             .values()
             .map(|paths| field_handle_expr(&rule.rule, paths));
         let marker_field = if rule.fields.is_empty() {
-            Some(quote!(_marker: PhantomData,))
+            Some(quote!(_marker: { let _ = forest; PhantomData },))
         } else {
             None
         };
         quote!(
             fn from_sppf(
-                parser: &'a ::gll::runtime::Parser<'i, _P, _C, I>,
+                forest: &'a ::gll::runtime::ParseForest<'i, _P, I>,
                 _node: ParseNode<'i, _P>,
                 _r: traverse!(typeof(ParseNode<'i, _P>) #shape),
             ) -> Self {
@@ -1066,7 +1058,7 @@ where
                 match node.kind {
                     #(#variants_kind => {
                         let r = traverse!(one(_sppf, node) #variants_shape);
-                        #ident::#variants_from_sppf_ident(self.parser, node, r)
+                        #ident::#variants_from_sppf_ident(self.forest, node, r)
                     })*
                     _ => unreachable!()
                 }
@@ -1091,7 +1083,7 @@ where
                         #(#variants_kind => Iter::#i_ident(
                             traverse!(all(_sppf) #variants_shape)
                                 .apply(node)
-                                .map(move |r| #ident::#variants_from_sppf_ident(self.parser, node, r))
+                                .map(move |r| #ident::#variants_from_sppf_ident(self.forest, node, r))
                         ),)*
                         _ => unreachable!(),
                     }
@@ -1103,12 +1095,12 @@ where
         (
             quote!(
                 let r = traverse!(one(_sppf, node) #shape);
-                #ident::from_sppf(self.parser, node, r)
+                #ident::from_sppf(self.forest, node, r)
             ),
             quote!(
                 traverse!(all(_sppf) #shape)
                     .apply(node)
-                    .map(move |r| #ident::from_sppf(self.parser, node, r))
+                    .map(move |r| #ident::from_sppf(self.forest, node, r))
             ),
         )
     };
@@ -1119,14 +1111,14 @@ where
         pub fn one(self) -> Result<#ident<'a, 'i, I>, Ambiguity<Self>> {
             // HACK(eddyb) using a closure to catch `Err`s from `?`
             (|| Ok({
-                let _sppf = &self.parser.sppf;
+                let _sppf = self.forest;
                 let node = self.node.unpack_alias();
                 #one
             }))().map_err(|::gll::runtime::MoreThanOne| Ambiguity(self))
         }
 
         pub fn all(self) -> impl Iterator<Item = #ident<'a, 'i, I>> {
-            let _sppf = &self.parser.sppf;
+            let _sppf = self.forest;
             let node = self.node.unpack_alias();
             #all
         }
@@ -1231,13 +1223,21 @@ fn rule_handle_debug_impl(name: &str, has_fields: bool) -> Src {
             }
         )
     };
-    quote!(impl<'a, 'i, I: ::gll::runtime::Input> fmt::Debug for Handle<'a, 'i, I, #ident<'a, 'i, I>> {
-        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-            write!(f, "{:?}", self.source_info())?;
-            #body
-            Ok(())
+    quote!(
+        impl<'a, 'i, I: ::gll::runtime::Input> fmt::Debug for Handle<'a, 'i, I, #ident<'a, 'i, I>> {
+            fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                write!(f, "{:?}", self.source_info())?;
+                #body
+                Ok(())
+            }
         }
-    })
+
+        impl<'_a, I: ::gll::runtime::Input> fmt::Debug for OwnedHandle<I, #ident<'_a, 'static, I>> {
+            fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                self.with(|handle| handle.fmt(f))
+            }
+        }
+    )
 }
 
 fn define_parse_fn<Pat>(
@@ -1267,10 +1267,14 @@ where
     }
 
     let rust_slice_ty = Pat::rust_slice_ty();
-    quote!(fn parse<I>(p: &mut ::gll::runtime::Parser<_P, _C, I>)
+    quote!(impl<I> ::gll::runtime::CodeStep<_P, I> for _C
         where I: ::gll::runtime::Input<Slice = #rust_slice_ty>,
     {
-        while let Some(Call { callee: mut c, range: _range }) = p.threads.steal() {
+        fn step<'i>(
+            p: &mut ::gll::runtime::Parser<'i, _P, _C, I>,
+            mut c: ::gll::runtime::Continuation<'i, _C>,
+            _range: ::gll::runtime::Range<'i>,
+        ) {
             match c.code {
                 #(#code_label_arms)*
             }
@@ -1337,7 +1341,7 @@ fn impl_debug_for_handle_any(all_parse_nodes: &[ParseNode]) -> Src {
             ty.as_ref().map(|ty| {
                 quote!(#kind => write!(f, "{:?}", Handle::<_, #ty> {
                 node: self.node,
-                parser: self.parser,
+                forest: self.forest,
                 _marker: PhantomData,
             }),)
             })
@@ -1348,7 +1352,7 @@ fn impl_debug_for_handle_any(all_parse_nodes: &[ParseNode]) -> Src {
                 #(#arms)*
                 _ => write!(f, "{:?}", Handle::<_, ()> {
                     node: self.node,
-                    parser: self.parser,
+                    forest: self.forest,
                     _marker: PhantomData,
                 }),
             }
@@ -1380,7 +1384,7 @@ fn code_label_decl_and_impls<Pat>(
     quote!(
         #[allow(non_camel_case_types)]
         #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
-        pub enum _C {
+        enum _C {
             #(#all_labels_ident),*
         }
         impl CodeLabel for _C {

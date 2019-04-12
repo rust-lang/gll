@@ -1,20 +1,25 @@
-#[derive(Debug)]
-pub enum ParseError<T> {
-    TooShort(T),
-    NoParse,
-}
-
-pub type ParseResult<'a, 'i, I, T> =
-    Result<Handle<'a, 'i, I, T>, ParseError<Handle<'a, 'i, I, T>>>;
-
 pub type Any = dyn any::Any;
 
 #[derive(Debug)]
 pub struct Ambiguity<T>(T);
 
+pub struct OwnedHandle<I: ::gll::runtime::Input, T: ?Sized> {
+    forest_and_node: ::gll::runtime::OwnedParseForestAndNode<_P, I>,
+    _marker: PhantomData<T>,
+}
+
+impl<I: ::gll::runtime::Input, T: ?Sized> OwnedHandle<I, T> {
+    pub fn source_info(&self) -> I::SourceInfo {
+        self.forest_and_node.unpack_ref(|_, forest_and_node| {
+            let (ref forest, node) = *forest_and_node;
+            forest.source_info(node.range)
+        })
+    }
+}
+
 pub struct Handle<'a, 'i: 'a, I: 'a + ::gll::runtime::Input, T: ?Sized> {
     pub node: ParseNode<'i, _P>,
-    pub parser: &'a ::gll::runtime::Parser<'i, _P, _C, I>,
+    pub forest: &'a ::gll::runtime::ParseForest<'i, _P, I>,
     _marker: PhantomData<T>,
 }
 
@@ -28,10 +33,10 @@ impl<'a, 'i, I: ::gll::runtime::Input, T: ?Sized> Clone for Handle<'a, 'i, I, T>
 
 impl<'a, 'i, I: ::gll::runtime::Input, T: ?Sized> Handle<'a, 'i, I, T> {
     pub fn source(self) -> &'a I::Slice {
-        self.parser.input(self.node.range)
+        self.forest.input(self.node.range)
     }
     pub fn source_info(self) -> I::SourceInfo {
-        self.parser.source_info(self.node.range)
+        self.forest.source_info(self.node.range)
     }
 }
 
@@ -39,7 +44,7 @@ impl<'a, 'i, I: ::gll::runtime::Input, T> From<Ambiguity<Handle<'a, 'i, I, T>>> 
     fn from(x: Ambiguity<Handle<'a, 'i, I, T>>) -> Self {
         Ambiguity(Handle {
             node: x.0.node,
-            parser: x.0.parser,
+            forest: x.0.forest,
             _marker: PhantomData,
         })
     }
@@ -49,7 +54,7 @@ impl<'a, 'i, I: ::gll::runtime::Input, T> From<Ambiguity<Handle<'a, 'i, I, [T]>>
     fn from(x: Ambiguity<Handle<'a, 'i, I, [T]>>) -> Self {
         Ambiguity(Handle {
             node: x.0.node,
-            parser: x.0.parser,
+            forest: x.0.forest,
             _marker: PhantomData,
         })
     }
@@ -160,16 +165,16 @@ impl<'a, 'i, I: ::gll::runtime::Input, T> Handle<'a, 'i, I, [T]> {
                 return ListHead::Nil;
             }
         }
-        ListHead::Cons(self.parser.sppf.all_splits(self.node).flat_map(move |(elem, rest)| {
+        ListHead::Cons(self.forest.all_splits(self.node).flat_map(move |(elem, rest)| {
             if let ParseNodeShape::Split(..) = rest.kind.shape() {
-                Some(self.parser.sppf.all_splits(rest)).into_iter().flatten().chain(None)
+                Some(self.forest.all_splits(rest)).into_iter().flatten().chain(None)
             } else {
                 None.into_iter().flatten().chain(Some((elem, rest)))
             }
         }).map(move |(elem, rest)| {
             (Handle {
                 node: elem,
-                parser: self.parser,
+                forest: self.forest,
                 _marker: PhantomData,
             }, Handle { node: rest, ..self })
         }))

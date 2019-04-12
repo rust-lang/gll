@@ -1,7 +1,8 @@
 pub use grammar::ParseNodeShape;
 
-use indexing::container_traits::{Contiguous, Trustworthy};
-use indexing::{self, scope, Container};
+use high::{type_lambda, ErasableL, ExistsL, PairL};
+use indexing::container_traits::Trustworthy;
+use indexing::{self, Container};
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BTreeSet, BinaryHeap, HashMap, VecDeque};
 use std::fmt;
@@ -80,33 +81,6 @@ impl fmt::Debug for LineColumnRange {
     }
 }
 
-pub struct Str(str);
-
-impl<'a> From<&'a str> for &'a Str {
-    fn from(s: &'a str) -> Self {
-        unsafe { &*(s as *const str as *const Str) }
-    }
-}
-
-unsafe impl Trustworthy for Str {
-    type Item = u8;
-    fn base_len(&self) -> usize {
-        self.0.len()
-    }
-}
-
-unsafe impl Contiguous for Str {
-    fn begin(&self) -> *const Self::Item {
-        self.0.as_ptr()
-    }
-    fn end(&self) -> *const Self::Item {
-        unsafe { self.begin().offset(self.0.len() as isize) }
-    }
-    fn as_slice(&self) -> &[Self::Item] {
-        self.0.as_bytes()
-    }
-}
-
 pub trait Input: Sized {
     type Container: Trustworthy;
     type Slice: ?Sized;
@@ -141,7 +115,7 @@ impl<'a, T> Input for &'a [T] {
 }
 
 impl<'a> Input for &'a str {
-    type Container = &'a Str;
+    type Container = &'a ::indexing_str::Str;
     type Slice = str;
     type SourceInfo = LineColumnRange;
     fn to_container(self) -> Self::Container {
@@ -151,7 +125,7 @@ impl<'a> Input for &'a str {
         input: &'b Container<'i, Self::Container>,
         range: Range<'i>,
     ) -> &'b Self::Slice {
-        unsafe { str::from_utf8_unchecked(&input[range.0]) }
+        ::indexing_str::Str::slice(input, range.0)
     }
     fn source_info<'i>(
         input: &Container<'i, Self::Container>,
@@ -248,60 +222,127 @@ impl InputMatch<RangeInclusive<char>> for str {
 }
 
 pub struct Parser<'i, P: ParseNodeKind, C: CodeLabel, I: Input> {
-    input: Container<'i, I::Container>,
     pub threads: Threads<'i, C>,
-    pub gss: GraphStack<'i, C>,
-    pub memoizer: Memoizer<'i, C>,
-    pub sppf: ParseForest<'i, P>,
+    gss: GraphStack<'i, C>,
+    memoizer: Memoizer<'i, C>,
+    sppf: ParseForest<'i, P, I>,
 }
 
-impl<'i, P: ParseNodeKind, C: CodeLabel, I: Input> Parser<'i, P, C, I> {
-    pub fn with<R>(input: I, f: impl for<'i2> FnOnce(Parser<'i2, P, C, I>, Range<'i2>) -> R) -> R {
-        scope(input.to_container(), |input| {
-            let range = input.range();
-            f(
-                Parser {
-                    input,
-                    threads: Threads {
-                        queue: BinaryHeap::new(),
-                        seen: BTreeSet::new(),
-                    },
-                    gss: GraphStack {
-                        returns: HashMap::new(),
-                    },
-                    memoizer: Memoizer {
-                        lengths: HashMap::new(),
-                    },
-                    sppf: ParseForest {
-                        possibilities: HashMap::new(),
-                    },
+#[derive(Debug)]
+pub struct ParseError<T> {
+    pub partial: Option<T>,
+}
+
+impl<T> ParseError<T> {
+    pub fn map_partial<U>(self, f: impl FnOnce(T) -> U) -> ParseError<U> {
+        let ParseError { partial } = self;
+        ParseError {
+            partial: partial.map(f),
+        }
+    }
+}
+
+pub type ParseResult<T> = Result<T, ParseError<T>>;
+
+type_lambda! {
+    pub type<'i> ParseForestL<P: ParseNodeKind, I: Input> = ParseForest<'i, P, I>;
+    pub type<'i> ParseNodeL<P: ParseNodeKind> = ParseNode<'i, P>;
+}
+
+pub type OwnedParseForestAndNode<P, I> = ExistsL<PairL<ParseForestL<P, I>, ParseNodeL<P>>>;
+
+impl<'i, P: ParseNodeKind, C: CodeStep<P, I>, I: Input> Parser<'i, P, C, I> {
+    pub fn parse(input: I, callee: C, kind: P) -> ParseResult<OwnedParseForestAndNode<P, I>> {
+        ErasableL::indexing_scope(input.to_container(), |lifetime, input| {
+            let call = Call {
+                callee,
+                range: Range(input.range()),
+            };
+            let mut parser = Parser {
+                threads: Threads {
+                    queue: BinaryHeap::new(),
+                    seen: BTreeSet::new(),
                 },
-                Range(range),
-            )
+                gss: GraphStack {
+                    returns: HashMap::new(),
+                },
+                memoizer: Memoizer {
+                    lengths: HashMap::new(),
+                },
+                sppf: ParseForest {
+                    input,
+                    possibilities: HashMap::new(),
+                },
+            };
+
+            // Start with one thread, at the provided entry-point.
+            parser.threads.spawn(
+                Continuation {
+                    code: call.callee,
+                    fn_input: call.range,
+                    state: 0,
+                },
+                call.range,
+            );
+
+            // Run all threads to completion.
+            while let Some(Call { callee, range }) = parser.threads.steal() {
+                C::step(&mut parser, callee, range);
+            }
+
+            // If the function call we started with ever returned,
+            // we will find an entry for it in the memoizer, from
+            // which we pick the longest match, which is only a
+            // successful parse *only if* it's as long as the input.
+            // FIXME(eddyb) actually record information about errors
+            match parser.memoizer.longest_result(call) {
+                None => Err(ParseError { partial: None }),
+                Some(range) => {
+                    let result = OwnedParseForestAndNode::pack(
+                        lifetime,
+                        (parser.sppf, ParseNode { kind, range }),
+                    );
+
+                    if range == call.range {
+                        Ok(result)
+                    } else {
+                        Err(ParseError {
+                            partial: Some(result),
+                        })
+                    }
+                }
+            }
         })
     }
-    pub fn input(&self, range: Range<'i>) -> &I::Slice {
-        I::slice(&self.input, range)
-    }
-    pub fn source_info(&self, range: Range<'i>) -> I::SourceInfo {
-        I::source_info(&self.input, range)
-    }
+
     pub fn input_consume_left<Pat>(&self, range: Range<'i>, pat: Pat) -> Option<Range<'i>>
     where
         I::Slice: InputMatch<Pat>,
     {
-        self.input(range)
+        self.sppf
+            .input(range)
             .match_left(pat)
             .map(|n| Range(range.split_at(n).1))
     }
+
     pub fn input_consume_right<Pat>(&self, range: Range<'i>, pat: Pat) -> Option<Range<'i>>
     where
         I::Slice: InputMatch<Pat>,
     {
-        self.input(range)
+        self.sppf
+            .input(range)
             .match_right(pat)
             .map(|n| Range(range.split_at(range.len() - n).0))
     }
+
+    pub fn sppf_add(&mut self, kind: P, range: Range<'i>, possibility: usize) {
+        self.sppf
+            .possibilities
+            .entry(ParseNode { kind, range })
+            .or_default()
+            .insert(possibility);
+    }
+
     pub fn call(&mut self, call: Call<'i, C>, next: Continuation<'i, C>) {
         let returns = self.gss.returns.entry(call).or_default();
         if returns.insert(next) {
@@ -323,6 +364,7 @@ impl<'i, P: ParseNodeKind, C: CodeLabel, I: Input> Parser<'i, P, C, I> {
             }
         }
     }
+
     pub fn ret(&mut self, from: Continuation<'i, C>, remaining: Range<'i>) {
         let call = Call {
             callee: from.code.enclosing_fn(),
@@ -422,7 +464,10 @@ pub struct GraphStack<'i, C: CodeLabel> {
 }
 
 impl<'i, C: CodeLabel> GraphStack<'i, C> {
-    pub fn dump_graphviz(&self, out: &mut Write) -> io::Result<()> {
+    // FIXME(eddyb) figure out what to do here, now that
+    // the GSS is no longer exposed in the public API.
+    #[allow(unused)]
+    fn dump_graphviz(&self, out: &mut Write) -> io::Result<()> {
         writeln!(out, "digraph gss {{")?;
         writeln!(out, "    graph [rankdir=RL]")?;
         for (call, returns) in &self.returns {
@@ -466,19 +511,21 @@ impl<'i, C: CodeLabel> Memoizer<'i, C> {
     }
 }
 
-pub struct ParseForest<'i, P: ParseNodeKind> {
+pub struct ParseForest<'i, P: ParseNodeKind, I: Input> {
+    input: Container<'i, I::Container>,
     pub possibilities: HashMap<ParseNode<'i, P>, BTreeSet<usize>>,
 }
 
 #[derive(Debug)]
 pub struct MoreThanOne;
 
-impl<'i, P: ParseNodeKind> ParseForest<'i, P> {
-    pub fn add(&mut self, kind: P, range: Range<'i>, possibility: usize) {
-        self.possibilities
-            .entry(ParseNode { kind, range })
-            .or_default()
-            .insert(possibility);
+impl<'i, P: ParseNodeKind, I: Input> ParseForest<'i, P, I> {
+    pub fn input(&self, range: Range<'i>) -> &I::Slice {
+        I::slice(&self.input, range)
+    }
+
+    pub fn source_info(&self, range: Range<'i>) -> I::SourceInfo {
+        I::source_info(&self.input, range)
     }
 
     pub fn one_choice(&self, node: ParseNode<'i, P>) -> Result<ParseNode<'i, P>, MoreThanOne> {
@@ -693,6 +740,10 @@ pub trait ParseNodeKind: fmt::Display + Ord + Hash + Copy + 'static {
 
 pub trait CodeLabel: fmt::Debug + Ord + Hash + Copy + 'static {
     fn enclosing_fn(self) -> Self;
+}
+
+pub trait CodeStep<P: ParseNodeKind, I: Input>: CodeLabel {
+    fn step<'i>(p: &mut Parser<'i, P, Self, I>, c: Continuation<'i, Self>, range: Range<'i>);
 }
 
 // FIXME(rust-lang/rust#54175) work around iterator adapter compile-time
