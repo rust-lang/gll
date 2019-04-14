@@ -1,6 +1,6 @@
 use generate::src::{quotable_to_src, quote, Src, ToSrc};
 use grammar::ParseNodeShape;
-use grammar::{Grammar, MatchesEmpty, Rc, Rule, RuleWithNamedFields};
+use grammar::{Grammar, MatchesEmpty, Rule, RuleWithNamedFields};
 
 use ordermap::{Entry, OrderMap, OrderSet};
 use std::borrow::Cow;
@@ -8,6 +8,7 @@ use std::cell::RefCell;
 use std::fmt::Write as FmtWrite;
 use std::hash::Hash;
 use std::ops::Add;
+use std::rc::Rc;
 use std::{iter, mem};
 
 pub trait RustInputPat {
@@ -132,7 +133,15 @@ impl<Pat> Rule<Pat> {
     }
 }
 
-impl<Pat: Ord + Hash + RustInputPat> Rc<Rule<Pat>> {
+// FIXME(eddyb) this should just work with `self: &Rc<Self>` on inherent methods,
+// but that still requires `#![feature(arbitrary_self_types)]`.
+trait RcRuleRuleMapMethods<Pat>: Sized {
+    fn parse_node_kind(&self, rules: &RuleMap<Pat>) -> ParseNodeKind;
+    fn parse_node_desc(&self, rules: &RuleMap<Pat>) -> String;
+    fn fill_parse_node_shape(&self, rules: &RuleMap<Pat>);
+}
+
+impl<Pat: Ord + Hash + RustInputPat> RcRuleRuleMapMethods<Pat> for Rc<Rule<Pat>> {
     fn parse_node_kind(&self, rules: &RuleMap<Pat>) -> ParseNodeKind {
         if let Rule::Call(r) = &**self {
             return ParseNodeKind::NamedRule(r.clone());
@@ -145,12 +154,33 @@ impl<Pat: Ord + Hash + RustInputPat> Rc<Rule<Pat>> {
         rules.anon.borrow_mut().insert(self.clone());
         ParseNodeKind::Anon(i)
     }
-
     fn parse_node_desc(&self, rules: &RuleMap<Pat>) -> String {
         if let Some(desc) = rules.desc.borrow().get(self) {
             return desc.clone();
         }
-        let desc = match &**self {
+        let desc = self.parse_node_desc_uncached(rules);
+        match rules.desc.borrow_mut().entry(self.clone()) {
+            Entry::Vacant(entry) => entry.insert(desc).clone(),
+            Entry::Occupied(_) => unreachable!(),
+        }
+    }
+    // FIXME(eddyb) this probably doesn't need the "fill" API anymore.
+    fn fill_parse_node_shape(&self, rules: &RuleMap<Pat>) {
+        if let Rule::Call(_) = **self {
+            return;
+        }
+
+        if rules.anon_shape.borrow().contains_key(self) {
+            return;
+        }
+        let shape = Rule::parse_node_shape_uncached(self, rules);
+        rules.anon_shape.borrow_mut().insert(self.clone(), shape);
+    }
+}
+
+impl<Pat: Ord + Hash + RustInputPat> Rule<Pat> {
+    fn parse_node_desc_uncached(&self, rules: &RuleMap<Pat>) -> String {
+        match self {
             Rule::Empty => "".to_string(),
             Rule::Eat(pat) => pat.rust_matcher().to_pretty_string(),
             Rule::NegativeLookahead(pat) => format!("!{}", pat.rust_matcher().to_pretty_string()),
@@ -182,20 +212,16 @@ impl<Pat: Ord + Hash + RustInputPat> Rc<Rule<Pat>> {
                 elem.parse_node_desc(rules),
                 sep.parse_node_desc(rules)
             ),
-        };
-        match rules.desc.borrow_mut().entry(self.clone()) {
-            Entry::Vacant(entry) => entry.insert(desc).clone(),
-            Entry::Occupied(_) => unreachable!(),
         }
     }
 
-    fn fill_parse_node_shape(&self, rules: &RuleMap<Pat>) {
-        if rules.anon_shape.borrow().contains_key(self) {
-            return;
-        }
-        let shape = match &**self {
+    fn parse_node_shape_uncached(
+        rc_self: &Rc<Self>,
+        rules: &RuleMap<Pat>,
+    ) -> ParseNodeShape<ParseNodeKind> {
+        match &**rc_self {
             Rule::Empty | Rule::Eat(_) | Rule::NegativeLookahead(_) => ParseNodeShape::Opaque,
-            Rule::Call(_) => return,
+            Rule::Call(_) => unreachable!(),
             Rule::Concat([left, right]) => {
                 ParseNodeShape::Split(left.parse_node_kind(rules), right.parse_node_kind(rules))
             }
@@ -212,12 +238,11 @@ impl<Pat: Ord + Hash + RustInputPat> Rc<Rule<Pat>> {
                 elem.parse_node_kind(rules),
                 Rc::new(Rule::Opt(Rc::new(Rule::Concat([
                     sep.clone(),
-                    self.clone(),
+                    rc_self.clone(),
                 ]))))
                 .parse_node_kind(rules),
             ),
-        };
-        rules.anon_shape.borrow_mut().insert(self.clone(), shape);
+        }
     }
 }
 
@@ -282,13 +307,13 @@ impl CodeLabel {
     }
 }
 
-impl ToSrc for Rc<CodeLabel> {
+impl ToSrc for CodeLabel {
     fn to_src(&self) -> Src {
         let ident = self.flattened_ident();
         quote!(_C::#ident)
     }
 }
-quotable_to_src!(Rc<CodeLabel>);
+quotable_to_src!(CodeLabel);
 
 impl<Pat: Ord + Hash + MatchesEmpty + RustInputPat> Grammar<Pat> {
     pub fn generate_rust(&self) -> Src {
@@ -672,9 +697,17 @@ fn reify_as(label: Rc<CodeLabel>) -> Thunk<impl ContFn> {
     })
 }
 
-impl<Pat: Ord + Hash + RustInputPat> Rc<Rule<Pat>> {
-    fn generate_parse<'a>(&'a self, rules: Option<&'a RuleMap<Pat>>) -> Thunk<impl ContFn + 'a> {
-        Thunk::new(move |cont| match (&**self, rules) {
+impl<Pat: Ord + Hash + RustInputPat> Rule<Pat> {
+    // HACK(eddyb) the `Rc<Self>` points to the same `Self` value as `self`,
+    // but can't be `self` itself without `#![feature(arbitrary_self_types)]`.
+    fn generate_parse<'a>(
+        &'a self,
+        rc_self_and_rules: Option<(&'a Rc<Self>, &'a RuleMap<Pat>)>,
+    ) -> Thunk<impl ContFn + 'a> {
+        if let Some((rc_self, _)) = rc_self_and_rules {
+            assert!(std::ptr::eq(self, &**rc_self));
+        }
+        Thunk::new(move |cont| match (self, rc_self_and_rules) {
             (Rule::Empty, _) => cont,
             (Rule::Eat(pat), _) => {
                 // HACK(eddyb) remove extra variables post-NLL
@@ -693,45 +726,48 @@ impl<Pat: Ord + Hash + RustInputPat> Rc<Rule<Pat>> {
             (Rule::Concat([left, right]), None) => {
                 (left.generate_parse(None) + right.generate_parse(None)).apply(cont)
             }
-            (Rule::Concat([left, right]), Some(rules)) => {
+            (Rule::Concat([left, right]), Some((rc_self, rules))) => {
                 (thunk!(assert_eq!(_range.start(), c.fn_input.start());)
-                    + left.generate_parse(Some(rules))
+                    + left.generate_parse(Some((left, rules)))
                     + push_state(quote!(c.fn_input.subtract_suffix(_range).len()))
-                    + right.generate_parse(Some(rules))
-                    + pop_state(|state| sppf_add(&self.parse_node_kind(rules), state)))
+                    + right.generate_parse(Some((right, rules)))
+                    + pop_state(|state| sppf_add(&rc_self.parse_node_kind(rules), state)))
                 .apply(cont)
             }
             (Rule::Or(cases), None) => parallel(ThunkIter(
                 cases.iter().map(|rule| rule.generate_parse(None)),
             ))
             .apply(cont),
-            (Rule::Or(cases), Some(rules)) => {
+            (Rule::Or(cases), Some((rc_self, rules))) => {
                 (thunk!(assert_eq!(_range.start(), c.fn_input.start());)
                     + parallel(ThunkIter(cases.iter().map(|rule| {
                         let parse_node_kind = rule.parse_node_kind(rules);
                         push_state(quote!(#parse_node_kind.to_usize()))
-                            + rule.generate_parse(Some(rules))
+                            + rule.generate_parse(Some((rule, rules)))
                     })))
-                    + pop_state(|state| sppf_add(&self.parse_node_kind(rules), state)))
+                    + pop_state(|state| sppf_add(&rc_self.parse_node_kind(rules), state)))
                 .apply(cont)
             }
-            (Rule::Opt(rule), _) => opt(rule.generate_parse(rules)).apply(cont),
+            (Rule::Opt(rule), _) => {
+                opt(rule.generate_parse(rc_self_and_rules.map(|(_, rules)| (rule, rules)))).apply(cont)
+            }
             (Rule::RepeatMany(rule, None), None) => {
                 fix(|label| opt(rule.generate_parse(None) + call(label))).apply(cont)
             }
-            (Rule::RepeatMany(rule, None), Some(rules)) => fix(|label| {
+            (Rule::RepeatMany(rule, None), Some((_, rules))) => fix(|label| {
                 let more = Rc::new(Rule::RepeatMore(rule.clone(), None));
                 opt(thunk!(assert_eq!(_range.start(), c.fn_input.start());)
-                    + rule.generate_parse(Some(rules))
+                    + rule.generate_parse(Some((rule, rules)))
                     + push_state(quote!(c.fn_input.subtract_suffix(_range).len()))
                     + call(label)
                     + pop_state(move |state| sppf_add(&more.parse_node_kind(rules), state)))
             })
             .apply(cont),
-            (Rule::RepeatMany(elem, Some(sep)), rules) => {
+            (Rule::RepeatMany(elem, Some(sep)), _) => {
                 // HACK(eddyb) remove extra variables post-NLL
                 let rule = Rc::new(Rule::RepeatMore(elem.clone(), Some(sep.clone())));
-                let cont = opt(rule.generate_parse(rules)).apply(cont);
+                let cont = opt(rule.generate_parse(rc_self_and_rules.map(|(_, rules)| (&rule, rules))))
+                    .apply(cont);
                 cont
             }
             (Rule::RepeatMore(rule, None), None) => {
@@ -741,17 +777,17 @@ impl<Pat: Ord + Hash + RustInputPat> Rc<Rule<Pat>> {
                 fix(|label| elem.generate_parse(None) + opt(sep.generate_parse(None) + call(label)))
                     .apply(cont)
             }
-            (Rule::RepeatMore(rule, None), Some(rules)) => fix(|label| {
+            (Rule::RepeatMore(rule, None), Some((rc_self, rules))) => fix(|label| {
                 thunk!(assert_eq!(_range.start(), c.fn_input.start());)
-                    + rule.generate_parse(Some(rules))
+                    + rule.generate_parse(Some((rule, rules)))
                     + push_state(quote!(c.fn_input.subtract_suffix(_range).len()))
                     + opt(call(label))
-                    + pop_state(|state| sppf_add(&self.parse_node_kind(rules), state))
+                    + pop_state(|state| sppf_add(&rc_self.parse_node_kind(rules), state))
             })
             .apply(cont),
-            (Rule::RepeatMore(elem, Some(sep)), Some(rules)) => fix(|label| {
+            (Rule::RepeatMore(elem, Some(sep)), Some((rc_self, rules))) => fix(|label| {
                 thunk!(assert_eq!(_range.start(), c.fn_input.start());)
-                    + elem.generate_parse(Some(rules))
+                    + elem.generate_parse(Some((elem, rules)))
                     + push_state(quote!(c.fn_input.subtract_suffix(_range).len()))
                     + opt(thunk!(assert_eq!(_range.start(), c.fn_input.start());)
                         + sep.generate_parse(None)
@@ -759,12 +795,12 @@ impl<Pat: Ord + Hash + RustInputPat> Rc<Rule<Pat>> {
                         + call(label)
                         + pop_state(|state| {
                             sppf_add(
-                                &Rc::new(Rule::Concat([sep.clone(), self.clone()]))
+                                &Rc::new(Rule::Concat([sep.clone(), rc_self.clone()]))
                                     .parse_node_kind(rules),
                                 state,
                             )
                         }))
-                    + pop_state(|state| sppf_add(&self.parse_node_kind(rules), state))
+                    + pop_state(|state| sppf_add(&rc_self.parse_node_kind(rules), state))
             })
             .apply(cont),
         })
@@ -1255,15 +1291,18 @@ where
         } else {
             Some(rules)
         };
-        (rule.rule.generate_parse(rules) + ret())
-            .apply(Continuation {
-                code_labels,
-                fn_code_label: &mut code_label.clone(),
-                code_label_arms: &mut code_label_arms,
-                code: Code::Inline(quote!()),
-                nested_frames: vec![],
-            })
-            .reify_as(code_label);
+        (rule
+            .rule
+            .generate_parse(rules.map(|rules| (&rule.rule, rules)))
+            + ret())
+        .apply(Continuation {
+            code_labels,
+            fn_code_label: &mut code_label.clone(),
+            code_label_arms: &mut code_label_arms,
+            code: Code::Inline(quote!()),
+            nested_frames: vec![],
+        })
+        .reify_as(code_label);
     }
 
     let rust_slice_ty = Pat::rust_slice_ty();
