@@ -16,7 +16,7 @@ impl<'a, C> From<&'a str> for Pat<&'a str, C> {
     }
 }
 
-impl<'a, C> From<&'a str> for Pat<String, C> {
+impl<C> From<&str> for Pat<String, C> {
     fn from(s: &str) -> Self {
         Pat::String(s.to_string())
     }

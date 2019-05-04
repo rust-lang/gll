@@ -246,7 +246,7 @@ impl Input for TokenStream {
     }
 }
 
-impl<'a> InputMatch<&'a [FlatTokenPat<&'a str>]> for [FlatToken] {
+impl InputMatch<&[FlatTokenPat<&str>]> for [FlatToken] {
     fn match_left(&self, pat: &[FlatTokenPat<&str>]) -> Option<usize> {
         if self
             .iter()

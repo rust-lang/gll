@@ -577,7 +577,7 @@ pub enum ParseNodeShape<P> {
 }
 
 impl<P: fmt::Display> fmt::Display for ParseNodeShape<P> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ParseNodeShape::Opaque => write!(f, "Opaque"),
             ParseNodeShape::Alias(inner) => write!(f, "Alias({})", inner),

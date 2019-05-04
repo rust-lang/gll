@@ -1,9 +1,5 @@
 #![deny(unsafe_code)]
-
-extern crate indexing;
-extern crate ordermap;
-extern crate proc_macro2;
-extern crate proc_quote;
+#![deny(rust_2018_idioms)]
 
 // NOTE only these two modules can and do contain unsafe code.
 #[allow(unsafe_code)]

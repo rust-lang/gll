@@ -44,7 +44,7 @@ type_lambda! {
 // FIXME(#52812) replace with `&'a <T as ApplyL<'b>>::Out`
 pub struct RefApplyL<'a, 'b, T: LambdaL>(&'a <T as ApplyL<'b>>::Out);
 
-impl<'a, 'b, T: LambdaL> Deref for RefApplyL<'a, 'b, T> {
+impl<'b, T: LambdaL> Deref for RefApplyL<'_, 'b, T> {
     type Target = <T as ApplyL<'b>>::Out;
     fn deref(&self) -> &Self::Target {
         self.0
@@ -55,14 +55,14 @@ impl<'a, 'b, T: LambdaL> Deref for RefApplyL<'a, 'b, T> {
 // FIXME(#52812) replace with `&'a mut <T as ApplyL<'b>>::Out`
 pub struct RefMutApplyL<'a, 'b, T: LambdaL>(&'a mut <T as ApplyL<'b>>::Out);
 
-impl<'a, 'b, T: LambdaL> Deref for RefMutApplyL<'a, 'b, T> {
+impl<'b, T: LambdaL> Deref for RefMutApplyL<'_, 'b, T> {
     type Target = <T as ApplyL<'b>>::Out;
     fn deref(&self) -> &Self::Target {
         self.0
     }
 }
 
-impl<'a, 'b, T: LambdaL> DerefMut for RefMutApplyL<'a, 'b, T> {
+impl<'b, T: LambdaL> DerefMut for RefMutApplyL<'_, 'b, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.0
     }
@@ -76,7 +76,7 @@ pub struct ErasableL<'a> {
     _marker: ::std::marker::PhantomData<&'a mut &'a ()>,
 }
 
-impl<'a> ErasableL<'a> {
+impl ErasableL<'_> {
     /// Trivial proof that `'static` is erasable (it's always valid).
     pub const STATIC: ErasableL<'static> = ErasableL {
         _marker: ::std::marker::PhantomData,
