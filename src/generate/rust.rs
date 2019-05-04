@@ -64,7 +64,7 @@ impl<Pat: PartialEq> RuleWithNamedFields<Pat> {
                 .collect();
             for (field, paths) in &self.fields {
                 for path in paths {
-                    if path.len() == 0 {
+                    if path.is_empty() {
                         return None;
                     }
                     if path.len() == 1 {

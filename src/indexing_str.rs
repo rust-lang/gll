@@ -33,7 +33,7 @@ unsafe impl Contiguous for Str {
         self.0.as_ptr()
     }
     fn end(&self) -> *const Self::Item {
-        unsafe { self.begin().offset(self.0.len() as isize) }
+        unsafe { self.begin().add(self.0.len()) }
     }
     fn as_slice(&self) -> &[Self::Item] {
         self.0.as_bytes()

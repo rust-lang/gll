@@ -61,7 +61,7 @@ impl fmt::Debug for LineColumn {
 impl LineColumn {
     fn count(prefix: &str) -> Self {
         let (line, column) = prefix
-            .split("\n")
+            .split('\n')
             .enumerate()
             .last()
             .map_or((0, 0), |(i, s)| (i, s.chars().count()));
@@ -407,7 +407,7 @@ impl<'i, C: CodeLabel> Threads<'i, C> {
                 let old = self.seen.iter().rev().next().cloned();
                 if let Some(old) = old {
                     // TODO also check end point for proper "t.range includes old.range".
-                    if !t.range.contains(old.range.start()).is_some() {
+                    if t.range.contains(old.range.start()).is_none() {
                         self.seen.remove(&old);
                         continue;
                     }

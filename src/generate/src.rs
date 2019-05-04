@@ -293,10 +293,8 @@ impl Src {
                     };
                     if new_line {
                         frag.lines.push(Line::default());
-                    } else {
-                        if !frag.last().is_empty() {
-                            frag.push(Elem::Char(' ', Spacing::Alone));
-                        }
+                    } else if !frag.last().is_empty() {
+                        frag.push(Elem::Char(' ', Spacing::Alone));
                     }
                 }
             }
@@ -317,16 +315,16 @@ impl Src {
 
                     // Turn `{a\n  b\n  ...}` into `{\n  a\n  b\n  ...\n}`,
                     // and also `(...)` and `[...]`, but only if multi-line.
-                    if delim == Delimiter::Brace || !inner.lines.is_empty() {
-                        if !inner.before.is_empty() {
-                            inner.lines.insert(
-                                0,
-                                Line {
-                                    indent: 0,
-                                    elems: mem::replace(&mut inner.before, vec![]),
-                                },
-                            );
-                        }
+                    if (delim == Delimiter::Brace || !inner.lines.is_empty())
+                        && !inner.before.is_empty()
+                    {
+                        inner.lines.insert(
+                            0,
+                            Line {
+                                indent: 0,
+                                elems: mem::replace(&mut inner.before, vec![]),
+                            },
+                        );
                     }
                     for line in &mut inner.lines {
                         line.indent += 1;
