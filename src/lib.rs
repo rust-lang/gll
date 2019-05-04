@@ -24,7 +24,7 @@ pub mod scannerless;
 
 // HACK(eddyb) needed for bootstrapping `parse_grammar`.
 mod gll {
-    pub(crate) use runtime;
+    pub(crate) use crate::runtime;
 }
 #[forbid(unsafe_code)]
 mod parse_grammar;

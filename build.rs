@@ -11,7 +11,7 @@ mod grammar;
 #[path = "src/scannerless.rs"]
 mod scannerless;
 
-use grammar::{call, eat, negative_lookahead};
+use crate::grammar::{call, eat, negative_lookahead};
 use std::env;
 use std::fs;
 use std::path::PathBuf;

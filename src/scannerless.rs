@@ -1,4 +1,4 @@
-use grammar::{self, MatchesEmpty, MaybeKnown};
+use crate::grammar::{self, MatchesEmpty, MaybeKnown};
 use std::char;
 use std::ops::{self, Bound, RangeBounds};
 

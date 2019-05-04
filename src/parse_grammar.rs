@@ -3,14 +3,14 @@
 
 include!(concat!(env!("OUT_DIR"), "/parse_grammar.rs"));
 
-use scannerless::Pat as SPat;
+use crate::scannerless::Pat as SPat;
 use std::ops::Bound;
 use std::str::FromStr;
 
-impl<Pat: From<SPat>> FromStr for ::grammar::Grammar<Pat> {
-    type Err = ::runtime::ParseError<::runtime::LineColumnRange>;
+impl<Pat: From<SPat>> FromStr for crate::grammar::Grammar<Pat> {
+    type Err = crate::runtime::ParseError<crate::runtime::LineColumnRange>;
     fn from_str(src: &str) -> Result<Self, Self::Err> {
-        let mut grammar = ::grammar::Grammar::new();
+        let mut grammar = crate::grammar::Grammar::new();
         Grammar::parse(src)
             .map_err(|err| err.map_partial(|handle| handle.source_info()))?
             .with(|g| {
@@ -24,7 +24,7 @@ impl<Pat: From<SPat>> FromStr for ::grammar::Grammar<Pat> {
 }
 
 impl<'a, 'i, 's> Or<'a, 'i, &'s str> {
-    fn lower<Pat: From<SPat>>(self) -> ::grammar::RuleWithNamedFields<Pat> {
+    fn lower<Pat: From<SPat>>(self) -> crate::grammar::RuleWithNamedFields<Pat> {
         let mut rules = self.rules.map(|rule| rule.unwrap().one().unwrap().lower());
         let first = rules.next().unwrap();
         rules.fold(first, |a, b| a | b)
@@ -32,15 +32,15 @@ impl<'a, 'i, 's> Or<'a, 'i, &'s str> {
 }
 
 impl<'a, 'i, 's> Concat<'a, 'i, &'s str> {
-    fn lower<Pat: From<SPat>>(self) -> ::grammar::RuleWithNamedFields<Pat> {
+    fn lower<Pat: From<SPat>>(self) -> crate::grammar::RuleWithNamedFields<Pat> {
         self.rules
             .map(|rule| rule.unwrap().one().unwrap().lower())
-            .fold(::grammar::empty(), |a, b| a + b)
+            .fold(crate::grammar::empty(), |a, b| a + b)
     }
 }
 
 impl<'a, 'i, 's> Rule<'a, 'i, &'s str> {
-    fn lower<Pat: From<SPat>>(self) -> ::grammar::RuleWithNamedFields<Pat> {
+    fn lower<Pat: From<SPat>>(self) -> crate::grammar::RuleWithNamedFields<Pat> {
         let mut rule = self.rule.one().unwrap().lower();
         if let Some(modifier) = self.modifier {
             rule = modifier.one().unwrap().lower(rule);
@@ -53,15 +53,15 @@ impl<'a, 'i, 's> Rule<'a, 'i, &'s str> {
 }
 
 impl<'a, 'i, 's> Primary<'a, 'i, &'s str> {
-    fn lower<Pat: From<SPat>>(self) -> ::grammar::RuleWithNamedFields<Pat> {
+    fn lower<Pat: From<SPat>>(self) -> crate::grammar::RuleWithNamedFields<Pat> {
         match self {
-            Primary::Eat(pat) => ::grammar::eat(pat.one().unwrap().lower()),
+            Primary::Eat(pat) => crate::grammar::eat(pat.one().unwrap().lower()),
             Primary::NegativeLookahead { pat } => {
-                ::grammar::negative_lookahead(pat.one().unwrap().lower())
+                crate::grammar::negative_lookahead(pat.one().unwrap().lower())
             }
-            Primary::Call(name) => ::grammar::call(name.source()),
+            Primary::Call(name) => crate::grammar::call(name.source()),
             Primary::Group { or } => {
-                or.map_or_else(::grammar::empty, |or| or.one().unwrap().lower())
+                or.map_or_else(crate::grammar::empty, |or| or.one().unwrap().lower())
             }
         }
     }
@@ -70,8 +70,8 @@ impl<'a, 'i, 's> Primary<'a, 'i, &'s str> {
 impl<'a, 'i, 's> Modifier<'a, 'i, &'s str> {
     fn lower<Pat: From<SPat>>(
         self,
-        rule: ::grammar::RuleWithNamedFields<Pat>,
-    ) -> ::grammar::RuleWithNamedFields<Pat> {
+        rule: crate::grammar::RuleWithNamedFields<Pat>,
+    ) -> crate::grammar::RuleWithNamedFields<Pat> {
         match self {
             Modifier::Opt(_) => rule.opt(),
             Modifier::Repeat { repeat, sep } => {
@@ -107,15 +107,15 @@ impl<'a, 'i, 's> Pattern<'a, 'i, &'s str> {
         }
         let unescape_char = |c| unescape(c).parse::<char>().unwrap();
         match self {
-            Pattern::Str(s) => ::scannerless::Pat::from(unescape(s)),
-            Pattern::CharRange { start, end } => ::scannerless::Pat::from((
+            Pattern::Str(s) => crate::scannerless::Pat::from(unescape(s)),
+            Pattern::CharRange { start, end } => crate::scannerless::Pat::from((
                 start
                     .map(unescape_char)
                     .map_or(Bound::Unbounded, Bound::Included),
                 end.map(unescape_char)
                     .map_or(Bound::Unbounded, Bound::Excluded),
             )),
-            Pattern::CharRangeInclusive { start, end } => ::scannerless::Pat::from((
+            Pattern::CharRangeInclusive { start, end } => crate::scannerless::Pat::from((
                 start
                     .map(unescape_char)
                     .map_or(Bound::Unbounded, Bound::Included),

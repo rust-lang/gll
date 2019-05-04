@@ -3,12 +3,12 @@ pub type Any = dyn any::Any;
 #[derive(Debug)]
 pub struct Ambiguity<T>(T);
 
-pub struct OwnedHandle<I: ::gll::runtime::Input, T: ?Sized> {
-    forest_and_node: ::gll::runtime::OwnedParseForestAndNode<_P, I>,
+pub struct OwnedHandle<I: crate::gll::runtime::Input, T: ?Sized> {
+    forest_and_node: crate::gll::runtime::OwnedParseForestAndNode<_P, I>,
     _marker: PhantomData<T>,
 }
 
-impl<I: ::gll::runtime::Input, T: ?Sized> OwnedHandle<I, T> {
+impl<I: crate::gll::runtime::Input, T: ?Sized> OwnedHandle<I, T> {
     pub fn source_info(&self) -> I::SourceInfo {
         self.forest_and_node.unpack_ref(|_, forest_and_node| {
             let (ref forest, node) = *forest_and_node;
@@ -17,21 +17,21 @@ impl<I: ::gll::runtime::Input, T: ?Sized> OwnedHandle<I, T> {
     }
 }
 
-pub struct Handle<'a, 'i: 'a, I: 'a + ::gll::runtime::Input, T: ?Sized> {
+pub struct Handle<'a, 'i: 'a, I: 'a + crate::gll::runtime::Input, T: ?Sized> {
     pub node: ParseNode<'i, _P>,
-    pub forest: &'a ::gll::runtime::ParseForest<'i, _P, I>,
+    pub forest: &'a crate::gll::runtime::ParseForest<'i, _P, I>,
     _marker: PhantomData<T>,
 }
 
-impl<'a, 'i, I: ::gll::runtime::Input, T: ?Sized> Copy for Handle<'a, 'i, I, T> {}
+impl<'a, 'i, I: crate::gll::runtime::Input, T: ?Sized> Copy for Handle<'a, 'i, I, T> {}
 
-impl<'a, 'i, I: ::gll::runtime::Input, T: ?Sized> Clone for Handle<'a, 'i, I, T> {
+impl<'a, 'i, I: crate::gll::runtime::Input, T: ?Sized> Clone for Handle<'a, 'i, I, T> {
     fn clone(&self) -> Self {
         *self
     }
 }
 
-impl<'a, 'i, I: ::gll::runtime::Input, T: ?Sized> Handle<'a, 'i, I, T> {
+impl<'a, 'i, I: crate::gll::runtime::Input, T: ?Sized> Handle<'a, 'i, I, T> {
     pub fn source(self) -> &'a I::Slice {
         self.forest.input(self.node.range)
     }
@@ -40,7 +40,7 @@ impl<'a, 'i, I: ::gll::runtime::Input, T: ?Sized> Handle<'a, 'i, I, T> {
     }
 }
 
-impl<'a, 'i, I: ::gll::runtime::Input, T> From<Ambiguity<Handle<'a, 'i, I, T>>> for Ambiguity<Handle<'a, 'i, I, Any>> {
+impl<'a, 'i, I: crate::gll::runtime::Input, T> From<Ambiguity<Handle<'a, 'i, I, T>>> for Ambiguity<Handle<'a, 'i, I, Any>> {
     fn from(x: Ambiguity<Handle<'a, 'i, I, T>>) -> Self {
         Ambiguity(Handle {
             node: x.0.node,
@@ -50,7 +50,7 @@ impl<'a, 'i, I: ::gll::runtime::Input, T> From<Ambiguity<Handle<'a, 'i, I, T>>> 
     }
 }
 
-impl<'a, 'i, I: ::gll::runtime::Input, T> From<Ambiguity<Handle<'a, 'i, I, [T]>>> for Ambiguity<Handle<'a, 'i, I, Any>> {
+impl<'a, 'i, I: crate::gll::runtime::Input, T> From<Ambiguity<Handle<'a, 'i, I, [T]>>> for Ambiguity<Handle<'a, 'i, I, Any>> {
     fn from(x: Ambiguity<Handle<'a, 'i, I, [T]>>) -> Self {
         Ambiguity(Handle {
             node: x.0.node,
@@ -60,13 +60,13 @@ impl<'a, 'i, I: ::gll::runtime::Input, T> From<Ambiguity<Handle<'a, 'i, I, [T]>>
     }
 }
 
-impl<'a, 'i, I: ::gll::runtime::Input> fmt::Debug for Handle<'a, 'i, I, ()> {
+impl<'a, 'i, I: crate::gll::runtime::Input> fmt::Debug for Handle<'a, 'i, I, ()> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{:?}", self.source_info())
     }
 }
 
-impl<'a, 'i, I: ::gll::runtime::Input, T> fmt::Debug for Handle<'a, 'i, I, [T]>
+impl<'a, 'i, I: crate::gll::runtime::Input, T> fmt::Debug for Handle<'a, 'i, I, [T]>
     where Handle<'a, 'i, I, T>: fmt::Debug,
 {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -109,7 +109,7 @@ impl<'a, 'i, I: ::gll::runtime::Input, T> fmt::Debug for Handle<'a, 'i, I, [T]>
     }
 }
 
-impl<'a, 'i, I: ::gll::runtime::Input, T> Iterator for Handle<'a, 'i, I, [T]> {
+impl<'a, 'i, I: crate::gll::runtime::Input, T> Iterator for Handle<'a, 'i, I, [T]> {
     type Item = Result<Handle<'a, 'i, I, T>, Ambiguity<Self>>;
     fn next(&mut self) -> Option<Self::Item> {
         match self.all_list_heads() {
@@ -143,7 +143,7 @@ pub enum ListHead<C> {
     Nil,
 }
 
-impl<'a, 'i, I: ::gll::runtime::Input, T> Handle<'a, 'i, I, [T]> {
+impl<'a, 'i, I: crate::gll::runtime::Input, T> Handle<'a, 'i, I, [T]> {
     fn one_list_head(self) -> ListHead<Result<(Handle<'a, 'i, I, T>, Handle<'a, 'i, I, [T]>), Ambiguity<Self>>> {
         match self.all_list_heads() {
             ListHead::Cons(mut iter) => {

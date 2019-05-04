@@ -1,6 +1,6 @@
-use generate::src::{quotable_to_src, quote, Src, ToSrc};
-use grammar::ParseNodeShape;
-use grammar::{Grammar, MatchesEmpty, Rule, RuleWithNamedFields};
+use crate::generate::src::{quotable_to_src, quote, Src, ToSrc};
+use crate::grammar::ParseNodeShape;
+use crate::grammar::{Grammar, MatchesEmpty, Rule, RuleWithNamedFields};
 
 use ordermap::{Entry, OrderMap, OrderSet};
 use std::borrow::Cow;
@@ -16,14 +16,14 @@ pub trait RustInputPat {
     fn rust_matcher(&self) -> Src;
 }
 
-impl<S: AsRef<str>> RustInputPat for ::scannerless::Pat<S> {
+impl<S: AsRef<str>> RustInputPat for crate::scannerless::Pat<S> {
     fn rust_slice_ty() -> Src {
         quote!(str)
     }
     fn rust_matcher(&self) -> Src {
         match self {
-            ::scannerless::Pat::String(s) => Src::new(s.as_ref()),
-            ::scannerless::Pat::Range(start, end) => quote!(#start..=#end),
+            crate::scannerless::Pat::String(s) => Src::new(s.as_ref()),
+            crate::scannerless::Pat::Range(start, end) => quote!(#start..=#end),
         }
     }
 }
@@ -838,16 +838,16 @@ where
     let rust_slice_ty = Pat::rust_slice_ty();
     quote!(
         impl<'_a, I> #ident<'_a, 'static, I>
-            where I: ::gll::runtime::Input<Slice = #rust_slice_ty>,
+            where I: crate::gll::runtime::Input<Slice = #rust_slice_ty>,
         {
             pub fn parse(input: I)
-                -> ::gll::runtime::ParseResult<OwnedHandle<I, #ident<'_a, 'static, I>>>
+                -> crate::gll::runtime::ParseResult<OwnedHandle<I, #ident<'_a, 'static, I>>>
             {
                 let handle = |forest_and_node| OwnedHandle {
                     forest_and_node,
                     _marker: PhantomData,
                 };
-                ::gll::runtime::Parser::parse(
+                crate::gll::runtime::Parser::parse(
                     input,
                     #code_label,
                     #parse_node_kind,
@@ -855,7 +855,7 @@ where
             }
         }
 
-        impl<'_a, I: ::gll::runtime::Input> OwnedHandle<I, #ident<'_a, 'static, I>> {
+        impl<'_a, I: crate::gll::runtime::Input> OwnedHandle<I, #ident<'_a, 'static, I>> {
             pub fn with<R>(&self, f: impl for<'a, 'i> FnOnce(Handle<'a, 'i, I, #ident<'a, 'i, I>>) -> R) -> R {
                 self.forest_and_node.unpack_ref(|_, forest_and_node| {
                     let (ref forest, node) = *forest_and_node;
@@ -907,7 +907,7 @@ where
         });
         quote!(
             #[allow(non_camel_case_types)]
-            pub enum #ident<'a, 'i: 'a, I: 'a + ::gll::runtime::Input> {
+            pub enum #ident<'a, 'i: 'a, I: 'a + crate::gll::runtime::Input> {
                 #(#variants),*
             }
         )
@@ -924,7 +924,7 @@ where
         };
         quote!(
             #[allow(non_camel_case_types)]
-            pub struct #ident<'a, 'i: 'a, I: 'a + ::gll::runtime::Input> {
+            pub struct #ident<'a, 'i: 'a, I: 'a + crate::gll::runtime::Input> {
                 #(pub #fields_ident: #fields_ty),*
                 #marker_field
             }
@@ -1001,7 +1001,7 @@ where
         quote!(#(
             #[allow(non_snake_case)]
             fn #variants_from_sppf_ident(
-                forest: &'a ::gll::runtime::ParseForest<'i, _P, I>,
+                forest: &'a crate::gll::runtime::ParseForest<'i, _P, I>,
                 _node: ParseNode<'i, _P>,
                 _r: traverse!(typeof(ParseNode<'i, _P>) #variants_shape),
             ) -> Self {
@@ -1022,7 +1022,7 @@ where
         };
         quote!(
             fn from_sppf(
-                forest: &'a ::gll::runtime::ParseForest<'i, _P, I>,
+                forest: &'a crate::gll::runtime::ParseForest<'i, _P, I>,
                 _node: ParseNode<'i, _P>,
                 _r: traverse!(typeof(ParseNode<'i, _P>) #shape),
             ) -> Self {
@@ -1034,7 +1034,7 @@ where
         )
     };
 
-    quote!(impl<'a, 'i, I: ::gll::runtime::Input> #ident<'a, 'i, I> {
+    quote!(impl<'a, 'i, I: crate::gll::runtime::Input> #ident<'a, 'i, I> {
         #methods
     })
 }
@@ -1122,7 +1122,7 @@ where
     };
 
     quote!(impl<'a, 'i, I> Handle<'a, 'i, I, #ident<'a, 'i, I>>
-        where I: ::gll::runtime::Input,
+        where I: crate::gll::runtime::Input,
     {
         pub fn one(self) -> Result<#ident<'a, 'i, I>, Ambiguity<Self>> {
             // HACK(eddyb) using a closure to catch `Err`s from `?`
@@ -1130,7 +1130,7 @@ where
                 let _sppf = self.forest;
                 let node = self.node.unpack_alias();
                 #one
-            }))().map_err(|::gll::runtime::MoreThanOne| Ambiguity(self))
+            }))().map_err(|crate::gll::runtime::MoreThanOne| Ambiguity(self))
         }
 
         pub fn all(self) -> impl Iterator<Item = #ident<'a, 'i, I>> {
@@ -1215,7 +1215,7 @@ fn rule_debug_impl<Pat>(
             d.finish()
         )
     };
-    quote!(impl<'a, 'i, I: ::gll::runtime::Input> fmt::Debug for #ident<'a, 'i, I> {
+    quote!(impl<'a, 'i, I: crate::gll::runtime::Input> fmt::Debug for #ident<'a, 'i, I> {
         fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
             #body
         }
@@ -1240,7 +1240,7 @@ fn rule_handle_debug_impl(name: &str, has_fields: bool) -> Src {
         )
     };
     quote!(
-        impl<'a, 'i, I: ::gll::runtime::Input> fmt::Debug for Handle<'a, 'i, I, #ident<'a, 'i, I>> {
+        impl<'a, 'i, I: crate::gll::runtime::Input> fmt::Debug for Handle<'a, 'i, I, #ident<'a, 'i, I>> {
             fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
                 write!(f, "{:?}", self.source_info())?;
                 #body
@@ -1248,7 +1248,7 @@ fn rule_handle_debug_impl(name: &str, has_fields: bool) -> Src {
             }
         }
 
-        impl<'_a, I: ::gll::runtime::Input> fmt::Debug for OwnedHandle<I, #ident<'_a, 'static, I>> {
+        impl<'_a, I: crate::gll::runtime::Input> fmt::Debug for OwnedHandle<I, #ident<'_a, 'static, I>> {
             fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
                 self.with(|handle| handle.fmt(f))
             }
@@ -1286,13 +1286,13 @@ where
     }
 
     let rust_slice_ty = Pat::rust_slice_ty();
-    quote!(impl<I> ::gll::runtime::CodeStep<_P, I> for _C
-        where I: ::gll::runtime::Input<Slice = #rust_slice_ty>,
+    quote!(impl<I> crate::gll::runtime::CodeStep<_P, I> for _C
+        where I: crate::gll::runtime::Input<Slice = #rust_slice_ty>,
     {
         fn step<'i>(
-            p: &mut ::gll::runtime::Parser<'i, _P, _C, I>,
-            mut c: ::gll::runtime::Continuation<'i, _C>,
-            _range: ::gll::runtime::Range<'i>,
+            p: &mut crate::gll::runtime::Parser<'i, _P, _C, I>,
+            mut c: crate::gll::runtime::Continuation<'i, _C>,
+            _range: crate::gll::runtime::Range<'i>,
         ) {
             match c.code {
                 #(#code_label_arms)*
@@ -1365,7 +1365,7 @@ fn impl_debug_for_handle_any(all_parse_nodes: &[ParseNode]) -> Src {
             }),)
             })
         });
-    quote!(impl<'a, 'i, I: ::gll::runtime::Input> fmt::Debug for Handle<'a, 'i, I, Any> {
+    quote!(impl<'a, 'i, I: crate::gll::runtime::Input> fmt::Debug for Handle<'a, 'i, I, Any> {
         fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
             match self.node.kind {
                 #(#arms)*
