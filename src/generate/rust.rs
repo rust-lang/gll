@@ -504,8 +504,8 @@ macro_rules! thunk {
         let prefix = quote!($($t)*);
         Thunk::new(move |mut cont| {
             let code = cont.to_inline();
-            let old_code = mem::replace(code, prefix);
-            *code += old_code;
+            let suffix = mem::replace(code, prefix);
+            *code += suffix;
             cont
         })
     }}
