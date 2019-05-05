@@ -8,6 +8,7 @@ authors = [
 repository = "https://github.com/lykenware/gll"
 license = "MIT/Apache-2.0"
 description = "Macros used with the gll crate."
+edition = "2018"
 
 [dependencies.gll]
 path = ".."

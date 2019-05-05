@@ -1,9 +1,5 @@
 #![deny(rust_2018_idioms)]
 
-extern crate gll;
-extern crate gll_macros;
-extern crate proc_quote;
-
 mod json_like {
     ::gll_macros::proc_macro_parser! {
         Value =
