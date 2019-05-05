@@ -296,10 +296,8 @@ impl Src {
                     };
                     if new_line {
                         frag.lines.push(Line::default());
-                    } else {
-                        if !frag.last().is_empty() {
-                            frag.push(Elem::Char(' ', Spacing::Alone));
-                        }
+                    } else if !frag.last().is_empty() {
+                        frag.push(Elem::Char(' ', Spacing::Alone));
                     }
                 }
             }
