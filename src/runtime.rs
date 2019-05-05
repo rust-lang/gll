@@ -53,7 +53,7 @@ pub struct LineColumn {
 }
 
 impl fmt::Debug for LineColumn {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}:{}", 1 + self.line, 1 + self.column)
     }
 }
@@ -76,7 +76,7 @@ pub struct LineColumnRange {
 }
 
 impl fmt::Debug for LineColumnRange {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:?}-{:?}", self.start, self.end)
     }
 }
@@ -437,7 +437,7 @@ pub struct Call<'i, C> {
 }
 
 impl<C: fmt::Display> fmt::Display for Call<'_, C> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
             "{}({}..{})",
@@ -468,7 +468,7 @@ impl<C: CodeLabel> GraphStack<'_, C> {
     // FIXME(eddyb) figure out what to do here, now that
     // the GSS is no longer exposed in the public API.
     #[allow(unused)]
-    fn dump_graphviz(&self, out: &mut Write) -> io::Result<()> {
+    fn dump_graphviz(&self, out: &mut dyn Write) -> io::Result<()> {
         writeln!(out, "digraph gss {{")?;
         writeln!(out, "    graph [rankdir=RL]")?;
         for (call, returns) in &self.returns {
@@ -620,7 +620,7 @@ impl<'i, P: ParseNodeKind, I: Input> ParseForest<'i, P, I> {
         }
     }
 
-    pub fn dump_graphviz(&self, out: &mut Write) -> io::Result<()> {
+    pub fn dump_graphviz(&self, out: &mut dyn Write) -> io::Result<()> {
         writeln!(out, "digraph sppf {{")?;
         let mut queue: VecDeque<_> = self.possibilities.keys().cloned().collect();
         let mut seen: BTreeSet<_> = queue.iter().cloned().collect();
@@ -710,7 +710,7 @@ impl<P: ParseNodeKind> ParseNode<'_, P> {
 }
 
 impl<P: ParseNodeKind> fmt::Display for ParseNode<'_, P> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
             "{} @ {}..{}",
@@ -722,7 +722,7 @@ impl<P: ParseNodeKind> fmt::Display for ParseNode<'_, P> {
 }
 
 impl<P: ParseNodeKind> fmt::Debug for ParseNode<'_, P> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
             "{} @ {}..{}",

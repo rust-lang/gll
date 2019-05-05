@@ -87,7 +87,7 @@ impl Modifier<'_, '_, &str> {
 
 impl Pattern<'_, '_, &str> {
     fn lower(self) -> SPat {
-        fn unescape<T>(handle: Handle<&str, T>) -> String {
+        fn unescape<T>(handle: Handle<'_, '_, &str, T>) -> String {
             let mut out = String::new();
             let s = handle.source();
             let mut chars = s[1..s.len() - 1].chars();

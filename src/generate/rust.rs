@@ -134,13 +134,13 @@ impl<Pat> Rule<Pat> {
 // FIXME(eddyb) this should just work with `self: &Rc<Self>` on inherent methods,
 // but that still requires `#![feature(arbitrary_self_types)]`.
 trait RcRuleRuleMapMethods<Pat>: Sized {
-    fn parse_node_kind(&self, rules: &RuleMap<Pat>) -> ParseNodeKind;
-    fn parse_node_desc(&self, rules: &RuleMap<Pat>) -> String;
-    fn fill_parse_node_shape(&self, rules: &RuleMap<Pat>);
+    fn parse_node_kind(&self, rules: &RuleMap<'_, Pat>) -> ParseNodeKind;
+    fn parse_node_desc(&self, rules: &RuleMap<'_, Pat>) -> String;
+    fn fill_parse_node_shape(&self, rules: &RuleMap<'_, Pat>);
 }
 
 impl<Pat: Ord + Hash + RustInputPat> RcRuleRuleMapMethods<Pat> for Rc<Rule<Pat>> {
-    fn parse_node_kind(&self, rules: &RuleMap<Pat>) -> ParseNodeKind {
+    fn parse_node_kind(&self, rules: &RuleMap<'_, Pat>) -> ParseNodeKind {
         if let Rule::Call(r) = &**self {
             return ParseNodeKind::NamedRule(r.clone());
         }
@@ -152,7 +152,7 @@ impl<Pat: Ord + Hash + RustInputPat> RcRuleRuleMapMethods<Pat> for Rc<Rule<Pat>>
         rules.anon.borrow_mut().insert(self.clone());
         ParseNodeKind::Anon(i)
     }
-    fn parse_node_desc(&self, rules: &RuleMap<Pat>) -> String {
+    fn parse_node_desc(&self, rules: &RuleMap<'_, Pat>) -> String {
         if let Some(desc) = rules.desc.borrow().get(self) {
             return desc.clone();
         }
@@ -163,7 +163,7 @@ impl<Pat: Ord + Hash + RustInputPat> RcRuleRuleMapMethods<Pat> for Rc<Rule<Pat>>
         }
     }
     // FIXME(eddyb) this probably doesn't need the "fill" API anymore.
-    fn fill_parse_node_shape(&self, rules: &RuleMap<Pat>) {
+    fn fill_parse_node_shape(&self, rules: &RuleMap<'_, Pat>) {
         if let Rule::Call(_) = **self {
             return;
         }
@@ -177,7 +177,7 @@ impl<Pat: Ord + Hash + RustInputPat> RcRuleRuleMapMethods<Pat> for Rc<Rule<Pat>>
 }
 
 impl<Pat: Ord + Hash + RustInputPat> Rule<Pat> {
-    fn parse_node_desc_uncached(&self, rules: &RuleMap<Pat>) -> String {
+    fn parse_node_desc_uncached(&self, rules: &RuleMap<'_, Pat>) -> String {
         match self {
             Rule::Empty => "".to_string(),
             Rule::Eat(pat) => pat.rust_matcher().to_pretty_string(),
@@ -215,7 +215,7 @@ impl<Pat: Ord + Hash + RustInputPat> Rule<Pat> {
 
     fn parse_node_shape_uncached(
         rc_self: &Rc<Self>,
-        rules: &RuleMap<Pat>,
+        rules: &RuleMap<'_, Pat>,
     ) -> ParseNodeShape<ParseNodeKind> {
         match &**rc_self {
             Rule::Empty | Rule::Eat(_) | Rule::NegativeLookahead(_) => ParseNodeShape::Opaque,
@@ -288,7 +288,7 @@ enum CodeLabel {
 }
 
 impl CodeLabel {
-    fn flattened_name(&self) -> Cow<str> {
+    fn flattened_name(&self) -> Cow<'_, str> {
         match self {
             CodeLabel::NamedRule(r) => r.into(),
             CodeLabel::Nested { parent, i } => {
@@ -357,7 +357,7 @@ impl<Pat: Ord + Hash + MatchesEmpty + RustInputPat> Grammar<Pat> {
                     } else {
                         ParseNodeShape::Alias(rule.rule.parse_node_kind(rules))
                     },
-                    ty: Some(quote!(#ident<_>)),
+                    ty: Some(quote!(#ident<'_, '_, _>)),
                 }
             })
             .chain(rules.anon.borrow().iter().map(|rule| ParseNode {
@@ -369,7 +369,7 @@ impl<Pat: Ord + Hash + MatchesEmpty + RustInputPat> Grammar<Pat> {
                         Rule::Eat(_) => Some(quote!([()])),
                         Rule::Call(r) => {
                             let ident = Src::ident(r);
-                            Some(quote!([#ident<_>]))
+                            Some(quote!([#ident<'_, '_, _>]))
                         }
                         _ => None,
                     },
@@ -413,7 +413,7 @@ impl Continuation<'_> {
         label
     }
 
-    fn clone(&mut self) -> Continuation {
+    fn clone(&mut self) -> Continuation<'_> {
         Continuation {
             code_labels: self.code_labels,
             fn_code_label: self.fn_code_label,
@@ -464,11 +464,11 @@ impl Continuation<'_> {
 }
 
 trait ContFn {
-    fn apply(self, cont: Continuation) -> Continuation;
+    fn apply(self, cont: Continuation<'_>) -> Continuation<'_>;
 }
 
-impl<F: FnOnce(Continuation) -> Continuation> ContFn for F {
-    fn apply(self, cont: Continuation) -> Continuation {
+impl<F: FnOnce(Continuation<'_>) -> Continuation<'_>> ContFn for F {
+    fn apply(self, cont: Continuation<'_>) -> Continuation<'_> {
         self(cont)
     }
 }
@@ -476,7 +476,7 @@ impl<F: FnOnce(Continuation) -> Continuation> ContFn for F {
 struct Compose<F, G>(F, G);
 
 impl<F: ContFn, G: ContFn> ContFn for Compose<F, G> {
-    fn apply(self, cont: Continuation) -> Continuation {
+    fn apply(self, cont: Continuation<'_>) -> Continuation<'_> {
         self.1.apply(self.0.apply(cont))
     }
 }
@@ -487,7 +487,7 @@ struct Thunk<F>(F);
 impl<F> Thunk<F> {
     fn new(f: F) -> Self
     where
-        F: FnOnce(Continuation) -> Continuation,
+        F: FnOnce(Continuation<'_>) -> Continuation<'_>,
     {
         Thunk(f)
     }
@@ -501,7 +501,7 @@ impl<F, G> Add<Thunk<G>> for Thunk<F> {
 }
 
 impl<F: ContFn> ContFn for Thunk<F> {
-    fn apply(self, cont: Continuation) -> Continuation {
+    fn apply(self, cont: Continuation<'_>) -> Continuation<'_> {
         self.0.apply(cont)
     }
 }
@@ -591,14 +591,14 @@ fn sppf_add(parse_node_kind: &ParseNodeKind, child: Src) -> Thunk<impl ContFn> {
 }
 
 trait ForEachThunk {
-    fn for_each_thunk(self, cont: &mut Continuation, f: impl FnMut(Continuation));
+    fn for_each_thunk(self, cont: &mut Continuation<'_>, f: impl FnMut(Continuation<'_>));
 }
 
 impl<F> ForEachThunk for Thunk<F>
 where
     F: ContFn,
 {
-    fn for_each_thunk(self, cont: &mut Continuation, mut f: impl FnMut(Continuation)) {
+    fn for_each_thunk(self, cont: &mut Continuation<'_>, mut f: impl FnMut(Continuation<'_>)) {
         f(self.apply(cont.clone()));
     }
 }
@@ -608,7 +608,7 @@ where
     T: ForEachThunk,
     U: ForEachThunk,
 {
-    fn for_each_thunk(self, cont: &mut Continuation, mut f: impl FnMut(Continuation)) {
+    fn for_each_thunk(self, cont: &mut Continuation<'_>, mut f: impl FnMut(Continuation<'_>)) {
         self.0.for_each_thunk(cont, &mut f);
         self.1.for_each_thunk(cont, &mut f);
     }
@@ -621,7 +621,7 @@ where
     I: Iterator<Item = T>,
     T: ForEachThunk,
 {
-    fn for_each_thunk(self, cont: &mut Continuation, mut f: impl FnMut(Continuation)) {
+    fn for_each_thunk(self, cont: &mut Continuation<'_>, mut f: impl FnMut(Continuation<'_>)) {
         self.0.for_each(|x| {
             x.for_each_thunk(cont, &mut f);
         });
@@ -701,7 +701,7 @@ impl<Pat: Ord + Hash + RustInputPat> Rule<Pat> {
     // but can't be `self` itself without `#![feature(arbitrary_self_types)]`.
     fn generate_parse<'a>(
         &'a self,
-        rc_self_and_rules: Option<(&'a Rc<Self>, &'a RuleMap<Pat>)>,
+        rc_self_and_rules: Option<(&'a Rc<Self>, &'a RuleMap<'_, Pat>)>,
     ) -> Thunk<impl ContFn + 'a> {
         if let Some((rc_self, _)) = rc_self_and_rules {
             assert!(std::ptr::eq(self, &**rc_self));
@@ -804,7 +804,7 @@ impl<Pat: Ord + Hash + RustInputPat> Rule<Pat> {
 }
 
 impl<Pat: Ord + Hash + RustInputPat> Rule<Pat> {
-    fn generate_traverse_shape(&self, refutable: bool, rules: &RuleMap<Pat>) -> Src {
+    fn generate_traverse_shape(&self, refutable: bool, rules: &RuleMap<'_, Pat>) -> Src {
         match self {
             Rule::Empty
             | Rule::Eat(_)
@@ -884,7 +884,7 @@ where
     )
 }
 
-fn declare_rule<Pat>(name: &str, rule: &RuleWithNamedFields<Pat>, rules: &RuleMap<Pat>) -> Src
+fn declare_rule<Pat>(name: &str, rule: &RuleWithNamedFields<Pat>, rules: &RuleMap<'_, Pat>) -> Src
 where
     Pat: Ord + Hash + RustInputPat,
 {
@@ -921,7 +921,7 @@ where
         });
         quote!(
             #[allow(non_camel_case_types)]
-            pub enum #ident<'a, 'i: 'a, I: 'a + ::gll::runtime::Input> {
+            pub enum #ident<'a, 'i, I: ::gll::runtime::Input> {
                 #(#variants),*
             }
         )
@@ -938,7 +938,7 @@ where
         };
         quote!(
             #[allow(non_camel_case_types)]
-            pub struct #ident<'a, 'i: 'a, I: 'a + ::gll::runtime::Input> {
+            pub struct #ident<'a, 'i, I: ::gll::runtime::Input> {
                 #(pub #fields_ident: #fields_ty),*
                 #marker_field
             }
@@ -954,7 +954,7 @@ fn impl_rule_from_sppf<Pat>(
     name: &str,
     rule: &RuleWithNamedFields<Pat>,
     variants: Option<&[Variant<'_, Pat>]>,
-    rules: &RuleMap<Pat>,
+    rules: &RuleMap<'_, Pat>,
 ) -> Src
 where
     Pat: Ord + Hash + RustInputPat,
@@ -1057,7 +1057,7 @@ fn impl_rule_one_and_all<Pat>(
     name: &str,
     rule: &RuleWithNamedFields<Pat>,
     variants: Option<&[Variant<'_, Pat>]>,
-    rules: &RuleMap<Pat>,
+    rules: &RuleMap<'_, Pat>,
 ) -> Src
 where
     Pat: Ord + Hash + RustInputPat,
@@ -1230,7 +1230,7 @@ fn rule_debug_impl<Pat>(
         )
     };
     quote!(impl<I: ::gll::runtime::Input> fmt::Debug for #ident<'_, '_, I> {
-        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             #body
         }
     })
@@ -1255,7 +1255,7 @@ fn rule_handle_debug_impl(name: &str, has_fields: bool) -> Src {
     };
     quote!(
         impl<'a, 'i, I: ::gll::runtime::Input> fmt::Debug for Handle<'a, 'i, I, #ident<'a, 'i, I>> {
-            fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 write!(f, "{:?}", self.source_info())?;
                 #body
                 Ok(())
@@ -1263,7 +1263,7 @@ fn rule_handle_debug_impl(name: &str, has_fields: bool) -> Src {
         }
 
         impl<I: ::gll::runtime::Input> fmt::Debug for OwnedHandle<I, #ident<'_, '_, I>> {
-            fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 self.with(|handle| handle.fmt(f))
             }
         }
@@ -1271,7 +1271,7 @@ fn rule_handle_debug_impl(name: &str, has_fields: bool) -> Src {
 }
 
 fn define_parse_fn<Pat>(
-    rules: &RuleMap<Pat>,
+    rules: &RuleMap<'_, Pat>,
     code_labels: &mut OrderMap<Rc<CodeLabel>, usize>,
 ) -> Src
 where
@@ -1343,7 +1343,7 @@ fn declare_parse_node_kind(all_parse_nodes: &[ParseNode]) -> Src {
             )*
         }
         impl fmt::Display for _P {
-            fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 let s = match *self {
                     #(#nodes_kind => #nodes_desc),*
                 };
@@ -1380,7 +1380,7 @@ fn impl_debug_for_handle_any(all_parse_nodes: &[ParseNode]) -> Src {
             })
         });
     quote!(impl<I: ::gll::runtime::Input> fmt::Debug for Handle<'_, '_, I, Any> {
-        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             match self.node.kind {
                 #(#arms)*
                 _ => write!(f, "{:?}", Handle::<_, ()> {
@@ -1394,7 +1394,7 @@ fn impl_debug_for_handle_any(all_parse_nodes: &[ParseNode]) -> Src {
 }
 
 fn code_label_decl_and_impls<Pat>(
-    rules: &RuleMap<Pat>,
+    rules: &RuleMap<'_, Pat>,
     code_labels: &OrderMap<Rc<CodeLabel>, usize>,
 ) -> Src {
     let all_labels = rules

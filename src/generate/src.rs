@@ -155,7 +155,7 @@ enum Elem {
 }
 
 impl fmt::Display for Elem {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Elem::Char(c, _) => c.fmt(f),
             Elem::Ident(i) => i.fmt(f),
@@ -227,7 +227,7 @@ struct Line {
 }
 
 impl fmt::Display for Line {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for _ in 0..self.indent {
             write!(f, "    ")?;
         }
@@ -245,7 +245,7 @@ pub struct Fragment {
 }
 
 impl fmt::Display for Fragment {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for elem in &self.before {
             elem.fmt(f)?;
         }

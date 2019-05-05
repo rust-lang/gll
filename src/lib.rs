@@ -1,4 +1,5 @@
 #![deny(unsafe_code)]
+#![deny(rust_2018_idioms)]
 
 extern crate indexing;
 extern crate ordermap;

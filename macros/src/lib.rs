@@ -1,3 +1,5 @@
+#![deny(rust_2018_idioms)]
+
 extern crate gll;
 extern crate proc_macro;
 extern crate proc_quote;
