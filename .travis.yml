@@ -4,7 +4,12 @@ rust:
   - beta
   - nightly
 cache: cargo
-script: cargo test --all
+before_script: rustup component add rustfmt
+script:
+  - cargo fmt --all -- --check
+  - rustfmt --check src/generate/templates/*.rs
+  - cargo test --all
+
 branches:
   only:
   - master
