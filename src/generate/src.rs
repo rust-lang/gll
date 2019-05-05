@@ -176,7 +176,10 @@ impl Elem {
 
     /// Returns `true` if the `a` and `b` token trees (in the representation
     /// returned by `try_from_tt`) should be printed with no space in between.
-    fn should_join(a: &Result<Elem, (Delimiter, TokenStream)>, b: &Result<Elem, (Delimiter, TokenStream)>) -> bool {
+    fn should_join(
+        a: &Result<Elem, (Delimiter, TokenStream)>,
+        b: &Result<Elem, (Delimiter, TokenStream)>,
+    ) -> bool {
         let join_symmetrical = |a: &_, b: &_| match (a, b) {
             (Ok(Elem::Char('.', _)), _) => true,
 

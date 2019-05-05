@@ -112,9 +112,7 @@ Value::Object {
 }";
     // FIXME(eddyb) Remove this trailing-comma-ignoring hack
     // once rust-lang/rust#59076 reaches the stable channel.
-    let normalize = |s: &str| {
-        s.replace(",\n", "\n")
-    };
+    let normalize = |s: &str| s.replace(",\n", "\n");
     assert!(
         normalize(&result) == normalize(expected),
         "mismatched output, expected:\n{}\n\nfound:\n{}",

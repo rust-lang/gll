@@ -1,4 +1,7 @@
-use gll::runtime::{Call, Continuation, ParseNodeKind, CodeLabel, ParseNodeShape, ParseNode, Range, traverse, nd::Arrow};
+use gll::runtime::{
+    nd::Arrow, traverse, Call, CodeLabel, Continuation, ParseNode, ParseNodeKind, ParseNodeShape,
+    Range,
+};
 use std::any;
 use std::fmt;
 use std::marker::PhantomData;
