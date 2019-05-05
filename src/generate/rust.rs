@@ -425,17 +425,13 @@ impl Continuation<'_> {
     }
 
     fn to_inline(&mut self) -> &mut Src {
-        // HACK(eddyb) remove `self.code` juggling post-NLL
-        let replacement = match self.code {
-            Code::Inline(_) => None,
-            Code::Label(ref label) => Some(Code::Inline(quote!(
+        if let Code::Label(ref label) = self.code {
+            self.code = Code::Inline(quote!(
                 c.code = #label;
                 p.threads.spawn(c, _range);
-            ))),
-        };
-        if let Some(replacement) = replacement {
-            self.code = replacement;
+            ));
         }
+
         match self.code {
             Code::Inline(ref mut code) => code,
             Code::Label(_) => unreachable!(),
@@ -454,11 +450,8 @@ impl Continuation<'_> {
     }
 
     fn reify_as(&mut self, label: Rc<CodeLabel>) {
-        // HACK(eddyb) remove awkward scope post-NLL
-        let code = {
-            let code = self.to_inline();
-            quote!(#label => {#code})
-        };
+        let code = self.to_inline();
+        let code = quote!(#label => {#code});
         self.code_label_arms.push(code);
         self.code = Code::Label(label);
     }
@@ -511,12 +504,9 @@ macro_rules! thunk {
     ($($t:tt)*) => {{
         let prefix = quote!($($t)*);
         Thunk::new(move |mut cont| {
-            // HACK(eddyb) remove awkward scope post-NLL
-            {
-                let code = cont.to_inline();
-                let suffix = mem::replace(code, prefix);
-                *code += suffix;
-            }
+            let code = cont.to_inline();
+            let suffix = mem::replace(code, prefix);
+            *code += suffix;
             cont
         })
     }}
@@ -552,29 +542,23 @@ fn push_state(state: Src) -> Thunk<impl ContFn> {
 
 fn check(condition: Src) -> Thunk<impl ContFn> {
     Thunk::new(move |mut cont| {
-        // HACK(eddyb) remove awkward scope post-NLL
-        {
-            let code = cont.to_inline();
-            *code = quote!(
-                if #condition {
-                    #code
-                }
-            );
-        }
+        let code = cont.to_inline();
+        *code = quote!(
+            if #condition {
+                #code
+            }
+        );
         cont
     })
 }
 
 fn call(callee: Rc<CodeLabel>) -> Thunk<impl ContFn> {
     Thunk::new(move |mut cont| {
-        // HACK(eddyb) remove awkward scope post-NLL
-        cont.code = {
-            let label = cont.to_label().clone();
-            Code::Inline(quote!(
-                c.code = #label;
-                p.call(Call { callee: #callee, range: _range }, c);
-            ))
-        };
+        let label = cont.to_label().clone();
+        cont.code = Code::Inline(quote!(
+            c.code = #label;
+            p.call(Call { callee: #callee, range: _range }, c);
+        ));
         cont
     })
 }
@@ -760,12 +744,9 @@ impl<Pat: Ord + Hash + RustInputPat> Rule<Pat> {
             })
             .apply(cont),
             (Rule::RepeatMany(elem, Some(sep)), _) => {
-                // HACK(eddyb) remove extra variables post-NLL
                 let rule = Rc::new(Rule::RepeatMore(elem.clone(), Some(sep.clone())));
-                let cont =
-                    opt(rule.generate_parse(rc_self_and_rules.map(|(_, rules)| (&rule, rules))))
-                        .apply(cont);
-                cont
+                opt(rule.generate_parse(rc_self_and_rules.map(|(_, rules)| (&rule, rules))))
+                    .apply(cont)
             }
             (Rule::RepeatMore(rule, None), None) => {
                 fix(|label| rule.generate_parse(None) + opt(call(label))).apply(cont)
