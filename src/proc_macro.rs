@@ -1,12 +1,12 @@
-use generate::rust::RustInputPat;
-use generate::src::{quotable_to_src, quote, Src, ToSrc};
-use grammar::{self, call, eat, MatchesEmpty, MaybeKnown};
+use crate::generate::rust::RustInputPat;
+use crate::generate::src::{quotable_to_src, quote, Src, ToSrc};
+use crate::grammar::{self, call, eat, MatchesEmpty, MaybeKnown};
+use crate::runtime::{Input, InputMatch, Range};
+use crate::scannerless::Pat as SPat;
 use indexing::Container;
 pub use proc_macro2::{
     Delimiter, Ident, LexError, Literal, Punct, Spacing, Span, TokenStream, TokenTree,
 };
-use runtime::{Input, InputMatch, Range};
-use scannerless::Pat as SPat;
 use std::{ops, str::FromStr};
 
 pub type Grammar = grammar::Grammar<Pat>;
@@ -79,7 +79,7 @@ impl MatchesEmpty for Pat {
 
 impl RustInputPat for Pat {
     fn rust_slice_ty() -> Src {
-        quote!([::gll::proc_macro::FlatToken])
+        quote!([gll::proc_macro::FlatToken])
     }
     fn rust_matcher(&self) -> Src {
         let pats = self.0.iter();
@@ -122,7 +122,7 @@ impl ToSrc for FlatTokenPat<String> {
             }
             FlatTokenPat::Literal => quote!(Literal),
         };
-        quote!(::gll::proc_macro::FlatTokenPat::#variant)
+        quote!(gll::proc_macro::FlatTokenPat::#variant)
     }
 }
 quotable_to_src!(FlatTokenPat<String>);

@@ -10,6 +10,7 @@ license = "MIT/Apache-2.0"
 keywords = ["grammar", "generator", "GLL", "parser"]
 readme = "README.md"
 description = "GLL parsing framework."
+edition = "2018"
 
 [dependencies]
 indexing = "0.3.1"

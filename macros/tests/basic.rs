@@ -1,8 +1,5 @@
 #![deny(rust_2018_idioms)]
 
-extern crate gll;
-extern crate gll_macros;
-
 use std::fs::File;
 
 macro_rules! testcases {

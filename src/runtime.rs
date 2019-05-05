@@ -1,6 +1,7 @@
-pub use grammar::ParseNodeShape;
+pub use crate::grammar::ParseNodeShape;
 
-use high::{type_lambda, ErasableL, ExistsL, PairL};
+use crate::high::{type_lambda, ErasableL, ExistsL, PairL};
+use crate::indexing_str;
 use indexing::container_traits::Trustworthy;
 use indexing::{self, Container};
 use std::cmp::{Ordering, Reverse};
@@ -115,7 +116,7 @@ impl<T> Input for &[T] {
 }
 
 impl<'a> Input for &'a str {
-    type Container = &'a ::indexing_str::Str;
+    type Container = &'a indexing_str::Str;
     type Slice = str;
     type SourceInfo = LineColumnRange;
     fn to_container(self) -> Self::Container {
@@ -125,7 +126,7 @@ impl<'a> Input for &'a str {
         input: &'b Container<'i, Self::Container>,
         range: Range<'i>,
     ) -> &'b Self::Slice {
-        ::indexing_str::Str::slice(input, range.0)
+        indexing_str::Str::slice(input, range.0)
     }
     fn source_info<'i>(
         input: &Container<'i, Self::Container>,
