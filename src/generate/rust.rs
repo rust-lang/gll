@@ -515,7 +515,8 @@ macro_rules! thunk {
             // HACK(eddyb) remove awkward scope post-NLL
             {
                 let code = cont.to_inline();
-                *code += mem::replace(code, prefix);
+                let suffix = mem::replace(code, prefix);
+                *code += suffix;
             }
             cont
         })
