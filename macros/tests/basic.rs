@@ -9,41 +9,57 @@ macro_rules! testcases {
         }
         #[test]
         fn $name() {
-            $name::$rule::parse($input).unwrap().with(|result| {
-                let forest = result.forest;
-                let result = format!("{:#?}", result);
-                // FIXME(eddyb) Remove this trailing-comma-ignoring hack
-                // once rust-lang/rust#59076 reaches the stable channel.
-                let normalize = |s: &str| {
-                    s.replace(",\n", "\n")
-                };
-                assert!(
-                    normalize(&result) == normalize($expected),
-                    "mismatched output, expected:\n{}\n\nfound:\n{}",
-                    $expected,
-                    result
-                );
-                // FIXME(eddyb) find a way to do this, given that
-                // the GSS is no longer exposed in the public API.
-                /*gss
-                    .dump_graphviz(
-                        &mut File::create(concat!(
-                            env!("CARGO_MANIFEST_DIR"),
-                            "/../target/",
-                            stringify!($name),
-                            "-gss.dot"
-                        )).unwrap(),
-                    ).unwrap();*/
-                forest
-                    .dump_graphviz(
-                        &mut File::create(concat!(
-                            env!("CARGO_MANIFEST_DIR"),
-                            "/../target/",
-                            stringify!($name),
-                            "-sppf.dot"
-                        )).unwrap(),
-                    ).unwrap();
-            });
+            let result = $name::$rule::parse($input);
+            if let Ok(result) = &result {
+                result.with(|result| {
+                    // FIXME(eddyb) find a way to do this, given that
+                    // the GSS is no longer exposed in the public API.
+                    /*gss
+                        .dump_graphviz(
+                            &mut File::create(concat!(
+                                env!("CARGO_MANIFEST_DIR"),
+                                "/../target/",
+                                stringify!($name),
+                                "-gss.dot"
+                            )).unwrap(),
+                        ).unwrap();*/
+                    result.forest
+                        .dump_graphviz(
+                            &mut File::create(concat!(
+                                env!("CARGO_MANIFEST_DIR"),
+                                "/../target/",
+                                stringify!($name),
+                                "-sppf.dot"
+                            )).unwrap(),
+                        ).unwrap();
+                });
+            }
+
+            let result = match &result {
+                Ok(result) => format!("{:#?}", result),
+                Err(gll::runtime::ParseError {
+                    partial,
+                    at,
+                    expected,
+                }) => {
+                    let partial = match partial {
+                        Some(partial) => format!("; partial result:\n{:#?}", partial),
+                        None => String::new(),
+                    };
+                    format!("{:?}: error: expected {:?}{}", at, expected, partial)
+                }
+            };
+            // FIXME(eddyb) Remove this trailing-comma-ignoring hack
+            // once rust-lang/rust#59076 reaches the stable channel.
+            let normalize = |s: &str| {
+                s.replace(",\n", "\n")
+            };
+            assert!(
+                normalize(&result) == normalize($expected),
+                "mismatched output, expected:\n{}\n\nfound:\n{}",
+                $expected,
+                result
+            );
         })*
     };
 }
