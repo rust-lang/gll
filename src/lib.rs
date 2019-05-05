@@ -1,11 +1,6 @@
 #![deny(unsafe_code)]
 #![deny(rust_2018_idioms)]
 
-extern crate indexing;
-extern crate ordermap;
-extern crate proc_macro2;
-extern crate proc_quote;
-
 // NOTE only these two modules can and do contain unsafe code.
 #[allow(unsafe_code)]
 mod high;
@@ -23,9 +18,5 @@ pub mod runtime;
 #[forbid(unsafe_code)]
 pub mod scannerless;
 
-// HACK(eddyb) needed for bootstrapping `parse_grammar`.
-mod gll {
-    pub(crate) use crate::runtime;
-}
 #[forbid(unsafe_code)]
 mod parse_grammar;

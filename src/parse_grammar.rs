@@ -1,6 +1,11 @@
 // HACK(eddyb) silence warnings from unused exports in the generated code.
 #![allow(unused)]
 
+// HACK(eddyb) needed for bootstrapping `parse_grammar`.
+mod gll {
+    pub(crate) use crate::runtime;
+}
+
 include!(concat!(env!("OUT_DIR"), "/parse_grammar.rs"));
 
 use crate::scannerless::Pat as SPat;
@@ -107,15 +112,15 @@ impl Pattern<'_, '_, &str> {
         }
         let unescape_char = |c| unescape(c).parse::<char>().unwrap();
         match self {
-            Pattern::Str(s) => ::scannerless::Pat::from(unescape(s)),
-            Pattern::CharRange { start, end } => ::scannerless::Pat::from((
+            Pattern::Str(s) => SPat::from(unescape(s)),
+            Pattern::CharRange { start, end } => SPat::from((
                 start
                     .map(unescape_char)
                     .map_or(Bound::Unbounded, Bound::Included),
                 end.map(unescape_char)
                     .map_or(Bound::Unbounded, Bound::Excluded),
             )),
-            Pattern::CharRangeInclusive { start, end } => ::scannerless::Pat::from((
+            Pattern::CharRangeInclusive { start, end } => SPat::from((
                 start
                     .map(unescape_char)
                     .map_or(Bound::Unbounded, Bound::Included),

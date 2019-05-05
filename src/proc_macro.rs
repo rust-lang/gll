@@ -79,7 +79,7 @@ impl MatchesEmpty for Pat {
 
 impl RustInputPat for Pat {
     fn rust_slice_ty() -> Src {
-        quote!([::gll::proc_macro::FlatToken])
+        quote!([gll::proc_macro::FlatToken])
     }
     fn rust_matcher(&self) -> Src {
         let pats = self.0.iter();
@@ -122,7 +122,7 @@ impl ToSrc for FlatTokenPat<String> {
             }
             FlatTokenPat::Literal => quote!(Literal),
         };
-        quote!(::gll::proc_macro::FlatTokenPat::#variant)
+        quote!(gll::proc_macro::FlatTokenPat::#variant)
     }
 }
 quotable_to_src!(FlatTokenPat<String>);
