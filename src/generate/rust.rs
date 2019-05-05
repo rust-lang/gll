@@ -922,7 +922,7 @@ where
         };
         quote!(
             #[allow(non_camel_case_types)]
-            pub struct #ident<'a, 'i: 'a, I: crate::gll::runtime::Input> {
+            pub struct #ident<'a, 'i, I: crate::gll::runtime::Input> {
                 #(pub #fields_ident: #fields_ty),*
                 #marker_field
             }
