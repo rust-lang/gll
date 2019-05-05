@@ -1,5 +1,4 @@
 extern crate gll;
-extern crate gll_macros;
 
 use std::fs::File;
 

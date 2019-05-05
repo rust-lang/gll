@@ -1,5 +1,4 @@
 extern crate gll;
-extern crate gll_macros;
 
 mod json_like {
     ::gll_macros::proc_macro_parser! {
