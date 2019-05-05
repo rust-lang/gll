@@ -21,25 +21,25 @@ impl<'i> Deref for Range<'i> {
     }
 }
 
-impl<'i> PartialOrd for Range<'i> {
+impl PartialOrd for Range<'_> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         (self.start(), self.end()).partial_cmp(&(other.start(), other.end()))
     }
 }
 
-impl<'i> Ord for Range<'i> {
+impl Ord for Range<'_> {
     fn cmp(&self, other: &Self) -> Ordering {
         (self.start(), self.end()).cmp(&(other.start(), other.end()))
     }
 }
 
-impl<'i> Hash for Range<'i> {
+impl Hash for Range<'_> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         (self.start(), self.end()).hash(state);
     }
 }
 
-impl<'i> Range<'i> {
+impl Range<'_> {
     pub fn subtract_suffix(self, other: Self) -> Self {
         assert_eq!(self.end(), other.end());
         Range(self.split_at(other.start() - self.start()).0)
@@ -96,7 +96,7 @@ pub trait Input: Sized {
     ) -> Self::SourceInfo;
 }
 
-impl<'a, T> Input for &'a [T] {
+impl<T> Input for &[T] {
     type Container = Self;
     type Slice = [T];
     type SourceInfo = ops::Range<usize>;
@@ -149,7 +149,7 @@ pub trait InputMatch<Pat> {
     fn match_right(&self, pat: Pat) -> Option<usize>;
 }
 
-impl<'a, T: PartialEq> InputMatch<&'a [T]> for [T] {
+impl<T: PartialEq> InputMatch<&[T]> for [T] {
     fn match_left(&self, pat: &[T]) -> Option<usize> {
         if self.starts_with(pat) {
             Some(pat.len())
@@ -185,7 +185,7 @@ impl<T: PartialOrd> InputMatch<RangeInclusive<T>> for [T] {
     }
 }
 
-impl<'a> InputMatch<&'a str> for str {
+impl InputMatch<&str> for str {
     fn match_left(&self, pat: &str) -> Option<usize> {
         if self.starts_with(pat) {
             Some(pat.len())
@@ -435,7 +435,7 @@ pub struct Call<'i, C> {
     pub range: Range<'i>,
 }
 
-impl<'i, C: fmt::Display> fmt::Display for Call<'i, C> {
+impl<C: fmt::Display> fmt::Display for Call<'_, C> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
@@ -447,13 +447,13 @@ impl<'i, C: fmt::Display> fmt::Display for Call<'i, C> {
     }
 }
 
-impl<'i, C: PartialOrd> PartialOrd for Call<'i, C> {
+impl<C: PartialOrd> PartialOrd for Call<'_, C> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         (Reverse(self.range), &self.callee).partial_cmp(&(Reverse(other.range), &other.callee))
     }
 }
 
-impl<'i, C: Ord> Ord for Call<'i, C> {
+impl<C: Ord> Ord for Call<'_, C> {
     fn cmp(&self, other: &Self) -> Ordering {
         (Reverse(self.range), &self.callee).cmp(&(Reverse(other.range), &other.callee))
     }
@@ -463,7 +463,7 @@ pub struct GraphStack<'i, C: CodeLabel> {
     returns: HashMap<Call<'i, C>, BTreeSet<Continuation<'i, C>>>,
 }
 
-impl<'i, C: CodeLabel> GraphStack<'i, C> {
+impl<C: CodeLabel> GraphStack<'_, C> {
     // FIXME(eddyb) figure out what to do here, now that
     // the GSS is no longer exposed in the public API.
     #[allow(unused)]
@@ -680,7 +680,7 @@ pub struct ParseNode<'i, P: ParseNodeKind> {
     pub range: Range<'i>,
 }
 
-impl<'i, P: ParseNodeKind> ParseNode<'i, P> {
+impl<P: ParseNodeKind> ParseNode<'_, P> {
     pub fn unpack_alias(self) -> Self {
         match self.kind.shape() {
             ParseNodeShape::Alias(inner) => ParseNode {
@@ -708,7 +708,7 @@ impl<'i, P: ParseNodeKind> ParseNode<'i, P> {
     }
 }
 
-impl<'i, P: ParseNodeKind> fmt::Display for ParseNode<'i, P> {
+impl<P: ParseNodeKind> fmt::Display for ParseNode<'_, P> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
@@ -720,7 +720,7 @@ impl<'i, P: ParseNodeKind> fmt::Display for ParseNode<'i, P> {
     }
 }
 
-impl<'i, P: ParseNodeKind> fmt::Debug for ParseNode<'i, P> {
+impl<P: ParseNodeKind> fmt::Debug for ParseNode<'_, P> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,

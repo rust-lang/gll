@@ -401,7 +401,7 @@ enum Code {
     Label(Rc<CodeLabel>),
 }
 
-impl<'a> Continuation<'a> {
+impl Continuation<'_> {
     fn next_code_label(&mut self) -> Rc<CodeLabel> {
         let counter = self
             .code_labels
@@ -860,12 +860,10 @@ where
     let parse_node_kind = ParseNodeKind::NamedRule(name.to_string());
     let rust_slice_ty = Pat::rust_slice_ty();
     quote!(
-        impl<'_a, I> #ident<'_a, 'static, I>
+        impl<I> #ident<'_, '_, I>
             where I: ::gll::runtime::Input<Slice = #rust_slice_ty>,
         {
-            pub fn parse(input: I)
-                -> ::gll::runtime::ParseResult<OwnedHandle<I, #ident<'_a, 'static, I>>>
-            {
+            pub fn parse(input: I) -> ::gll::runtime::ParseResult<OwnedHandle<I, Self>> {
                 let handle = |forest_and_node| OwnedHandle {
                     forest_and_node,
                     _marker: PhantomData,
@@ -878,7 +876,7 @@ where
             }
         }
 
-        impl<'_a, I: ::gll::runtime::Input> OwnedHandle<I, #ident<'_a, 'static, I>> {
+        impl<I: ::gll::runtime::Input> OwnedHandle<I, #ident<'_, '_, I>> {
             pub fn with<R>(&self, f: impl for<'a, 'i> FnOnce(Handle<'a, 'i, I, #ident<'a, 'i, I>>) -> R) -> R {
                 self.forest_and_node.unpack_ref(|_, forest_and_node| {
                     let (ref forest, node) = *forest_and_node;
@@ -1238,7 +1236,7 @@ fn rule_debug_impl<Pat>(
             d.finish()
         )
     };
-    quote!(impl<'a, 'i, I: ::gll::runtime::Input> fmt::Debug for #ident<'a, 'i, I> {
+    quote!(impl<I: ::gll::runtime::Input> fmt::Debug for #ident<'_, '_, I> {
         fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
             #body
         }
@@ -1271,7 +1269,7 @@ fn rule_handle_debug_impl(name: &str, has_fields: bool) -> Src {
             }
         }
 
-        impl<'_a, I: ::gll::runtime::Input> fmt::Debug for OwnedHandle<I, #ident<'_a, 'static, I>> {
+        impl<I: ::gll::runtime::Input> fmt::Debug for OwnedHandle<I, #ident<'_, '_, I>> {
             fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
                 self.with(|handle| handle.fmt(f))
             }
@@ -1388,7 +1386,7 @@ fn impl_debug_for_handle_any(all_parse_nodes: &[ParseNode]) -> Src {
             }),)
             })
         });
-    quote!(impl<'a, 'i, I: ::gll::runtime::Input> fmt::Debug for Handle<'a, 'i, I, Any> {
+    quote!(impl<I: ::gll::runtime::Input> fmt::Debug for Handle<'_, '_, I, Any> {
         fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
             match self.node.kind {
                 #(#arms)*
