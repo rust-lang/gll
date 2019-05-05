@@ -17,7 +17,7 @@ impl<I: ::gll::runtime::Input, T: ?Sized> OwnedHandle<I, T> {
     }
 }
 
-pub struct Handle<'a, 'i: 'a, I: 'a + ::gll::runtime::Input, T: ?Sized> {
+pub struct Handle<'a, 'i, I: ::gll::runtime::Input, T: ?Sized> {
     pub node: ParseNode<'i, _P>,
     pub forest: &'a ::gll::runtime::ParseForest<'i, _P, I>,
     _marker: PhantomData<T>,

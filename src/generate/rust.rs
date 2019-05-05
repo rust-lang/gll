@@ -921,7 +921,7 @@ where
         });
         quote!(
             #[allow(non_camel_case_types)]
-            pub enum #ident<'a, 'i: 'a, I: 'a + ::gll::runtime::Input> {
+            pub enum #ident<'a, 'i, I: ::gll::runtime::Input> {
                 #(#variants),*
             }
         )
@@ -938,7 +938,7 @@ where
         };
         quote!(
             #[allow(non_camel_case_types)]
-            pub struct #ident<'a, 'i: 'a, I: 'a + ::gll::runtime::Input> {
+            pub struct #ident<'a, 'i, I: ::gll::runtime::Input> {
                 #(pub #fields_ident: #fields_ty),*
                 #marker_field
             }
