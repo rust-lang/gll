@@ -64,20 +64,18 @@ impl<Pat: PartialEq> RuleWithNamedFields<Pat> {
                 .collect();
             for (field, paths) in &self.fields {
                 for path in paths {
-                    if path.is_empty() {
-                        return None;
-                    }
-                    if path.len() == 1 {
-                        if variants[path[0]].name != "" {
-                            return None;
+                    match &path[..] {
+                        [] => return None,
+                        [path] if variants[*path].name != "" => return None,
+                        [path] => variants[*path].name = field,
+                        // FIXME: use [path_0, rest @ ..] when possible.
+                        _ => {
+                            variants[path[0]]
+                                .fields
+                                .entry(&field[..])
+                                .or_insert_with(OrderSet::new)
+                                .insert(path[1..].to_vec());
                         }
-                        variants[path[0]].name = field;
-                    } else {
-                        variants[path[0]]
-                            .fields
-                            .entry(&field[..])
-                            .or_insert_with(OrderSet::new)
-                            .insert(path[1..].to_vec());
                     }
                 }
             }
