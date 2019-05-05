@@ -65,7 +65,7 @@ impl<'a, 'i, I: ::gll::runtime::Input, T> From<Ambiguity<Handle<'a, 'i, I, [T]>>
 }
 
 impl<I: ::gll::runtime::Input> fmt::Debug for Handle<'_, '_, I, ()> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:?}", self.source_info())
     }
 }
@@ -74,7 +74,7 @@ impl<'a, 'i, I: ::gll::runtime::Input, T> fmt::Debug for Handle<'a, 'i, I, [T]>
 where
     Handle<'a, 'i, I, T>: fmt::Debug,
 {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:?} => ", self.source_info())?;
         match self.all_list_heads() {
             ListHead::Cons(cons) => {
@@ -87,7 +87,7 @@ where
                         Spread(L),
                     }
                     impl<T: fmt::Debug, L: fmt::Debug> fmt::Debug for Elem<T, L> {
-                        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                             match self {
                                 Elem::One(x) => fmt::Debug::fmt(x, f),
                                 Elem::Spread(xs) => {
