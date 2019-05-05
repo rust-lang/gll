@@ -64,20 +64,18 @@ impl<Pat: PartialEq> RuleWithNamedFields<Pat> {
                 .collect();
             for (field, paths) in &self.fields {
                 for path in paths {
-                    if path.len() == 0 {
-                        return None;
-                    }
-                    if path.len() == 1 {
-                        if variants[path[0]].name != "" {
-                            return None;
+                    match path[..] {
+                        [] => return None,
+                        [variant] if variants[variant].name != "" => return None,
+                        [variant] => variants[variant].name = field,
+                        // FIXME: use [variant, rest @ ..] when possible.
+                        _ => {
+                            variants[path[0]]
+                                .fields
+                                .entry(&field[..])
+                                .or_insert_with(OrderSet::new)
+                                .insert(path[1..].to_vec());
                         }
-                        variants[path[0]].name = field;
-                    } else {
-                        variants[path[0]]
-                            .fields
-                            .entry(&field[..])
-                            .or_insert_with(OrderSet::new)
-                            .insert(path[1..].to_vec());
                     }
                 }
             }
@@ -711,17 +709,12 @@ impl<Pat: Ord + Hash + RustInputPat> Rule<Pat> {
         Thunk::new(move |cont| match (self, rc_self_and_rules) {
             (Rule::Empty, _) => cont,
             (Rule::Eat(pat), _) => {
-                // HACK(eddyb) remove extra variables post-NLL
                 let pat = pat.rust_matcher();
-                let cont = check(quote!(let Some(_range) = p.input_consume_left(_range, #pat)))
-                    .apply(cont);
-                cont
+                check(quote!(let Some(_range) = p.input_consume_left(_range, #pat))).apply(cont)
             }
             (Rule::NegativeLookahead(pat), _) => {
-                // HACK(eddyb) remove extra variables post-NLL
                 let pat = pat.rust_matcher();
-                let cont = check(quote!(p.input_consume_left(_range, #pat).is_none())).apply(cont);
-                cont
+                check(quote!(p.input_consume_left(_range, #pat).is_none())).apply(cont)
             }
             (Rule::Call(r), _) => call(Rc::new(CodeLabel::NamedRule(r.clone()))).apply(cont),
             (Rule::Concat([left, right]), None) => {
