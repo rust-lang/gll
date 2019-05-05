@@ -44,8 +44,8 @@ type_lambda! {
 // FIXME(#52812) replace with `&'a <T as ApplyL<'b>>::Out`
 pub struct RefApplyL<'a, 'b, T: LambdaL>(&'a <T as ApplyL<'b>>::Out);
 
-impl<'b, T: LambdaL> Deref for RefApplyL<'_, 'b, T> {
-    type Target = <T as ApplyL<'b>>::Out;
+impl<'a, T: LambdaL> Deref for RefApplyL<'_, 'a, T> {
+    type Target = <T as ApplyL<'a>>::Out;
     fn deref(&self) -> &Self::Target {
         self.0
     }
