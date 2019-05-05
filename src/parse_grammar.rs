@@ -1,21 +1,20 @@
 // HACK(eddyb) silence warnings from unused exports in the generated code.
 #![allow(unused)]
 
-// HACK(eddyb) needed for bootstrapping `parse_grammar`.
-mod gll {
-    pub(crate) use crate::runtime;
-}
+// HACK(eddyb) needed for bootstrapping.
+use crate as gll;
 
 include!(concat!(env!("OUT_DIR"), "/parse_grammar.rs"));
 
 use crate::scannerless::Pat as SPat;
+use crate::{grammar, runtime};
 use std::ops::Bound;
 use std::str::FromStr;
 
-impl<Pat: From<SPat>> FromStr for crate::grammar::Grammar<Pat> {
-    type Err = crate::runtime::ParseError<crate::runtime::LineColumnRange>;
+impl<Pat: From<SPat>> FromStr for grammar::Grammar<Pat> {
+    type Err = runtime::ParseError<runtime::LineColumnRange>;
     fn from_str(src: &str) -> Result<Self, Self::Err> {
-        let mut grammar = crate::grammar::Grammar::new();
+        let mut grammar = grammar::Grammar::new();
         Grammar::parse(src)
             .map_err(|err| err.map_partial(|handle| handle.source_info()))?
             .with(|g| {
@@ -29,7 +28,7 @@ impl<Pat: From<SPat>> FromStr for crate::grammar::Grammar<Pat> {
 }
 
 impl Or<'_, '_, &str> {
-    fn lower<Pat: From<SPat>>(self) -> crate::grammar::RuleWithNamedFields<Pat> {
+    fn lower<Pat: From<SPat>>(self) -> grammar::RuleWithNamedFields<Pat> {
         let mut rules = self.rules.map(|rule| rule.unwrap().one().unwrap().lower());
         let first = rules.next().unwrap();
         rules.fold(first, |a, b| a | b)
@@ -37,15 +36,15 @@ impl Or<'_, '_, &str> {
 }
 
 impl Concat<'_, '_, &str> {
-    fn lower<Pat: From<SPat>>(self) -> crate::grammar::RuleWithNamedFields<Pat> {
+    fn lower<Pat: From<SPat>>(self) -> grammar::RuleWithNamedFields<Pat> {
         self.rules
             .map(|rule| rule.unwrap().one().unwrap().lower())
-            .fold(crate::grammar::empty(), |a, b| a + b)
+            .fold(grammar::empty(), |a, b| a + b)
     }
 }
 
 impl Rule<'_, '_, &str> {
-    fn lower<Pat: From<SPat>>(self) -> crate::grammar::RuleWithNamedFields<Pat> {
+    fn lower<Pat: From<SPat>>(self) -> grammar::RuleWithNamedFields<Pat> {
         let mut rule = self.rule.one().unwrap().lower();
         if let Some(modifier) = self.modifier {
             rule = modifier.one().unwrap().lower(rule);
@@ -58,16 +57,14 @@ impl Rule<'_, '_, &str> {
 }
 
 impl Primary<'_, '_, &str> {
-    fn lower<Pat: From<SPat>>(self) -> crate::grammar::RuleWithNamedFields<Pat> {
+    fn lower<Pat: From<SPat>>(self) -> grammar::RuleWithNamedFields<Pat> {
         match self {
-            Primary::Eat(pat) => crate::grammar::eat(pat.one().unwrap().lower()),
+            Primary::Eat(pat) => grammar::eat(pat.one().unwrap().lower()),
             Primary::NegativeLookahead { pat } => {
-                crate::grammar::negative_lookahead(pat.one().unwrap().lower())
+                grammar::negative_lookahead(pat.one().unwrap().lower())
             }
-            Primary::Call(name) => crate::grammar::call(name.source()),
-            Primary::Group { or } => {
-                or.map_or_else(crate::grammar::empty, |or| or.one().unwrap().lower())
-            }
+            Primary::Call(name) => grammar::call(name.source()),
+            Primary::Group { or } => or.map_or_else(grammar::empty, |or| or.one().unwrap().lower()),
         }
     }
 }
@@ -75,8 +72,8 @@ impl Primary<'_, '_, &str> {
 impl Modifier<'_, '_, &str> {
     fn lower<Pat: From<SPat>>(
         self,
-        rule: crate::grammar::RuleWithNamedFields<Pat>,
-    ) -> crate::grammar::RuleWithNamedFields<Pat> {
+        rule: grammar::RuleWithNamedFields<Pat>,
+    ) -> grammar::RuleWithNamedFields<Pat> {
         match self {
             Modifier::Opt(_) => rule.opt(),
             Modifier::Repeat { repeat, sep } => {

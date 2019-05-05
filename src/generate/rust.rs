@@ -1,6 +1,7 @@
 use crate::generate::src::{quotable_to_src, quote, Src, ToSrc};
 use crate::grammar::ParseNodeShape;
 use crate::grammar::{Grammar, MatchesEmpty, Rule, RuleWithNamedFields};
+use crate::scannerless::Pat as SPat;
 
 use ordermap::{Entry, OrderMap, OrderSet};
 use std::borrow::Cow;
@@ -16,14 +17,14 @@ pub trait RustInputPat {
     fn rust_matcher(&self) -> Src;
 }
 
-impl<S: AsRef<str>> RustInputPat for crate::scannerless::Pat<S> {
+impl<S: AsRef<str>> RustInputPat for SPat<S> {
     fn rust_slice_ty() -> Src {
         quote!(str)
     }
     fn rust_matcher(&self) -> Src {
         match self {
-            crate::scannerless::Pat::String(s) => Src::new(s.as_ref()),
-            crate::scannerless::Pat::Range(start, end) => quote!(#start..=#end),
+            SPat::String(s) => Src::new(s.as_ref()),
+            SPat::Range(start, end) => quote!(#start..=#end),
         }
     }
 }
