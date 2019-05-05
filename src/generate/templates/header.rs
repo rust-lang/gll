@@ -23,15 +23,15 @@ pub struct Handle<'a, 'i: 'a, I: 'a + ::gll::runtime::Input, T: ?Sized> {
     _marker: PhantomData<T>,
 }
 
-impl<'a, 'i, I: ::gll::runtime::Input, T: ?Sized> Copy for Handle<'a, 'i, I, T> {}
+impl<I: ::gll::runtime::Input, T: ?Sized> Copy for Handle<'_, '_, I, T> {}
 
-impl<'a, 'i, I: ::gll::runtime::Input, T: ?Sized> Clone for Handle<'a, 'i, I, T> {
+impl<I: ::gll::runtime::Input, T: ?Sized> Clone for Handle<'_, '_, I, T> {
     fn clone(&self) -> Self {
         *self
     }
 }
 
-impl<'a, 'i, I: ::gll::runtime::Input, T: ?Sized> Handle<'a, 'i, I, T> {
+impl<'a, I: ::gll::runtime::Input, T: ?Sized> Handle<'a, '_, I, T> {
     pub fn source(self) -> &'a I::Slice {
         self.forest.input(self.node.range)
     }
@@ -64,7 +64,7 @@ impl<'a, 'i, I: ::gll::runtime::Input, T> From<Ambiguity<Handle<'a, 'i, I, [T]>>
     }
 }
 
-impl<'a, 'i, I: ::gll::runtime::Input> fmt::Debug for Handle<'a, 'i, I, ()> {
+impl<I: ::gll::runtime::Input> fmt::Debug for Handle<'_, '_, I, ()> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{:?}", self.source_info())
     }
@@ -151,9 +151,7 @@ pub enum ListHead<C> {
 }
 
 impl<'a, 'i, I: ::gll::runtime::Input, T> Handle<'a, 'i, I, [T]> {
-    fn one_list_head(
-        self,
-    ) -> ListHead<Result<(Handle<'a, 'i, I, T>, Handle<'a, 'i, I, [T]>), Ambiguity<Self>>> {
+    fn one_list_head(self) -> ListHead<Result<(Handle<'a, 'i, I, T>, Self), Ambiguity<Self>>> {
         match self.all_list_heads() {
             ListHead::Cons(mut iter) => {
                 let first = iter.next().unwrap();
