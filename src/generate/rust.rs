@@ -749,7 +749,8 @@ impl<Pat: Ord + Hash + RustInputPat> Rule<Pat> {
                 .apply(cont)
             }
             (Rule::Opt(rule), _) => {
-                opt(rule.generate_parse(rc_self_and_rules.map(|(_, rules)| (rule, rules)))).apply(cont)
+                opt(rule.generate_parse(rc_self_and_rules.map(|(_, rules)| (rule, rules))))
+                    .apply(cont)
             }
             (Rule::RepeatMany(rule, None), None) => {
                 fix(|label| opt(rule.generate_parse(None) + call(label))).apply(cont)
@@ -766,8 +767,9 @@ impl<Pat: Ord + Hash + RustInputPat> Rule<Pat> {
             (Rule::RepeatMany(elem, Some(sep)), _) => {
                 // HACK(eddyb) remove extra variables post-NLL
                 let rule = Rc::new(Rule::RepeatMore(elem.clone(), Some(sep.clone())));
-                let cont = opt(rule.generate_parse(rc_self_and_rules.map(|(_, rules)| (&rule, rules))))
-                    .apply(cont);
+                let cont =
+                    opt(rule.generate_parse(rc_self_and_rules.map(|(_, rules)| (&rule, rules))))
+                        .apply(cont);
                 cont
             }
             (Rule::RepeatMore(rule, None), None) => {

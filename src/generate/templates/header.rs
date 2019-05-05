@@ -40,7 +40,9 @@ impl<'a, 'i, I: ::gll::runtime::Input, T: ?Sized> Handle<'a, 'i, I, T> {
     }
 }
 
-impl<'a, 'i, I: ::gll::runtime::Input, T> From<Ambiguity<Handle<'a, 'i, I, T>>> for Ambiguity<Handle<'a, 'i, I, Any>> {
+impl<'a, 'i, I: ::gll::runtime::Input, T> From<Ambiguity<Handle<'a, 'i, I, T>>>
+    for Ambiguity<Handle<'a, 'i, I, Any>>
+{
     fn from(x: Ambiguity<Handle<'a, 'i, I, T>>) -> Self {
         Ambiguity(Handle {
             node: x.0.node,
@@ -50,7 +52,9 @@ impl<'a, 'i, I: ::gll::runtime::Input, T> From<Ambiguity<Handle<'a, 'i, I, T>>> 
     }
 }
 
-impl<'a, 'i, I: ::gll::runtime::Input, T> From<Ambiguity<Handle<'a, 'i, I, [T]>>> for Ambiguity<Handle<'a, 'i, I, Any>> {
+impl<'a, 'i, I: ::gll::runtime::Input, T> From<Ambiguity<Handle<'a, 'i, I, [T]>>>
+    for Ambiguity<Handle<'a, 'i, I, Any>>
+{
     fn from(x: Ambiguity<Handle<'a, 'i, I, [T]>>) -> Self {
         Ambiguity(Handle {
             node: x.0.node,
@@ -67,7 +71,8 @@ impl<'a, 'i, I: ::gll::runtime::Input> fmt::Debug for Handle<'a, 'i, I, ()> {
 }
 
 impl<'a, 'i, I: ::gll::runtime::Input, T> fmt::Debug for Handle<'a, 'i, I, [T]>
-    where Handle<'a, 'i, I, T>: fmt::Debug,
+where
+    Handle<'a, 'i, I, T>: fmt::Debug,
 {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{:?} => ", self.source_info())?;
@@ -93,12 +98,14 @@ impl<'a, 'i, I: ::gll::runtime::Input, T> fmt::Debug for Handle<'a, 'i, I, [T]>
                             }
                         }
                     }
-                    f.debug_list().entries(::std::iter::once(Elem::One(elem)).chain(rest.map(|r| {
-                        match r {
-                            Ok(x) => Elem::One(x),
-                            Err(Ambiguity(xs)) => Elem::Spread(xs),
-                        }
-                    }))).finish()?;
+                    f.debug_list()
+                        .entries(
+                            ::std::iter::once(Elem::One(elem)).chain(rest.map(|r| match r {
+                                Ok(x) => Elem::One(x),
+                                Err(Ambiguity(xs)) => Elem::Spread(xs),
+                            })),
+                        )
+                        .finish()?;
                 }
             }
             ListHead::Nil => {
@@ -144,7 +151,9 @@ pub enum ListHead<C> {
 }
 
 impl<'a, 'i, I: ::gll::runtime::Input, T> Handle<'a, 'i, I, [T]> {
-    fn one_list_head(self) -> ListHead<Result<(Handle<'a, 'i, I, T>, Handle<'a, 'i, I, [T]>), Ambiguity<Self>>> {
+    fn one_list_head(
+        self,
+    ) -> ListHead<Result<(Handle<'a, 'i, I, T>, Handle<'a, 'i, I, [T]>), Ambiguity<Self>>> {
         match self.all_list_heads() {
             ListHead::Cons(mut iter) => {
                 let first = iter.next().unwrap();
@@ -157,7 +166,9 @@ impl<'a, 'i, I: ::gll::runtime::Input, T> Handle<'a, 'i, I, [T]> {
             ListHead::Nil => ListHead::Nil,
         }
     }
-    fn all_list_heads(mut self) -> ListHead<impl Iterator<Item = (Handle<'a, 'i, I, T>, Handle<'a, 'i, I, [T]>)>> {
+    fn all_list_heads(
+        mut self,
+    ) -> ListHead<impl Iterator<Item = (Handle<'a, 'i, I, T>, Handle<'a, 'i, I, [T]>)>> {
         if let ParseNodeShape::Opt(_) = self.node.kind.shape() {
             if let Some(opt_child) = self.node.unpack_opt() {
                 self.node = opt_child;
@@ -165,18 +176,29 @@ impl<'a, 'i, I: ::gll::runtime::Input, T> Handle<'a, 'i, I, [T]> {
                 return ListHead::Nil;
             }
         }
-        ListHead::Cons(self.forest.all_splits(self.node).flat_map(move |(elem, rest)| {
-            if let ParseNodeShape::Split(..) = rest.kind.shape() {
-                Some(self.forest.all_splits(rest)).into_iter().flatten().chain(None)
-            } else {
-                None.into_iter().flatten().chain(Some((elem, rest)))
-            }
-        }).map(move |(elem, rest)| {
-            (Handle {
-                node: elem,
-                forest: self.forest,
-                _marker: PhantomData,
-            }, Handle { node: rest, ..self })
-        }))
+        ListHead::Cons(
+            self.forest
+                .all_splits(self.node)
+                .flat_map(move |(elem, rest)| {
+                    if let ParseNodeShape::Split(..) = rest.kind.shape() {
+                        Some(self.forest.all_splits(rest))
+                            .into_iter()
+                            .flatten()
+                            .chain(None)
+                    } else {
+                        None.into_iter().flatten().chain(Some((elem, rest)))
+                    }
+                })
+                .map(move |(elem, rest)| {
+                    (
+                        Handle {
+                            node: elem,
+                            forest: self.forest,
+                            _marker: PhantomData,
+                        },
+                        Handle { node: rest, ..self },
+                    )
+                }),
+        )
     }
 }
