@@ -3,12 +3,12 @@
 use std::fs::File;
 
 macro_rules! testcases {
-    ($($name:ident { $($grammar:tt)* }: $rule:ident($input:expr) => $expected:expr),*) => {
+    ($($name:ident { $($grammar:tt)* }: $($rule:ident($input:expr) => $expected:expr),* ;)*) => {
         $(mod $name {
             ::gll_macros::scannerless_parser!($($grammar)*);
         }
         #[test]
-        fn $name() {
+        fn $name() {$(
             let result = $name::$rule::parse($input);
             if let Ok(result) = &result {
                 result.with(|result| {
@@ -60,7 +60,7 @@ macro_rules! testcases {
                 $expected,
                 result
             );
-        })*
+        )*})*
     };
 }
 
@@ -75,7 +75,8 @@ testcases![
 
         B = A:"a" |
             B:"b";
-    }: S("aad") => "\
+    }:
+    S("aad") => "\
 1:1-1:4 => S::X {
     a: 1:1-1:2 => A::A(
         1:1-1:2
@@ -102,7 +103,7 @@ testcases![
     b: 1:1-1:2 => B::A(
         1:1-1:2
     )
-}",
+}";
 
     gll10_g0_opaque {
         S = { a:A s:S "d" } |
@@ -110,7 +111,8 @@ testcases![
             {};
         A = "a" | "c";
         B = "a" | "b";
-    }: S("aad") => "\
+    }:
+    S("aad") => "\
 1:1-1:4 => S {
     a: 1:1-1:2,
     s: 1:2-1:3 => S {
@@ -123,13 +125,14 @@ testcases![
         s: 1:3-1:3 => S
     },
     b: 1:1-1:2
-}",
+}";
 
     gll13_g1 {
         S = X:{ a:"a" s:S b:"b" } |
             Y:{ "d" } |
             Z:{ a:"a" d:"d" b:"b" };
-    }: S("adb") => "\
+    }:
+    S("adb") => "\
 1:1-1:4 => S::X {
     a: 1:1-1:2,
     s: 1:2-1:3 => S::Y(
@@ -140,31 +143,33 @@ testcases![
     a: 1:1-1:2,
     b: 1:3-1:4,
     d: 1:2-1:3
-}",
+}";
 
     gll15_g0 {
         A = X:{ a:"a" x:A b:"b" } |
             Y:{ a:"a" x:A c:"c" } |
             Z:{ "a" };
-    }: A("aac") => "\
+    }:
+    A("aac") => "\
 1:1-1:4 => A::Y {
     a: 1:1-1:2,
     x: 1:2-1:3 => A::Z(
         1:2-1:3
     ),
     c: 1:3-1:4
-}",
+}";
 
     gll15_g0_nested {
         A = X:{ a:"a" { x:A b:"b" } } |
             Y:{ a:"a" x:A c:"c" } |
             Z:{ "a" "" };
-    }: A("aab") => "\
+    }:
+    A("aab") => "\
 1:1-1:4 => A::X {
     a: 1:1-1:2,
     x: 1:2-1:3 => A::Z(
         1:2-1:3
     ),
     b: 1:3-1:4
-}"
+}";
 ];
