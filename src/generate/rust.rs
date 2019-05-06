@@ -625,8 +625,12 @@ fn ret() -> Thunk<impl ContFn> {
         })
 }
 
-fn sppf_add(parse_node_kind: &ParseNodeKind, child: Src) -> Thunk<impl ContFn> {
-    thunk!(p.sppf_add(#parse_node_kind, c.fn_input.subtract_suffix(_range), #child);)
+fn sppf_add_choice(parse_node_kind: &ParseNodeKind, choice: ParseNodeKind) -> Thunk<impl ContFn> {
+    thunk!(p.sppf_add_choice(#parse_node_kind, c.fn_input.subtract_suffix(_range), #choice);)
+}
+
+fn sppf_add_split(parse_node_kind: &ParseNodeKind, split: Src) -> Thunk<impl ContFn> {
+    thunk!(p.sppf_add_split(#parse_node_kind, c.fn_input.subtract_suffix(_range), #split);)
 }
 
 trait ForEachThunk {
@@ -775,7 +779,7 @@ impl<Pat: Ord + Hash + RustInputPat> RuleGenerateMethods<Pat> for Rule<Pat> {
                     + left.generate_parse(Some((left, rules)))
                     + push_state(quote!(c.fn_input.subtract_suffix(_range).len()))
                     + right.generate_parse(Some((right, rules)))
-                    + pop_state(|state| sppf_add(&rc_self.parse_node_kind(rules), state)))
+                    + pop_state(|state| sppf_add_split(&rc_self.parse_node_kind(rules), state)))
                 .apply(cont)
             }
             (Rule::Or(cases), None) => parallel(ThunkIter(
@@ -787,10 +791,7 @@ impl<Pat: Ord + Hash + RustInputPat> RuleGenerateMethods<Pat> for Rule<Pat> {
                     + parallel(ThunkIter(cases.iter().map(|rule| {
                         let parse_node_kind = rule.parse_node_kind(rules);
                         rule.generate_parse(Some((rule, rules)))
-                            + sppf_add(
-                                &rc_self.parse_node_kind(rules),
-                                quote!(#parse_node_kind.to_usize()),
-                            )
+                            + sppf_add_choice(&rc_self.parse_node_kind(rules), parse_node_kind)
                     }))))
                 .apply(cont)
             }
@@ -807,7 +808,7 @@ impl<Pat: Ord + Hash + RustInputPat> RuleGenerateMethods<Pat> for Rule<Pat> {
                     + rule.generate_parse(Some((rule, rules)))
                     + push_state(quote!(c.fn_input.subtract_suffix(_range).len()))
                     + call(label)
-                    + pop_state(move |state| sppf_add(&more.parse_node_kind(rules), state)))
+                    + pop_state(move |state| sppf_add_split(&more.parse_node_kind(rules), state)))
             })
             .apply(cont),
             (Rule::RepeatMany(elem, Some(sep)), _) => {
@@ -827,7 +828,7 @@ impl<Pat: Ord + Hash + RustInputPat> RuleGenerateMethods<Pat> for Rule<Pat> {
                     + rule.generate_parse(Some((rule, rules)))
                     + push_state(quote!(c.fn_input.subtract_suffix(_range).len()))
                     + opt(call(label))
-                    + pop_state(|state| sppf_add(&rc_self.parse_node_kind(rules), state))
+                    + pop_state(|state| sppf_add_split(&rc_self.parse_node_kind(rules), state))
             })
             .apply(cont),
             (Rule::RepeatMore(elem, Some(sep)), Some((rc_self, rules))) => fix(|label| {
@@ -839,13 +840,13 @@ impl<Pat: Ord + Hash + RustInputPat> RuleGenerateMethods<Pat> for Rule<Pat> {
                         + push_state(quote!(c.fn_input.subtract_suffix(_range).len()))
                         + call(label)
                         + pop_state(|state| {
-                            sppf_add(
+                            sppf_add_split(
                                 &Rc::new(Rule::Concat([sep.clone(), rc_self.clone()]))
                                     .parse_node_kind(rules),
                                 state,
                             )
                         }))
-                    + pop_state(|state| sppf_add(&rc_self.parse_node_kind(rules), state))
+                    + pop_state(|state| sppf_add_split(&rc_self.parse_node_kind(rules), state))
             })
             .apply(cont),
         })
@@ -1368,11 +1369,6 @@ where
 }
 
 fn declare_parse_node_kind(all_parse_nodes: &[ParseNode]) -> Src {
-    let nodes_i = (0..all_parse_nodes.len()).map(|i| {
-        // HACK(eddyb) workaround `quote!(#i)` producing `0usize`.
-        let i = ::proc_macro2::Literal::usize_unsuffixed(i);
-        quote!(#i)
-    });
     // FIXME(eddyb) figure out a more efficient way to reuse
     // iterators with `quote!(...)` than `.collect::<Vec<_>>()`.
     let nodes_kind = all_parse_nodes
@@ -1408,13 +1404,6 @@ fn declare_parse_node_kind(all_parse_nodes: &[ParseNode]) -> Src {
                     #(#nodes_kind => #nodes_shape),*
                 }
             }
-            fn from_usize(i: usize) -> Self {
-                match i {
-                    #(#nodes_i => #nodes_kind,)*
-                    _ => unreachable!(),
-                }
-            }
-            fn to_usize(self) -> usize { self as usize }
         }
     )
 }

@@ -290,7 +290,8 @@ impl<'i, P: ParseNodeKind, C: CodeStep<P, I>, I: Input> Parser<'i, P, C, I> {
                 },
                 sppf: ParseForest {
                     input,
-                    possibilities: HashMap::new(),
+                    possible_choices: HashMap::new(),
+                    possible_splits: HashMap::new(),
                 },
                 last_input_pos: call.range.first(),
                 expected_pats: vec![],
@@ -391,12 +392,20 @@ impl<'i, P: ParseNodeKind, C: CodeStep<P, I>, I: Input> Parser<'i, P, C, I> {
         self.sppf.input(range).match_right(pat).is_some()
     }
 
-    pub fn sppf_add(&mut self, kind: P, range: Range<'i>, possibility: usize) {
+    pub fn sppf_add_choice(&mut self, kind: P, range: Range<'i>, choice: P) {
         self.sppf
-            .possibilities
+            .possible_choices
             .entry(ParseNode { kind, range })
             .or_default()
-            .insert(possibility);
+            .insert(choice);
+    }
+
+    pub fn sppf_add_split(&mut self, kind: P, range: Range<'i>, split: usize) {
+        self.sppf
+            .possible_splits
+            .entry(ParseNode { kind, range })
+            .or_default()
+            .insert(split);
     }
 
     pub fn call(&mut self, call: Call<'i, C>, next: Continuation<'i, C>) {
@@ -570,7 +579,8 @@ impl<'i, C: CodeLabel> Memoizer<'i, C> {
 
 pub struct ParseForest<'i, P: ParseNodeKind, I: Input> {
     input: Container<'i, I::Container>,
-    pub possibilities: HashMap<ParseNode<'i, P>, BTreeSet<usize>>,
+    pub possible_choices: HashMap<ParseNode<'i, P>, BTreeSet<P>>,
+    pub possible_splits: HashMap<ParseNode<'i, P>, BTreeSet<usize>>,
 }
 
 #[derive(Debug)]
@@ -588,13 +598,13 @@ impl<'i, P: ParseNodeKind, I: Input> ParseForest<'i, P, I> {
     pub fn one_choice(&self, node: ParseNode<'i, P>) -> Result<ParseNode<'i, P>, MoreThanOne> {
         match node.kind.shape() {
             ParseNodeShape::Choice => {
-                let choices = &self.possibilities[&node];
+                let choices = &self.possible_choices[&node];
                 if choices.len() > 1 {
                     return Err(MoreThanOne);
                 }
                 let &choice = choices.iter().next().unwrap();
                 Ok(ParseNode {
-                    kind: P::from_usize(choice),
+                    kind: choice,
                     range: node.range,
                 })
             }
@@ -608,13 +618,13 @@ impl<'i, P: ParseNodeKind, I: Input> ParseForest<'i, P, I> {
     ) -> impl Iterator<Item = ParseNode<'i, P>> + Clone + 'a {
         match node.kind.shape() {
             ParseNodeShape::Choice => self
-                .possibilities
+                .possible_choices
                 .get(&node)
                 .into_iter()
                 .flatten()
                 .cloned()
-                .map(move |i| ParseNode {
-                    kind: P::from_usize(i),
+                .map(move |kind| ParseNode {
+                    kind,
                     range: node.range,
                 }),
             shape => unreachable!("all_choices({}): non-choice shape {}", node, shape),
@@ -627,7 +637,7 @@ impl<'i, P: ParseNodeKind, I: Input> ParseForest<'i, P, I> {
     ) -> Result<(ParseNode<'i, P>, ParseNode<'i, P>), MoreThanOne> {
         match node.kind.shape() {
             ParseNodeShape::Split(left_kind, right_kind) => {
-                let splits = &self.possibilities[&node];
+                let splits = &self.possible_splits[&node];
                 if splits.len() > 1 {
                     return Err(MoreThanOne);
                 }
@@ -654,7 +664,7 @@ impl<'i, P: ParseNodeKind, I: Input> ParseForest<'i, P, I> {
     ) -> impl Iterator<Item = (ParseNode<'i, P>, ParseNode<'i, P>)> + Clone + 'a {
         match node.kind.shape() {
             ParseNodeShape::Split(left_kind, right_kind) => self
-                .possibilities
+                .possible_splits
                 .get(&node)
                 .into_iter()
                 .flatten()
@@ -678,7 +688,12 @@ impl<'i, P: ParseNodeKind, I: Input> ParseForest<'i, P, I> {
 
     pub fn dump_graphviz(&self, out: &mut dyn Write) -> io::Result<()> {
         writeln!(out, "digraph sppf {{")?;
-        let mut queue: VecDeque<_> = self.possibilities.keys().cloned().collect();
+        let mut queue: VecDeque<_> = self
+            .possible_choices
+            .keys()
+            .chain(self.possible_splits.keys())
+            .cloned()
+            .collect();
         let mut seen: BTreeSet<_> = queue.iter().cloned().collect();
         let mut p = 0;
         while let Some(source) = queue.pop_front() {
@@ -791,8 +806,6 @@ impl<P: ParseNodeKind> fmt::Debug for ParseNode<'_, P> {
 
 pub trait ParseNodeKind: fmt::Display + Ord + Hash + Copy + 'static {
     fn shape(self) -> ParseNodeShape<Self>;
-    fn from_usize(i: usize) -> Self;
-    fn to_usize(self) -> usize;
 }
 
 pub trait CodeLabel: fmt::Debug + Ord + Hash + Copy + 'static {
