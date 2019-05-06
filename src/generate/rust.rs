@@ -786,10 +786,12 @@ impl<Pat: Ord + Hash + RustInputPat> RuleGenerateMethods<Pat> for Rule<Pat> {
                 (thunk!(assert_eq!(_range.start(), c.fn_input.start());)
                     + parallel(ThunkIter(cases.iter().map(|rule| {
                         let parse_node_kind = rule.parse_node_kind(rules);
-                        push_state(quote!(#parse_node_kind.to_usize()))
-                            + rule.generate_parse(Some((rule, rules)))
-                    })))
-                    + pop_state(|state| sppf_add(&rc_self.parse_node_kind(rules), state)))
+                        rule.generate_parse(Some((rule, rules)))
+                            + sppf_add(
+                                &rc_self.parse_node_kind(rules),
+                                quote!(#parse_node_kind.to_usize()),
+                            )
+                    }))))
                 .apply(cont)
             }
             (Rule::Opt(rule), _) => {
