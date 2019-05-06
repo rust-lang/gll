@@ -3,48 +3,64 @@
 use std::fs::File;
 
 macro_rules! testcases {
-    ($($name:ident { $($grammar:tt)* }: $rule:ident($input:expr) => $expected:expr),*) => {
+    ($($name:ident { $($grammar:tt)* }: $($rule:ident($input:expr) => $expected:expr),* ;)*) => {
         $(mod $name {
             ::gll_macros::scannerless_parser!($($grammar)*);
         }
         #[test]
-        fn $name() {
-            $name::$rule::parse($input).unwrap().with(|result| {
-                let forest = result.forest;
-                let result = format!("{:#?}", result);
-                // FIXME(eddyb) Remove this trailing-comma-ignoring hack
-                // once rust-lang/rust#59076 reaches the stable channel.
-                let normalize = |s: &str| {
-                    s.replace(",\n", "\n")
-                };
-                assert!(
-                    normalize(&result) == normalize($expected),
-                    "mismatched output, expected:\n{}\n\nfound:\n{}",
-                    $expected,
-                    result
-                );
-                // FIXME(eddyb) find a way to do this, given that
-                // the GSS is no longer exposed in the public API.
-                /*gss
-                    .dump_graphviz(
-                        &mut File::create(concat!(
-                            env!("CARGO_MANIFEST_DIR"),
-                            "/../target/",
-                            stringify!($name),
-                            "-gss.dot"
-                        )).unwrap(),
-                    ).unwrap();*/
-                forest
-                    .dump_graphviz(
-                        &mut File::create(concat!(
-                            env!("CARGO_MANIFEST_DIR"),
-                            "/../target/",
-                            stringify!($name),
-                            "-sppf.dot"
-                        )).unwrap(),
-                    ).unwrap();
-            });
-        })*
+        fn $name() {$(
+            let result = $name::$rule::parse($input);
+            if let Ok(result) = &result {
+                result.with(|result| {
+                    // FIXME(eddyb) find a way to do this, given that
+                    // the GSS is no longer exposed in the public API.
+                    /*gss
+                        .dump_graphviz(
+                            &mut File::create(concat!(
+                                env!("CARGO_MANIFEST_DIR"),
+                                "/../target/",
+                                stringify!($name),
+                                "-gss.dot"
+                            )).unwrap(),
+                        ).unwrap();*/
+                    result.forest
+                        .dump_graphviz(
+                            &mut File::create(concat!(
+                                env!("CARGO_MANIFEST_DIR"),
+                                "/../target/",
+                                stringify!($name),
+                                "-sppf.dot"
+                            )).unwrap(),
+                        ).unwrap();
+                });
+            }
+
+            let result = match &result {
+                Ok(result) => format!("{:#?}", result),
+                Err(gll::runtime::ParseError {
+                    partial,
+                    at,
+                    expected,
+                }) => {
+                    let partial = match partial {
+                        Some(partial) => format!("; partial result:\n{:#?}", partial),
+                        None => String::new(),
+                    };
+                    format!("{:?}: error: expected {:?}{}", at, expected, partial)
+                }
+            };
+            // FIXME(eddyb) Remove this trailing-comma-ignoring hack
+            // once rust-lang/rust#59076 reaches the stable channel.
+            let normalize = |s: &str| {
+                s.replace(",\n", "\n")
+            };
+            assert!(
+                normalize(&result) == normalize($expected),
+                "mismatched output, expected:\n{}\n\nfound:\n{}",
+                $expected,
+                result
+            );
+        )*})*
     };
 }
 
@@ -59,7 +75,8 @@ testcases![
 
         B = A:"a" |
             B:"b";
-    }: S("aad") => "\
+    }:
+    S("aad") => "\
 1:1-1:4 => S::X {
     a: 1:1-1:2 => A::A(
         1:1-1:2
@@ -87,6 +104,10 @@ testcases![
         1:1-1:2
     )
 }",
+// FIXME(eddyb) get replace quotes with backticks and pretify the `expected` list.
+// FIXME(eddyb) the partial result should print as an `S` node.
+    S("aax") => r#"1:3: error: expected ["d", "d", "a", "b", "a", "c"]; partial result:
+1:1-1:3"#;
 
     gll10_g0_opaque {
         S = { a:A s:S "d" } |
@@ -94,7 +115,8 @@ testcases![
             {};
         A = "a" | "c";
         B = "a" | "b";
-    }: S("aad") => "\
+    }:
+    S("aad") => "\
 1:1-1:4 => S {
     a: 1:1-1:2,
     s: 1:2-1:3 => S {
@@ -107,13 +129,14 @@ testcases![
         s: 1:3-1:3 => S
     },
     b: 1:1-1:2
-}",
+}";
 
     gll13_g1 {
         S = X:{ a:"a" s:S b:"b" } |
             Y:{ "d" } |
             Z:{ a:"a" d:"d" b:"b" };
-    }: S("adb") => "\
+    }:
+    S("adb") => "\
 1:1-1:4 => S::X {
     a: 1:1-1:2,
     s: 1:2-1:3 => S::Y(
@@ -124,31 +147,33 @@ testcases![
     a: 1:1-1:2,
     b: 1:3-1:4,
     d: 1:2-1:3
-}",
+}";
 
     gll15_g0 {
         A = X:{ a:"a" x:A b:"b" } |
             Y:{ a:"a" x:A c:"c" } |
             Z:{ "a" };
-    }: A("aac") => "\
+    }:
+    A("aac") => "\
 1:1-1:4 => A::Y {
     a: 1:1-1:2,
     x: 1:2-1:3 => A::Z(
         1:2-1:3
     ),
     c: 1:3-1:4
-}",
+}";
 
     gll15_g0_nested {
         A = X:{ a:"a" { x:A b:"b" } } |
             Y:{ a:"a" x:A c:"c" } |
             Z:{ "a" "" };
-    }: A("aab") => "\
+    }:
+    A("aab") => "\
 1:1-1:4 => A::X {
     a: 1:1-1:2,
     x: 1:2-1:3 => A::Z(
         1:2-1:3
     ),
     b: 1:3-1:4
-}"
+}";
 ];
