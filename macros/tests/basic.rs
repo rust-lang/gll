@@ -100,9 +100,7 @@ testcases![
     )
 }",
 // FIXME(eddyb) get replace quotes with backticks and pretify the `expected` list.
-// FIXME(eddyb) the partial result should print as an `S` node.
-    S("aax") => r#"1:3: error: expected ["d", "d", "a", "b", "a", "c"]; partial result:
-1:1-1:3"#;
+    S("aax") => r#"1:3: error: expected ["d", "d", "a", "b", "a", "c"]"#;
 
     gll10_g0_opaque {
         S = { a:A s:S "d" } |
