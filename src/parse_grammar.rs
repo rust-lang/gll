@@ -12,7 +12,7 @@ use std::ops::Bound;
 use std::str::FromStr;
 
 impl<Pat: From<SPat>> FromStr for grammar::Grammar<Pat> {
-    type Err = runtime::ParseError<runtime::LineColumn, runtime::LineColumnRange>;
+    type Err = runtime::ParseError<runtime::LineColumn>;
     fn from_str(src: &str) -> Result<Self, Self::Err> {
         let mut grammar = grammar::Grammar::new();
         Grammar::parse(src)?.with(|g| {

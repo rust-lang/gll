@@ -38,15 +38,10 @@ macro_rules! testcases {
             let result = match &result {
                 Ok(result) => format!("{:#?}", result),
                 Err(gll::runtime::ParseError {
-                    partial,
                     at,
                     expected,
                 }) => {
-                    let partial = match partial {
-                        Some(partial) => format!("; partial result:\n{:#?}", partial),
-                        None => String::new(),
-                    };
-                    format!("{:?}: error: expected {:?}{}", at, expected, partial)
+                    format!("{:?}: error: expected {:?}", at, expected)
                 }
             };
             // FIXME(eddyb) Remove this trailing-comma-ignoring hack
