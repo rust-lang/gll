@@ -33,8 +33,8 @@ impl Src {
     /// "Pretty"-print the tokens, without whitespace heuristics.
     ///
     /// Note: use `to_pretty_string` (or `to_rustfmt_or_pretty_string`)
-    /// instead, if you want the outpu to be somewhat more readable..
-    pub fn to_ugly_string(&self) -> String {
+    /// instead, if you want the output to be somewhat more readable.
+    pub(super) fn to_ugly_string(&self) -> String {
         self.tokens.to_string()
     }
 
