@@ -566,8 +566,8 @@ macro_rules! thunk {
     }}
 }
 
-fn pop_state<F: ContFn>(f: impl FnOnce(Src) -> Thunk<F>) -> Thunk<impl ContFn> {
-    f(quote!(c.state))
+fn pop_saved<F: ContFn>(f: impl FnOnce(Src) -> Thunk<F>) -> Thunk<impl ContFn> {
+    f(quote!(c.saved.unwrap()))
         + Thunk::new(|mut cont| {
             if let Some(&None) = cont.nested_frames.last() {
                 *cont.nested_frames.last_mut().unwrap() =
@@ -582,8 +582,8 @@ fn pop_state<F: ContFn>(f: impl FnOnce(Src) -> Thunk<F>) -> Thunk<impl ContFn> {
         })
 }
 
-fn push_state(state: Src) -> Thunk<impl ContFn> {
-    thunk!(c.state = #state;)
+fn push_saved(saved: Src) -> Thunk<impl ContFn> {
+    thunk!(c.saved = Some(#saved);)
         + Thunk::new(move |mut cont| {
             if let Some((ret_label, outer_fn_label)) = cont.nested_frames.pop().unwrap() {
                 let inner_fn_label = mem::replace(cont.fn_code_label, outer_fn_label);
@@ -623,14 +623,6 @@ fn ret() -> Thunk<impl ContFn> {
             assert!(cont.to_inline().is_empty());
             cont
         })
-}
-
-fn sppf_add_choice(parse_node_kind: &ParseNodeKind, choice: ParseNodeKind) -> Thunk<impl ContFn> {
-    thunk!(p.sppf_add_choice(#parse_node_kind, c.fn_input.subtract_suffix(_range), #choice);)
-}
-
-fn sppf_add_split(parse_node_kind: &ParseNodeKind, split: Src) -> Thunk<impl ContFn> {
-    thunk!(p.sppf_add_split(#parse_node_kind, c.fn_input.subtract_suffix(_range), #split);)
 }
 
 trait ForEachThunk {
@@ -739,6 +731,32 @@ fn reify_as(label: Rc<CodeLabel>) -> Thunk<impl ContFn> {
     })
 }
 
+fn sppf_add_choice(parse_node_kind: &ParseNodeKind, choice: ParseNodeKind) -> Thunk<impl ContFn> {
+    thunk!(p.sppf_add_choice(#parse_node_kind, c.fn_input.subtract_suffix(_range), #choice);)
+}
+
+fn concat_and_sppf_add(
+    left_parse_node_kind: ParseNodeKind,
+    left: Thunk<impl ContFn>,
+    right: Thunk<impl ContFn>,
+    parse_node_kind: ParseNodeKind,
+) -> Thunk<impl ContFn> {
+    thunk!(assert_eq!(_range.start(), c.fn_input.start());)
+        + left
+        + push_saved(quote!(ParseNode {
+            kind: #left_parse_node_kind,
+            range: c.fn_input.subtract_suffix(_range),
+        }))
+        + right
+        + pop_saved(move |saved| {
+            thunk!(p.sppf_add_split(
+                #parse_node_kind,
+                c.fn_input.subtract_suffix(_range),
+                #saved.range.len(),
+            );)
+        })
+}
+
 trait RuleGenerateMethods<Pat> {
     fn generate_parse<'a>(
         &'a self,
@@ -774,14 +792,13 @@ impl<Pat: Ord + Hash + RustInputPat> RuleGenerateMethods<Pat> for Rule<Pat> {
             (Rule::Concat([left, right]), None) => {
                 (left.generate_parse(None) + right.generate_parse(None)).apply(cont)
             }
-            (Rule::Concat([left, right]), Some((rc_self, rules))) => {
-                (thunk!(assert_eq!(_range.start(), c.fn_input.start());)
-                    + left.generate_parse(Some((left, rules)))
-                    + push_state(quote!(c.fn_input.subtract_suffix(_range).len()))
-                    + right.generate_parse(Some((right, rules)))
-                    + pop_state(|state| sppf_add_split(&rc_self.parse_node_kind(rules), state)))
-                .apply(cont)
-            }
+            (Rule::Concat([left, right]), Some((rc_self, rules))) => concat_and_sppf_add(
+                left.parse_node_kind(rules),
+                left.generate_parse(Some((left, rules))),
+                right.generate_parse(Some((right, rules))),
+                rc_self.parse_node_kind(rules),
+            )
+            .apply(cont),
             (Rule::Or(cases), None) => parallel(ThunkIter(
                 cases.iter().map(|rule| rule.generate_parse(None)),
             ))
@@ -804,11 +821,12 @@ impl<Pat: Ord + Hash + RustInputPat> RuleGenerateMethods<Pat> for Rule<Pat> {
             }
             (Rule::RepeatMany(rule, None), Some((_, rules))) => fix(|label| {
                 let more = Rc::new(Rule::RepeatMore(rule.clone(), None));
-                opt(thunk!(assert_eq!(_range.start(), c.fn_input.start());)
-                    + rule.generate_parse(Some((rule, rules)))
-                    + push_state(quote!(c.fn_input.subtract_suffix(_range).len()))
-                    + call(label)
-                    + pop_state(move |state| sppf_add_split(&more.parse_node_kind(rules), state)))
+                opt(concat_and_sppf_add(
+                    rule.parse_node_kind(rules),
+                    rule.generate_parse(Some((rule, rules))),
+                    call(label),
+                    more.parse_node_kind(rules),
+                ))
             })
             .apply(cont),
             (Rule::RepeatMany(elem, Some(sep)), _) => {
@@ -824,29 +842,27 @@ impl<Pat: Ord + Hash + RustInputPat> RuleGenerateMethods<Pat> for Rule<Pat> {
                     .apply(cont)
             }
             (Rule::RepeatMore(rule, None), Some((rc_self, rules))) => fix(|label| {
-                thunk!(assert_eq!(_range.start(), c.fn_input.start());)
-                    + rule.generate_parse(Some((rule, rules)))
-                    + push_state(quote!(c.fn_input.subtract_suffix(_range).len()))
-                    + opt(call(label))
-                    + pop_state(|state| sppf_add_split(&rc_self.parse_node_kind(rules), state))
+                concat_and_sppf_add(
+                    rule.parse_node_kind(rules),
+                    rule.generate_parse(Some((rule, rules))),
+                    opt(call(label)),
+                    rc_self.parse_node_kind(rules),
+                )
             })
             .apply(cont),
             (Rule::RepeatMore(elem, Some(sep)), Some((rc_self, rules))) => fix(|label| {
-                thunk!(assert_eq!(_range.start(), c.fn_input.start());)
-                    + elem.generate_parse(Some((elem, rules)))
-                    + push_state(quote!(c.fn_input.subtract_suffix(_range).len()))
-                    + opt(thunk!(assert_eq!(_range.start(), c.fn_input.start());)
-                        + sep.generate_parse(None)
-                        + push_state(quote!(c.fn_input.subtract_suffix(_range).len()))
-                        + call(label)
-                        + pop_state(|state| {
-                            sppf_add_split(
-                                &Rc::new(Rule::Concat([sep.clone(), rc_self.clone()]))
-                                    .parse_node_kind(rules),
-                                state,
-                            )
-                        }))
-                    + pop_state(|state| sppf_add_split(&rc_self.parse_node_kind(rules), state))
+                concat_and_sppf_add(
+                    elem.parse_node_kind(rules),
+                    elem.generate_parse(Some((elem, rules))),
+                    opt(concat_and_sppf_add(
+                        sep.parse_node_kind(rules),
+                        sep.generate_parse(None),
+                        call(label),
+                        Rc::new(Rule::Concat([sep.clone(), rc_self.clone()]))
+                            .parse_node_kind(rules),
+                    )),
+                    rc_self.parse_node_kind(rules),
+                )
             })
             .apply(cont),
         })
@@ -1353,11 +1369,11 @@ where
     }
 
     let rust_slice_ty = Pat::rust_slice_ty();
-    quote!(impl<I> gll::runtime::CodeStep<_P, I> for _C
+    quote!(impl<I> gll::runtime::CodeStep<I> for _C
         where I: gll::runtime::Input<Slice = #rust_slice_ty>,
     {
         fn step<'i>(
-            p: &mut gll::runtime::Parser<'i, _P, _C, I>,
+            p: &mut gll::runtime::Parser<'i, _C, I>,
             mut c: gll::runtime::Continuation<'i, _C>,
             _range: gll::runtime::Range<'i>,
         ) {
@@ -1462,6 +1478,8 @@ fn code_label_decl_and_impls<Pat>(
             #(#all_labels_ident),*
         }
         impl CodeLabel for _C {
+            type ParseNodeKind = _P;
+
             fn enclosing_fn(self) -> Self {
                 match self {
                     #(#all_labels => #all_labels_enclosing_fn),*

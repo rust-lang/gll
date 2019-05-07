@@ -242,11 +242,11 @@ impl InputMatch<RangeInclusive<char>> for str {
     }
 }
 
-pub struct Parser<'i, P: ParseNodeKind, C: CodeLabel, I: Input> {
+pub struct Parser<'i, C: CodeLabel, I: Input> {
     pub threads: Threads<'i, C>,
     gss: GraphStack<'i, C>,
     memoizer: Memoizer<'i, C>,
-    sppf: ParseForest<'i, P, I>,
+    sppf: ParseForest<'i, C::ParseNodeKind, I>,
     last_input_pos: Index<'i, Unknown>,
     expected_pats: Vec<&'static dyn fmt::Debug>,
 }
@@ -266,12 +266,12 @@ type_lambda! {
 
 pub type OwnedParseForestAndNode<P, I> = ExistsL<PairL<ParseForestL<P, I>, ParseNodeL<P>>>;
 
-impl<'i, P: ParseNodeKind, C: CodeStep<P, I>, I: Input> Parser<'i, P, C, I> {
+impl<'i, C: CodeStep<I>, I: Input> Parser<'i, C, I> {
     pub fn parse(
         input: I,
         callee: C,
-        kind: P,
-    ) -> ParseResult<I::SourceInfoPoint, OwnedParseForestAndNode<P, I>> {
+        kind: C::ParseNodeKind,
+    ) -> ParseResult<I::SourceInfoPoint, OwnedParseForestAndNode<C::ParseNodeKind, I>> {
         ErasableL::indexing_scope(input.to_container(), |lifetime, input| {
             let call = Call {
                 callee,
@@ -302,7 +302,7 @@ impl<'i, P: ParseNodeKind, C: CodeStep<P, I>, I: Input> Parser<'i, P, C, I> {
                 Continuation {
                     code: call.callee,
                     fn_input: call.range,
-                    state: 0,
+                    saved: None,
                 },
                 call.range,
             );
@@ -392,7 +392,12 @@ impl<'i, P: ParseNodeKind, C: CodeStep<P, I>, I: Input> Parser<'i, P, C, I> {
         self.sppf.input(range).match_right(pat).is_some()
     }
 
-    pub fn sppf_add_choice(&mut self, kind: P, range: Range<'i>, choice: P) {
+    pub fn sppf_add_choice(
+        &mut self,
+        kind: C::ParseNodeKind,
+        range: Range<'i>,
+        choice: C::ParseNodeKind,
+    ) {
         self.sppf
             .possible_choices
             .entry(ParseNode { kind, range })
@@ -400,7 +405,7 @@ impl<'i, P: ParseNodeKind, C: CodeStep<P, I>, I: Input> Parser<'i, P, C, I> {
             .insert(choice);
     }
 
-    pub fn sppf_add_split(&mut self, kind: P, range: Range<'i>, split: usize) {
+    pub fn sppf_add_split(&mut self, kind: C::ParseNodeKind, range: Range<'i>, split: usize) {
         self.sppf
             .possible_splits
             .entry(ParseNode { kind, range })
@@ -422,7 +427,7 @@ impl<'i, P: ParseNodeKind, C: CodeStep<P, I>, I: Input> Parser<'i, P, C, I> {
                     Continuation {
                         code: call.callee,
                         fn_input: call.range,
-                        state: 0,
+                        saved: None,
                     },
                     call.range,
                 );
@@ -492,7 +497,7 @@ impl<'i, C: CodeLabel> Threads<'i, C> {
 pub struct Continuation<'i, C: CodeLabel> {
     pub code: C,
     pub fn_input: Range<'i>,
-    pub state: usize,
+    pub saved: Option<ParseNode<'i, C::ParseNodeKind>>,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -809,11 +814,13 @@ pub trait ParseNodeKind: fmt::Display + Ord + Hash + Copy + 'static {
 }
 
 pub trait CodeLabel: fmt::Debug + Ord + Hash + Copy + 'static {
+    type ParseNodeKind: ParseNodeKind;
+
     fn enclosing_fn(self) -> Self;
 }
 
-pub trait CodeStep<P: ParseNodeKind, I: Input>: CodeLabel {
-    fn step<'i>(p: &mut Parser<'i, P, Self, I>, c: Continuation<'i, Self>, range: Range<'i>);
+pub trait CodeStep<I: Input>: CodeLabel {
+    fn step<'i>(p: &mut Parser<'i, Self, I>, c: Continuation<'i, Self>, range: Range<'i>);
 }
 
 // FIXME(rust-lang/rust#54175) work around iterator adapter compile-time
