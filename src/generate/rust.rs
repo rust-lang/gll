@@ -841,18 +841,17 @@ where
             pub fn parse(input: I)
                 -> Result<
                     OwnedHandle<I, Self>,
-                    gll::runtime::ParseError<I::SourceInfoPoint, I::SourceInfo>,
+                    gll::runtime::ParseError<I::SourceInfoPoint>,
                 >
             {
-                let handle = |forest_and_node| OwnedHandle {
-                    forest_and_node,
-                    _marker: PhantomData,
-                };
                 gll::runtime::Parser::parse(
                     input,
                     #code_label,
                     #parse_node_kind,
-                ).map(handle).map_err(|err| err.map_partial(|x| handle(x).source_info()))
+                ).map(|forest_and_node| OwnedHandle {
+                    forest_and_node,
+                    _marker: PhantomData,
+                })
             }
         }
 

@@ -38,15 +38,10 @@ macro_rules! testcases {
             let result = match &result {
                 Ok(result) => format!("{:#?}", result),
                 Err(gll::runtime::ParseError {
-                    partial,
                     at,
                     expected,
                 }) => {
-                    let partial = match partial {
-                        Some(partial) => format!("; partial result:\n{:#?}", partial),
-                        None => String::new(),
-                    };
-                    format!("{:?}: error: expected {:?}{}", at, expected, partial)
+                    format!("{:?}: error: expected {:?}", at, expected)
                 }
             };
             // FIXME(eddyb) Remove this trailing-comma-ignoring hack
@@ -105,9 +100,7 @@ testcases![
     )
 }",
 // FIXME(eddyb) get replace quotes with backticks and pretify the `expected` list.
-// FIXME(eddyb) the partial result should print as an `S` node.
-    S("aax") => r#"1:3: error: expected ["d", "d", "a", "b", "a", "c"]; partial result:
-1:1-1:3"#;
+    S("aax") => r#"1:3: error: expected ["d", "d", "a", "b", "a", "c"]"#;
 
     gll10_g0_opaque {
         S = { a:A s:S "d" } |

@@ -252,28 +252,12 @@ pub struct Parser<'i, P: ParseNodeKind, C: CodeLabel, I: Input> {
 }
 
 #[derive(Debug)]
-pub struct ParseError<A, T> {
-    pub partial: Option<T>,
+pub struct ParseError<A> {
     pub at: A,
     pub expected: Vec<&'static dyn fmt::Debug>,
 }
 
-impl<A, T> ParseError<A, T> {
-    pub fn map_partial<U>(self, f: impl FnOnce(T) -> U) -> ParseError<A, U> {
-        let ParseError {
-            partial,
-            at,
-            expected,
-        } = self;
-        ParseError {
-            partial: partial.map(f),
-            at,
-            expected,
-        }
-    }
-}
-
-pub type ParseResult<A, T> = Result<T, ParseError<A, T>>;
+pub type ParseResult<A, T> = Result<T, ParseError<A>>;
 
 type_lambda! {
     pub type<'i> ParseForestL<P: ParseNodeKind, I: Input> = ParseForest<'i, P, I>;
@@ -331,23 +315,19 @@ impl<'i, P: ParseNodeKind, C: CodeStep<P, I>, I: Input> Parser<'i, P, C, I> {
             // we will find an entry for it in the memoizer, from
             // which we pick the longest match, which is only a
             // successful parse if it's as long as the input.
-            let mut error = ParseError {
-                partial: None,
+            let error = ParseError {
                 at: I::source_info_point(&parser.sppf.input, parser.last_input_pos),
                 expected: parser.expected_pats,
             };
             match parser.memoizer.longest_result(call) {
                 None => Err(error),
                 Some(range) => {
-                    let result = OwnedParseForestAndNode::pack(
-                        lifetime,
-                        (parser.sppf, ParseNode { kind, range }),
-                    );
-
                     if range == call.range {
-                        Ok(result)
+                        Ok(OwnedParseForestAndNode::pack(
+                            lifetime,
+                            (parser.sppf, ParseNode { kind, range }),
+                        ))
                     } else {
-                        error.partial = Some(result);
                         Err(error)
                     }
                 }
