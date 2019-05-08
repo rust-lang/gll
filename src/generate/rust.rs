@@ -844,15 +844,14 @@ where
                     gll::runtime::ParseError<I::SourceInfoPoint>,
                 >
             {
-                let handle = |forest_and_node| OwnedHandle {
-                    forest_and_node,
-                    _marker: PhantomData,
-                };
                 gll::runtime::Parser::parse(
                     input,
                     #code_label,
                     #parse_node_kind,
-                ).map(handle)
+                ).map(|forest_and_node| OwnedHandle {
+                    forest_and_node,
+                    _marker: PhantomData,
+                })
             }
         }
 
