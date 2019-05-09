@@ -17,6 +17,17 @@ pub fn builtin() -> Grammar {
     let ident = eat(Pat(vec![FlatTokenPat::Ident(None)]));
     g.define("IDENT", ident.clone());
 
+    g.define(
+        "LIFETIME",
+        eat(Pat(vec![
+            FlatTokenPat::Punct {
+                ch: Some('\''),
+                joint: Some(true),
+            },
+            FlatTokenPat::Ident(None),
+        ])),
+    );
+
     let punct = eat(Pat(vec![FlatTokenPat::Punct {
         ch: None,
         joint: None,
