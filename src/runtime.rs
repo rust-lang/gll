@@ -246,7 +246,7 @@ pub struct Parser<'i, C: CodeLabel, I: Input> {
     pub threads: Threads<'i, C>,
     gss: GraphStack<'i, C>,
     memoizer: Memoizer<'i, C>,
-    sppf: ParseForest<'i, C::ParseNodeKind, I>,
+    forest: ParseForest<'i, C::ParseNodeKind, I>,
     last_input_pos: Index<'i, Unknown>,
     expected_pats: Vec<&'static dyn fmt::Debug>,
 }
@@ -288,7 +288,7 @@ impl<'i, C: CodeStep<I>, I: Input> Parser<'i, C, I> {
                 memoizer: Memoizer {
                     lengths: HashMap::new(),
                 },
-                sppf: ParseForest {
+                forest: ParseForest {
                     input,
                     possible_choices: HashMap::new(),
                     possible_splits: HashMap::new(),
@@ -317,7 +317,7 @@ impl<'i, C: CodeStep<I>, I: Input> Parser<'i, C, I> {
             // which we pick the longest match, which is only a
             // successful parse if it's as long as the input.
             let error = ParseError {
-                at: I::source_info_point(&parser.sppf.input, parser.last_input_pos),
+                at: I::source_info_point(&parser.forest.input, parser.last_input_pos),
                 expected: parser.expected_pats,
             };
             match parser.memoizer.longest_result(call) {
@@ -326,7 +326,7 @@ impl<'i, C: CodeStep<I>, I: Input> Parser<'i, C, I> {
                     if range == call.range {
                         Ok(OwnedParseForestAndNode::pack(
                             lifetime,
-                            (parser.sppf, ParseNode { kind, range }),
+                            (parser.forest, ParseNode { kind, range }),
                         ))
                     } else {
                         Err(error)
@@ -349,7 +349,7 @@ impl<'i, C: CodeStep<I>, I: Input> Parser<'i, C, I> {
             self.last_input_pos = start;
             self.expected_pats.clear();
         }
-        match self.sppf.input(range).match_left(pat) {
+        match self.forest.input(range).match_left(pat) {
             Some(n) => {
                 let after = Range(range.split_at(n).1);
                 if n > 0 {
@@ -371,7 +371,7 @@ impl<'i, C: CodeStep<I>, I: Input> Parser<'i, C, I> {
     where
         I::Slice: InputMatch<Pat>,
     {
-        self.sppf.input(range).match_left(pat).is_some()
+        self.forest.input(range).match_left(pat).is_some()
     }
 
     pub fn input_consume_right<Pat>(&self, range: Range<'i>, pat: &'static Pat) -> Option<Range<'i>>
@@ -379,7 +379,7 @@ impl<'i, C: CodeStep<I>, I: Input> Parser<'i, C, I> {
         I::Slice: InputMatch<Pat>,
     {
         // FIXME(eddyb) implement error reporting support like in `input_consume_left`
-        self.sppf
+        self.forest
             .input(range)
             .match_right(pat)
             .map(|n| Range(range.split_at(range.len() - n).0))
@@ -389,24 +389,24 @@ impl<'i, C: CodeStep<I>, I: Input> Parser<'i, C, I> {
     where
         I::Slice: InputMatch<Pat>,
     {
-        self.sppf.input(range).match_right(pat).is_some()
+        self.forest.input(range).match_right(pat).is_some()
     }
 
-    pub fn sppf_add_choice(
+    pub fn forest_add_choice(
         &mut self,
         kind: C::ParseNodeKind,
         range: Range<'i>,
         choice: C::ParseNodeKind,
     ) {
-        self.sppf
+        self.forest
             .possible_choices
             .entry(ParseNode { kind, range })
             .or_default()
             .insert(choice);
     }
 
-    pub fn sppf_add_split(&mut self, kind: C::ParseNodeKind, range: Range<'i>, split: usize) {
-        self.sppf
+    pub fn forest_add_split(&mut self, kind: C::ParseNodeKind, range: Range<'i>, split: usize) {
+        self.forest
             .possible_splits
             .entry(ParseNode { kind, range })
             .or_default()
@@ -582,6 +582,7 @@ impl<'i, C: CodeLabel> Memoizer<'i, C> {
     }
 }
 
+/// A parse forest, in SPPF (Shared Packed Parse Forest) representation.
 pub struct ParseForest<'i, P: ParseNodeKind, I: Input> {
     input: Container<'i, I::Container>,
     pub possible_choices: HashMap<ParseNode<'i, P>, BTreeSet<P>>,
@@ -692,7 +693,7 @@ impl<'i, P: ParseNodeKind, I: Input> ParseForest<'i, P, I> {
     }
 
     pub fn dump_graphviz(&self, out: &mut dyn Write) -> io::Result<()> {
-        writeln!(out, "digraph sppf {{")?;
+        writeln!(out, "digraph forest {{")?;
         let mut queue: VecDeque<_> = self
             .possible_choices
             .keys()
@@ -1033,53 +1034,53 @@ macro_rules! __runtime_traverse {
     (typeof($leaf:ty) { $($i:tt $_i:ident: $kind:pat => $shape:tt,)* }) => { ($(traverse!(typeof($leaf) $shape),)*) };
     (typeof($leaf:ty) [$shape:tt]) => { (traverse!(typeof($leaf) $shape),) };
 
-    (one($sppf:ident, $node:ident) _) => {
+    (one($forest:ident, $node:ident) _) => {
         $node
     };
-    (one($sppf:ident, $node:ident) ?) => {
+    (one($forest:ident, $node:ident) ?) => {
         Some($node)
     };
-    (one($sppf:ident, $node:ident) ($l_shape:tt, $r_shape:tt)) => {
+    (one($forest:ident, $node:ident) ($l_shape:tt, $r_shape:tt)) => {
         {
-            let (left, right) = $sppf.one_split($node)?;
+            let (left, right) = $forest.one_split($node)?;
             (
-                traverse!(one($sppf, left) $l_shape),
-                traverse!(one($sppf, right) $r_shape),
+                traverse!(one($forest, left) $l_shape),
+                traverse!(one($forest, right) $r_shape),
             )
         }
     };
-    (one($sppf:ident, $node:ident) { $($i:tt $_i:ident: $kind:pat => $shape:tt,)* }) => {
+    (one($forest:ident, $node:ident) { $($i:tt $_i:ident: $kind:pat => $shape:tt,)* }) => {
         {
-            let node = $sppf.one_choice($node)?;
+            let node = $forest.one_choice($node)?;
             let mut r = <($(traverse!(typeof(_) $shape),)*)>::default();
             match node.kind {
-                $($kind => r.$i = traverse!(one($sppf, node) $shape),)*
+                $($kind => r.$i = traverse!(one($forest, node) $shape),)*
                 _ => unreachable!(),
             }
             r
         }
     };
-    (one($sppf:ident, $node:ident) [$shape:tt]) => {
+    (one($forest:ident, $node:ident) [$shape:tt]) => {
         {
             let mut r = <(traverse!(typeof(_) $shape),)>::default();
             if let Some(node) = $node.unpack_opt() {
-                r.0 = traverse!(one($sppf, node) $shape);
+                r.0 = traverse!(one($forest, node) $shape);
             }
             r
         }
     };
 
-    (all($sppf:ident) _) => {
+    (all($forest:ident) _) => {
         $crate::runtime::nd::Id::new()
     };
-    (all($sppf:ident) ?) => {
+    (all($forest:ident) ?) => {
         $crate::runtime::nd::Id::new().map(Some)
     };
-    (all($sppf:ident) ($l_shape:tt, $r_shape:tt)) => {
-        $crate::runtime::nd::FromIterK::new($sppf, $crate::runtime::ParseForest::all_splits)
-            .then(traverse!(all($sppf) $l_shape).pairs(traverse!(all($sppf) $r_shape)))
+    (all($forest:ident) ($l_shape:tt, $r_shape:tt)) => {
+        $crate::runtime::nd::FromIterK::new($forest, $crate::runtime::ParseForest::all_splits)
+            .then(traverse!(all($forest) $l_shape).pairs(traverse!(all($forest) $r_shape)))
     };
-    (all($sppf:ident) { $($i:tt $_i:ident: $kind:pat => $shape:tt,)* }) => {
+    (all($forest:ident) { $($i:tt $_i:ident: $kind:pat => $shape:tt,)* }) => {
         $crate::runtime::nd::FromIter::new(move |node| {
             #[derive(Clone)]
             enum Iter<$($_i),*> {
@@ -1097,19 +1098,19 @@ macro_rules! __runtime_traverse {
                     Some(r)
                 }
             }
-            $sppf.all_choices(node).flat_map(move |node| {
+            $forest.all_choices(node).flat_map(move |node| {
                 match node.kind {
-                    $($kind => Iter::$_i(traverse!(all($sppf) $shape).apply(node)),)*
+                    $($kind => Iter::$_i(traverse!(all($forest) $shape).apply(node)),)*
                     _ => unreachable!(),
                 }
             })
         })
     };
-    (all($sppf:ident) [$shape:tt]) => {
+    (all($forest:ident) [$shape:tt]) => {
         $crate::runtime::nd::FromIter::new(move |node| {
             match $crate::runtime::ParseNode::unpack_opt(node) {
                 Some(node) => {
-                    Some(traverse!(all($sppf) $shape).apply(node).map(|x| (x,)))
+                    Some(traverse!(all($forest) $shape).apply(node).map(|x| (x,)))
                         .into_iter().flatten().chain(None)
                 }
                 None => {
