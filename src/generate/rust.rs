@@ -731,11 +731,11 @@ fn reify_as(label: Rc<CodeLabel>) -> Thunk<impl ContFn> {
     })
 }
 
-fn sppf_add_choice(parse_node_kind: &ParseNodeKind, choice: ParseNodeKind) -> Thunk<impl ContFn> {
-    thunk!(p.sppf_add_choice(#parse_node_kind, c.fn_input.subtract_suffix(_range), #choice);)
+fn forest_add_choice(parse_node_kind: &ParseNodeKind, choice: ParseNodeKind) -> Thunk<impl ContFn> {
+    thunk!(p.forest_add_choice(#parse_node_kind, c.fn_input.subtract_suffix(_range), #choice);)
 }
 
-fn concat_and_sppf_add(
+fn concat_and_forest_add(
     left_parse_node_kind: ParseNodeKind,
     left: Thunk<impl ContFn>,
     right: Thunk<impl ContFn>,
@@ -749,7 +749,7 @@ fn concat_and_sppf_add(
         }))
         + right
         + pop_saved(move |saved| {
-            thunk!(p.sppf_add_split(
+            thunk!(p.forest_add_split(
                 #parse_node_kind,
                 c.fn_input.subtract_suffix(_range),
                 #saved.range.len(),
@@ -792,7 +792,7 @@ impl<Pat: Ord + Hash + RustInputPat> RuleGenerateMethods<Pat> for Rule<Pat> {
             (Rule::Concat([left, right]), None) => {
                 (left.generate_parse(None) + right.generate_parse(None)).apply(cont)
             }
-            (Rule::Concat([left, right]), Some((rc_self, rules))) => concat_and_sppf_add(
+            (Rule::Concat([left, right]), Some((rc_self, rules))) => concat_and_forest_add(
                 left.parse_node_kind(rules),
                 left.generate_parse(Some((left, rules))),
                 right.generate_parse(Some((right, rules))),
@@ -808,7 +808,7 @@ impl<Pat: Ord + Hash + RustInputPat> RuleGenerateMethods<Pat> for Rule<Pat> {
                     + parallel(ThunkIter(cases.iter().map(|rule| {
                         let parse_node_kind = rule.parse_node_kind(rules);
                         rule.generate_parse(Some((rule, rules)))
-                            + sppf_add_choice(&rc_self.parse_node_kind(rules), parse_node_kind)
+                            + forest_add_choice(&rc_self.parse_node_kind(rules), parse_node_kind)
                     }))))
                 .apply(cont)
             }
@@ -821,7 +821,7 @@ impl<Pat: Ord + Hash + RustInputPat> RuleGenerateMethods<Pat> for Rule<Pat> {
             }
             (Rule::RepeatMany(rule, None), Some((_, rules))) => fix(|label| {
                 let more = Rc::new(Rule::RepeatMore(rule.clone(), None));
-                opt(concat_and_sppf_add(
+                opt(concat_and_forest_add(
                     rule.parse_node_kind(rules),
                     rule.generate_parse(Some((rule, rules))),
                     call(label),
@@ -842,7 +842,7 @@ impl<Pat: Ord + Hash + RustInputPat> RuleGenerateMethods<Pat> for Rule<Pat> {
                     .apply(cont)
             }
             (Rule::RepeatMore(rule, None), Some((rc_self, rules))) => fix(|label| {
-                concat_and_sppf_add(
+                concat_and_forest_add(
                     rule.parse_node_kind(rules),
                     rule.generate_parse(Some((rule, rules))),
                     opt(call(label)),
@@ -851,10 +851,10 @@ impl<Pat: Ord + Hash + RustInputPat> RuleGenerateMethods<Pat> for Rule<Pat> {
             })
             .apply(cont),
             (Rule::RepeatMore(elem, Some(sep)), Some((rc_self, rules))) => fix(|label| {
-                concat_and_sppf_add(
+                concat_and_forest_add(
                     elem.parse_node_kind(rules),
                     elem.generate_parse(Some((elem, rules))),
-                    opt(concat_and_sppf_add(
+                    opt(concat_and_forest_add(
                         sep.parse_node_kind(rules),
                         sep.generate_parse(None),
                         call(label),
@@ -1015,11 +1015,11 @@ where
     };
     rule_ty_def
         + rule_debug_impls(name, &rule, variants)
-        + impl_rule_from_sppf(name, &rule, variants, rules)
+        + impl_rule_from_forest(name, &rule, variants, rules)
         + impl_rule_one_and_all(name, &rule, variants, rules)
 }
 
-fn impl_rule_from_sppf<Pat>(
+fn impl_rule_from_forest<Pat>(
     name: &str,
     rule: &RuleWithNamedFields<Pat>,
     variants: Option<&[Variant<'_, Pat>]>,
@@ -1055,9 +1055,9 @@ where
     };
 
     let methods = if let Some(variants) = variants {
-        let variants_from_sppf_ident = variants
+        let variants_from_forest_ident = variants
             .iter()
-            .map(|v| Src::ident(format!("{}_from_sppf", v.name)));
+            .map(|v| Src::ident(format!("{}_from_forest", v.name)));
         let variants_shape = variants
             .iter()
             .map(|v| v.rule.generate_traverse_shape(false, rules));
@@ -1083,7 +1083,7 @@ where
 
         quote!(#(
             #[allow(non_snake_case)]
-            fn #variants_from_sppf_ident(
+            fn #variants_from_forest_ident(
                 forest: &'a gll::runtime::ParseForest<'i, _P, I>,
                 _node: ParseNode<'i, _P>,
                 _r: traverse!(typeof(ParseNode<'i, _P>) #variants_shape),
@@ -1104,7 +1104,7 @@ where
             None
         };
         quote!(
-            fn from_sppf(
+            fn from_forest(
                 forest: &'a gll::runtime::ParseForest<'i, _P, I>,
                 _node: ParseNode<'i, _P>,
                 _r: traverse!(typeof(ParseNode<'i, _P>) #shape),
@@ -1138,9 +1138,9 @@ where
         let i_ident = (0..variants.len())
             .map(|i| Src::ident(format!("_{}", i)))
             .collect::<Vec<_>>();
-        let variants_from_sppf_ident = variants
+        let variants_from_forest_ident = variants
             .iter()
-            .map(|v| Src::ident(format!("{}_from_sppf", v.name)))
+            .map(|v| Src::ident(format!("{}_from_forest", v.name)))
             .collect::<Vec<_>>();
         let variants_kind = variants
             .iter()
@@ -1153,11 +1153,11 @@ where
 
         (
             quote!(
-                let node = _sppf.one_choice(node)?;
+                let node = _forest.one_choice(node)?;
                 match node.kind {
                     #(#variants_kind => {
-                        let r = traverse!(one(_sppf, node) #variants_shape);
-                        #ident::#variants_from_sppf_ident(self.forest, node, r)
+                        let r = traverse!(one(_forest, node) #variants_shape);
+                        #ident::#variants_from_forest_ident(self.forest, node, r)
                     })*
                     _ => unreachable!()
                 }
@@ -1177,12 +1177,12 @@ where
                     }
                 }
 
-                _sppf.all_choices(node).flat_map(move |node| {
+                _forest.all_choices(node).flat_map(move |node| {
                     match node.kind {
                         #(#variants_kind => Iter::#i_ident(
-                            traverse!(all(_sppf) #variants_shape)
+                            traverse!(all(_forest) #variants_shape)
                                 .apply(node)
-                                .map(move |r| #ident::#variants_from_sppf_ident(self.forest, node, r))
+                                .map(move |r| #ident::#variants_from_forest_ident(self.forest, node, r))
                         ),)*
                         _ => unreachable!(),
                     }
@@ -1193,13 +1193,13 @@ where
         let shape = rule.rule.generate_traverse_shape(false, rules);
         (
             quote!(
-                let r = traverse!(one(_sppf, node) #shape);
-                #ident::from_sppf(self.forest, node, r)
+                let r = traverse!(one(_forest, node) #shape);
+                #ident::from_forest(self.forest, node, r)
             ),
             quote!(
-                traverse!(all(_sppf) #shape)
+                traverse!(all(_forest) #shape)
                     .apply(node)
-                    .map(move |r| #ident::from_sppf(self.forest, node, r))
+                    .map(move |r| #ident::from_forest(self.forest, node, r))
             ),
         )
     };
@@ -1210,14 +1210,14 @@ where
         pub fn one(self) -> Result<#ident<'a, 'i, I>, Ambiguity<Self>> {
             // HACK(eddyb) using a closure to catch `Err`s from `?`
             (|| Ok({
-                let _sppf = self.forest;
+                let _forest = self.forest;
                 let node = self.node.unpack_alias();
                 #one
             }))().map_err(|gll::runtime::MoreThanOne| Ambiguity(self))
         }
 
         pub fn all(self) -> impl Iterator<Item = #ident<'a, 'i, I>> {
-            let _sppf = self.forest;
+            let _forest = self.forest;
             let node = self.node.unpack_alias();
             #all
         }

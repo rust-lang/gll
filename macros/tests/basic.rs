@@ -29,7 +29,7 @@ macro_rules! testcases {
                                 env!("CARGO_MANIFEST_DIR"),
                                 "/../target/",
                                 stringify!($name),
-                                "-sppf.dot"
+                                "-forest.dot"
                             )).unwrap(),
                         ).unwrap();
                 });
