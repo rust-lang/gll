@@ -485,11 +485,26 @@ impl Continuation<'_> {
 
 trait ContFn {
     fn apply(self, cont: Continuation<'_>) -> Continuation<'_>;
+    // HACK(eddyb) `Box<dyn FnOnce<A>>: FnOnce<A>` is not stable yet,
+    // so this is needed to implement `ContFn` for `Box<dyn ContFn>`.
+    fn apply_box(self: Box<Self>, cont: Continuation<'_>) -> Continuation<'_>;
 }
 
 impl<F: FnOnce(Continuation<'_>) -> Continuation<'_>> ContFn for F {
     fn apply(self, cont: Continuation<'_>) -> Continuation<'_> {
         self(cont)
+    }
+    fn apply_box(self: Box<Self>, cont: Continuation<'_>) -> Continuation<'_> {
+        (*self).apply(cont)
+    }
+}
+
+impl<'a> ContFn for Box<dyn ContFn + 'a> {
+    fn apply(self, cont: Continuation<'_>) -> Continuation<'_> {
+        self.apply_box(cont)
+    }
+    fn apply_box(self: Box<Self>, cont: Continuation<'_>) -> Continuation<'_> {
+        (*self).apply(cont)
     }
 }
 
@@ -498,6 +513,9 @@ struct Compose<F, G>(F, G);
 impl<F: ContFn, G: ContFn> ContFn for Compose<F, G> {
     fn apply(self, cont: Continuation<'_>) -> Continuation<'_> {
         self.1.apply(self.0.apply(cont))
+    }
+    fn apply_box(self: Box<Self>, cont: Continuation<'_>) -> Continuation<'_> {
+        (*self).apply(cont)
     }
 }
 
@@ -512,9 +530,9 @@ impl<F> Thunk<F> {
         Thunk(f)
     }
 
-    fn boxed<'a>(self) -> Thunk<Box<dyn FnOnce(Continuation<'_>) -> Continuation<'_> + 'a>>
+    fn boxed<'a>(self) -> Thunk<Box<dyn ContFn + 'a>>
     where
-        F: FnOnce(Continuation<'_>) -> Continuation<'_> + 'a,
+        F: ContFn + 'a,
     {
         Thunk(Box::new(self.0))
     }
@@ -530,6 +548,9 @@ impl<F, G> Add<Thunk<G>> for Thunk<F> {
 impl<F: ContFn> ContFn for Thunk<F> {
     fn apply(self, cont: Continuation<'_>) -> Continuation<'_> {
         self.0.apply(cont)
+    }
+    fn apply_box(self: Box<Self>, cont: Continuation<'_>) -> Continuation<'_> {
+        (*self).apply(cont)
     }
 }
 
@@ -718,7 +739,7 @@ trait RuleGenerateMethods<Pat> {
     fn generate_parse<'a>(
         &'a self,
         rc_self_and_rules: Option<(&'a Rc<Self>, &'a RuleMap<'_, Pat>)>,
-    ) -> Thunk<Box<dyn FnOnce(Continuation<'_>) -> Continuation<'_> + 'a>>;
+    ) -> Thunk<Box<dyn ContFn + 'a>>;
 
     fn generate_traverse_shape(&self, refutable: bool, rules: &RuleMap<'_, Pat>) -> Src;
 }
@@ -731,7 +752,7 @@ impl<Pat: Ord + Hash + RustInputPat> RuleGenerateMethods<Pat> for Rule<Pat> {
     fn generate_parse<'a>(
         &'a self,
         rc_self_and_rules: Option<(&'a Rc<Self>, &'a RuleMap<'_, Pat>)>,
-    ) -> Thunk<Box<dyn FnOnce(Continuation<'_>) -> Continuation<'_> + 'a>> {
+    ) -> Thunk<Box<dyn ContFn + 'a>> {
         if let Some((rc_self, _)) = rc_self_and_rules {
             assert!(std::ptr::eq(self, &**rc_self));
         }
