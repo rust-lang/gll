@@ -1,7 +1,7 @@
 use crate::generate::src::{quotable_to_src, quote, Src, ToSrc};
 use crate::parse_node::ParseNodeShape;
 use crate::scannerless::Pat as SPat;
-use grammer::{Grammar, MatchesEmpty, Rule, RuleWithNamedFields};
+use grammer::{Grammar, MatchesEmpty, Rule, RuleWithNamedFields, SepKind};
 
 use ordermap::{Entry, OrderMap, OrderSet};
 use std::borrow::Cow;
@@ -217,14 +217,24 @@ impl<Pat: Ord + Hash + RustInputPat> RuleRuleMapMethods<Pat> for Rule<Pat> {
             }
             Rule::Opt(rule) => format!("{}?", rule.parse_node_desc(rules)),
             Rule::RepeatMany(elem, None) => format!("{}*", elem.parse_node_desc(rules)),
-            Rule::RepeatMany(elem, Some(sep)) => format!(
+            Rule::RepeatMany(elem, Some((sep, SepKind::Simple))) => format!(
                 "{}* % {}",
                 elem.parse_node_desc(rules),
                 sep.parse_node_desc(rules)
             ),
+            Rule::RepeatMany(elem, Some((sep, SepKind::Trailing))) => format!(
+                "{}* %% {}",
+                elem.parse_node_desc(rules),
+                sep.parse_node_desc(rules)
+            ),
             Rule::RepeatMore(elem, None) => format!("{}+", elem.parse_node_desc(rules)),
-            Rule::RepeatMore(elem, Some(sep)) => format!(
+            Rule::RepeatMore(elem, Some((sep, SepKind::Simple))) => format!(
                 "{}+ % {}",
+                elem.parse_node_desc(rules),
+                sep.parse_node_desc(rules)
+            ),
+            Rule::RepeatMore(elem, Some((sep, SepKind::Trailing))) => format!(
+                "{}+ %% {}",
                 elem.parse_node_desc(rules),
                 sep.parse_node_desc(rules)
             ),
@@ -250,13 +260,21 @@ impl<Pat: Ord + Hash + RustInputPat> RuleRuleMapMethods<Pat> for Rule<Pat> {
                 rule.parse_node_kind(rules),
                 Rc::new(Rule::RepeatMany(rule.clone(), None)).parse_node_kind(rules),
             ),
-            Rule::RepeatMore(elem, Some(sep)) => ParseNodeShape::Split(
+            Rule::RepeatMore(elem, Some((sep, SepKind::Simple))) => ParseNodeShape::Split(
                 elem.parse_node_kind(rules),
                 Rc::new(Rule::Opt(Rc::new(Rule::Concat([
                     sep.clone(),
                     rc_self.clone(),
                 ]))))
                 .parse_node_kind(rules),
+            ),
+            Rule::RepeatMore(elem, Some((sep, SepKind::Trailing))) => ParseNodeShape::Split(
+                Rc::new(Rule::RepeatMore(
+                    elem.clone(),
+                    Some((sep.clone(), SepKind::Simple)),
+                ))
+                .parse_node_kind(rules),
+                Rc::new(Rule::Opt(sep.clone())).parse_node_kind(rules),
             ),
         }
     }
@@ -837,7 +855,7 @@ impl<Pat: Ord + Hash + RustInputPat> RuleGenerateMethods<Pat> for Rule<Pat> {
             (Rule::RepeatMore(rule, None), None) => {
                 fix(|label| rule.generate_parse(None) + opt(call(label))).apply(cont)
             }
-            (Rule::RepeatMore(elem, Some(sep)), None) => {
+            (Rule::RepeatMore(elem, Some((sep, SepKind::Simple))), None) => {
                 fix(|label| elem.generate_parse(None) + opt(sep.generate_parse(None) + call(label)))
                     .apply(cont)
             }
@@ -850,21 +868,32 @@ impl<Pat: Ord + Hash + RustInputPat> RuleGenerateMethods<Pat> for Rule<Pat> {
                 )
             })
             .apply(cont),
-            (Rule::RepeatMore(elem, Some(sep)), Some((rc_self, rules))) => fix(|label| {
-                concat_and_forest_add(
-                    elem.parse_node_kind(rules),
-                    elem.generate_parse(Some((elem, rules))),
-                    opt(concat_and_forest_add(
-                        sep.parse_node_kind(rules),
-                        sep.generate_parse(None),
-                        call(label),
-                        Rc::new(Rule::Concat([sep.clone(), rc_self.clone()]))
-                            .parse_node_kind(rules),
-                    )),
-                    rc_self.parse_node_kind(rules),
-                )
-            })
-            .apply(cont),
+            (Rule::RepeatMore(elem, Some((sep, SepKind::Simple))), Some((rc_self, rules))) => {
+                fix(|label| {
+                    concat_and_forest_add(
+                        elem.parse_node_kind(rules),
+                        elem.generate_parse(Some((elem, rules))),
+                        opt(concat_and_forest_add(
+                            sep.parse_node_kind(rules),
+                            sep.generate_parse(None),
+                            call(label),
+                            Rc::new(Rule::Concat([sep.clone(), rc_self.clone()]))
+                                .parse_node_kind(rules),
+                        )),
+                        rc_self.parse_node_kind(rules),
+                    )
+                })
+                .apply(cont)
+            }
+            (Rule::RepeatMore(elem, Some((sep, SepKind::Trailing))), _) => {
+                let rule = Rc::new(Rule::RepeatMore(
+                    elem.clone(),
+                    Some((sep.clone(), SepKind::Simple)),
+                ));
+                (rule.generate_parse(rc_self_and_rules.map(|(_, rules)| (&rule, rules)))
+                    + opt(sep.generate_parse(rc_self_and_rules.map(|(_, rules)| (sep, rules)))))
+                .apply(cont)
+            }
         })
         .boxed()
     }
