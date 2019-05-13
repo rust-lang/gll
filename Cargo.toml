@@ -14,12 +14,14 @@ edition = "2018"
 
 [dependencies]
 indexing = "0.3.1"
+grammer = "0.0.1"
 ordermap = "0.3.0"
 proc-macro2 = "0.4.0"
 proc-quote = "0.2.0"
 
 [build-dependencies]
 indexing = "0.3.1"
+grammer = "0.0.1"
 ordermap = "0.3.0"
 proc-macro2 = "0.4.0"
 proc-quote = "0.2.0"
@@ -27,6 +29,9 @@ proc-quote = "0.2.0"
 [lib]
 doctest = false
 test = false
+
+[patch.'crates-io']
+grammer = { git = "https://github.com/lykenware/grammer", rev = "0ea57c2d8dc6d86769832374f515d02f61f1e7bd" }
 
 [workspace]
 members = [

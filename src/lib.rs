@@ -10,7 +10,7 @@ mod indexing_str;
 #[forbid(unsafe_code)]
 pub mod generate;
 #[forbid(unsafe_code)]
-pub mod grammar;
+pub mod parse_node;
 #[forbid(unsafe_code)]
 pub mod proc_macro;
 #[forbid(unsafe_code)]

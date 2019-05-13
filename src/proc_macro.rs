@@ -1,18 +1,18 @@
 use crate::generate::rust::RustInputPat;
 use crate::generate::src::{quotable_to_src, quote, Src, ToSrc};
-use crate::grammar::{self, call, eat, MatchesEmpty, MaybeKnown};
 use crate::runtime::{Input, InputMatch, Range};
 use crate::scannerless::Pat as SPat;
+use grammer::{self, call, eat, MatchesEmpty, MaybeKnown};
 use indexing::{proof::Provable, Container, Index, Unknown};
 pub use proc_macro2::{
     Delimiter, Ident, LexError, Literal, Punct, Spacing, Span, TokenStream, TokenTree,
 };
 use std::{ops, str::FromStr};
 
-pub type Grammar = grammar::Grammar<Pat>;
+pub type Grammar = crate::scannerless::WrapperHack<grammer::Grammar<Pat>>;
 
 pub fn builtin() -> Grammar {
-    let mut g = Grammar::new();
+    let mut g = grammer::Grammar::new();
 
     let ident = eat(Pat(vec![FlatTokenPat::Ident(None)]));
     g.define("IDENT", ident.clone());
@@ -44,7 +44,7 @@ pub fn builtin() -> Grammar {
         ident | punct | literal | group('(', ')') | group('[', ']') | group('{', '}'),
     );
 
-    g
+    crate::scannerless::WrapperHack(g)
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
