@@ -176,4 +176,11 @@ testcases![
     A("abab") => "1:1-1:5",
     A("aba") => "1:1-1:4",
     A("b") => r#"1:1: error: expected ["a"]"#;
+
+    nested_or {
+        A = x:"x" { a:"a" | b:"b" };
+    }:
+    // FIXME(eddyb) figure out why the output is not `... => A {...}`.
+    A("xa") => "\
+1:1-1:3 => ";
 ];
