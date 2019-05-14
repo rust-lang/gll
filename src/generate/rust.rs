@@ -756,13 +756,10 @@ fn concat_and_forest_add(
     right: Thunk<impl ContFn>,
     parse_node_kind: ParseNodeKind,
 ) -> Thunk<impl ContFn> {
-    thunk!(assert_eq!(p.range.start(), p.fn_input.start());)
-        + left
-        + push_saved(quote!(ParseNode {
-            kind: #left_parse_node_kind,
-            range: p.fn_input.subtract_suffix(p.range),
-        }))
-        + right
+    left + push_saved(quote!(ParseNode {
+        kind: #left_parse_node_kind,
+        range: p.result,
+    })) + right
         + pop_saved(move |saved| {
             thunk!(p.forest_add_split(
                 #parse_node_kind,
@@ -814,12 +811,11 @@ impl<Pat: Ord + Hash + RustInputPat> RuleGenerateMethods<Pat> for Rule<Pat> {
             ))
             .apply(cont),
             (Rule::Or(cases), Some((rc_self, rules))) => {
-                (thunk!(assert_eq!(p.range.start(), p.fn_input.start());)
-                    + parallel(ThunkIter(cases.iter().map(|rule| {
-                        let parse_node_kind = rule.parse_node_kind(rules);
-                        rule.generate_parse(Some((rule, rules)))
-                            + forest_add_choice(&rc_self.parse_node_kind(rules), parse_node_kind)
-                    }))))
+                (parallel(ThunkIter(cases.iter().map(|rule| {
+                    let parse_node_kind = rule.parse_node_kind(rules);
+                    rule.generate_parse(Some((rule, rules)))
+                        + forest_add_choice(&rc_self.parse_node_kind(rules), parse_node_kind)
+                }))))
                 .apply(cont)
             }
             (Rule::Opt(rule), _) => {

@@ -245,9 +245,8 @@ impl InputMatch<RangeInclusive<char>> for str {
 pub struct Parser<'a, 'i, C: CodeLabel, I: Input> {
     state: &'a mut ParserState<'i, C, I>,
     current: C,
-    pub fn_input: Range<'i>,
     pub saved: Option<ParseNode<'i, C::ParseNodeKind>>,
-    result: Range<'i>,
+    pub result: Range<'i>,
     pub range: Range<'i>,
 }
 
@@ -310,7 +309,6 @@ impl<'i, C: CodeStep<I>, I: Input> Parser<'_, 'i, C, I> {
             state.threads.spawn(
                 Continuation {
                     code: call.callee,
-                    fn_input: call.range,
                     saved: None,
                     result: Range(call.range.frontiers().0),
                 },
@@ -323,7 +321,6 @@ impl<'i, C: CodeStep<I>, I: Input> Parser<'_, 'i, C, I> {
                     callee:
                         Continuation {
                             code,
-                            fn_input,
                             saved,
                             result,
                         },
@@ -332,7 +329,6 @@ impl<'i, C: CodeStep<I>, I: Input> Parser<'_, 'i, C, I> {
                 code.step(Parser {
                     state: &mut state,
                     current: code,
-                    fn_input,
                     saved,
                     result,
                     range,
@@ -385,7 +381,6 @@ impl<'i, C: CodeStep<I>, I: Input> Parser<'_, 'i, C, I> {
                 Some(Parser {
                     state: self.state,
                     current: self.current,
-                    fn_input: self.fn_input,
                     saved: self.saved,
                     result: Range(self.result.join(matching).unwrap()),
                     range: Range(after),
@@ -414,7 +409,6 @@ impl<'i, C: CodeStep<I>, I: Input> Parser<'_, 'i, C, I> {
                 Some(Parser {
                     state: self.state,
                     current: self.current,
-                    fn_input: self.fn_input,
                     saved: self.saved,
                     result: Range(matching.join(self.result.0).unwrap()),
                     range: Range(before),
@@ -452,7 +446,6 @@ impl<'i, C: CodeStep<I>, I: Input> Parser<'_, 'i, C, I> {
         self.state.threads.spawn(
             Continuation {
                 code: next,
-                fn_input: self.fn_input,
                 saved: self.saved,
                 result: self.result,
             },
@@ -467,7 +460,6 @@ impl<'i, C: CodeStep<I>, I: Input> Parser<'_, 'i, C, I> {
         };
         let next = Continuation {
             code: next,
-            fn_input: self.fn_input,
             saved: self.saved,
             result: self.result,
         };
@@ -490,7 +482,6 @@ impl<'i, C: CodeStep<I>, I: Input> Parser<'_, 'i, C, I> {
                 self.state.threads.spawn(
                     Continuation {
                         code: call.callee,
-                        fn_input: call.range,
                         saved: None,
                         result: Range(call.range.frontiers().0),
                     },
@@ -507,7 +498,6 @@ impl<'i, C: CodeStep<I>, I: Input> Parser<'_, 'i, C, I> {
             callee: self.current.enclosing_fn(),
             range: Range(call_result.join(remaining.0).unwrap()),
         };
-        assert_eq!(call.range, self.fn_input);
         if self
             .state
             .memoizer
@@ -571,7 +561,6 @@ impl<'i, C: CodeLabel> Threads<'i, C> {
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct Continuation<'i, C: CodeLabel> {
     code: C,
-    fn_input: Range<'i>,
     saved: Option<ParseNode<'i, C::ParseNodeKind>>,
     result: Range<'i>,
 }
@@ -625,7 +614,7 @@ impl<C: CodeLabel> GraphStack<'_, C> {
                     call,
                     Call {
                         callee: next.code.enclosing_fn(),
-                        range: next.fn_input
+                        range: Range(next.result.join(call.range.0).unwrap()),
                     },
                     next.code
                 )?;
