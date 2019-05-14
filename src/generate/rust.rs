@@ -1099,7 +1099,7 @@ where
         quote!(#(
             #[allow(non_snake_case)]
             fn #variants_from_forest_ident(
-                forest: &'a gll::runtime::ParseForest<'i, _P, I>,
+                forest: &'a gll::forest::ParseForest<'i, _P, I>,
                 _node: ParseNode<'i, _P>,
                 _r: traverse!(typeof(ParseNode<'i, _P>) #variants_shape),
             ) -> Self {
@@ -1120,7 +1120,7 @@ where
         };
         quote!(
             fn from_forest(
-                forest: &'a gll::runtime::ParseForest<'i, _P, I>,
+                forest: &'a gll::forest::ParseForest<'i, _P, I>,
                 _node: ParseNode<'i, _P>,
                 _r: traverse!(typeof(ParseNode<'i, _P>) #shape),
             ) -> Self {
@@ -1228,7 +1228,7 @@ where
                 let _forest = self.forest;
                 let node = self.node.unpack_alias();
                 #one
-            }))().map_err(|gll::runtime::MoreThanOne| Ambiguity(self))
+            }))().map_err(|gll::forest::MoreThanOne| Ambiguity(self))
         }
 
         pub fn all(self) -> impl Iterator<Item = #ident<'a, 'i, I>> {
@@ -1488,7 +1488,7 @@ fn code_label_decl_and_impls<Pat>(
         enum _C {
             #(#all_labels_ident),*
         }
-        impl CodeLabel for _C {
+        impl gll::runtime::CodeLabel for _C {
             type ParseNodeKind = _P;
 
             fn enclosing_fn(self) -> Self {

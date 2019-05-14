@@ -8,6 +8,8 @@ mod high;
 mod indexing_str;
 
 #[forbid(unsafe_code)]
+pub mod forest;
+#[forbid(unsafe_code)]
 pub mod generate;
 #[forbid(unsafe_code)]
 pub mod input;
