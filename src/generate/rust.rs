@@ -470,8 +470,7 @@ impl Continuation<'_> {
     fn to_inline(&mut self) -> &mut Src {
         if let Code::Label(ref label) = self.code {
             self.code = Code::Inline(quote!(
-                c.code = #label;
-                p.spawn(c, _range);
+                p.spawn(#label);
             ));
         }
 
@@ -584,7 +583,7 @@ macro_rules! thunk {
 }
 
 fn pop_saved<F: ContFn>(f: impl FnOnce(Src) -> Thunk<F>) -> Thunk<impl ContFn> {
-    f(quote!(c.saved.unwrap()))
+    f(quote!(p.saved.unwrap()))
         + Thunk::new(|mut cont| {
             if let Some(&None) = cont.nested_frames.last() {
                 *cont.nested_frames.last_mut().unwrap() =
@@ -600,7 +599,7 @@ fn pop_saved<F: ContFn>(f: impl FnOnce(Src) -> Thunk<F>) -> Thunk<impl ContFn> {
 }
 
 fn push_saved(saved: Src) -> Thunk<impl ContFn> {
-    thunk!(c.saved = Some(#saved);)
+    thunk!(p.saved = Some(#saved);)
         + Thunk::new(move |mut cont| {
             if let Some((ret_label, outer_fn_label)) = cont.nested_frames.pop().unwrap() {
                 let inner_fn_label = mem::replace(cont.fn_code_label, outer_fn_label);
@@ -627,15 +626,14 @@ fn call(callee: Rc<CodeLabel>) -> Thunk<impl ContFn> {
     Thunk::new(move |mut cont| {
         let label = cont.to_label().clone();
         cont.code = Code::Inline(quote!(
-            c.code = #label;
-            p.call(Call { callee: #callee, range: _range }, c);
+            p.call(#callee, #label);
         ));
         cont
     })
 }
 
 fn ret() -> Thunk<impl ContFn> {
-    thunk!(p.ret(c, _range);)
+    thunk!(p.ret();)
         + Thunk::new(|mut cont| {
             assert!(cont.to_inline().is_empty());
             cont
@@ -749,7 +747,7 @@ fn reify_as(label: Rc<CodeLabel>) -> Thunk<impl ContFn> {
 }
 
 fn forest_add_choice(parse_node_kind: &ParseNodeKind, choice: ParseNodeKind) -> Thunk<impl ContFn> {
-    thunk!(p.forest_add_choice(#parse_node_kind, c.fn_input.subtract_suffix(_range), #choice);)
+    thunk!(p.forest_add_choice(#parse_node_kind, p.fn_input.subtract_suffix(p.range), #choice);)
 }
 
 fn concat_and_forest_add(
@@ -758,17 +756,17 @@ fn concat_and_forest_add(
     right: Thunk<impl ContFn>,
     parse_node_kind: ParseNodeKind,
 ) -> Thunk<impl ContFn> {
-    thunk!(assert_eq!(_range.start(), c.fn_input.start());)
+    thunk!(assert_eq!(p.range.start(), p.fn_input.start());)
         + left
         + push_saved(quote!(ParseNode {
             kind: #left_parse_node_kind,
-            range: c.fn_input.subtract_suffix(_range),
+            range: p.fn_input.subtract_suffix(p.range),
         }))
         + right
         + pop_saved(move |saved| {
             thunk!(p.forest_add_split(
                 #parse_node_kind,
-                c.fn_input.subtract_suffix(_range),
+                p.fn_input.subtract_suffix(p.range),
                 #saved.range.len(),
             );)
         })
@@ -799,7 +797,7 @@ impl<Pat: Ord + Hash + RustInputPat> RuleGenerateMethods<Pat> for Rule<Pat> {
             (Rule::Empty, _) => cont,
             (Rule::Eat(pat), _) => {
                 let pat = pat.rust_matcher();
-                check(quote!(let Some(_range) = p.input_consume_left(_range, &(#pat)))).apply(cont)
+                check(quote!(let Some(mut p) = p.input_consume_left(&(#pat)))).apply(cont)
             }
             (Rule::Call(r), _) => call(Rc::new(CodeLabel::NamedRule(r.clone()))).apply(cont),
             (Rule::Concat([left, right]), None) => {
@@ -817,7 +815,7 @@ impl<Pat: Ord + Hash + RustInputPat> RuleGenerateMethods<Pat> for Rule<Pat> {
             ))
             .apply(cont),
             (Rule::Or(cases), Some((rc_self, rules))) => {
-                (thunk!(assert_eq!(_range.start(), c.fn_input.start());)
+                (thunk!(assert_eq!(p.range.start(), p.fn_input.start());)
                     + parallel(ThunkIter(cases.iter().map(|rule| {
                         let parse_node_kind = rule.parse_node_kind(rules);
                         rule.generate_parse(Some((rule, rules)))
@@ -1395,12 +1393,8 @@ where
     quote!(impl<I> gll::runtime::CodeStep<I> for _C
         where I: gll::runtime::Input<Slice = #rust_slice_ty>,
     {
-        fn step<'i>(
-            p: &mut gll::runtime::Parser<'i, _C, I>,
-            mut c: gll::runtime::Continuation<'i, _C>,
-            _range: gll::runtime::Range<'i>,
-        ) {
-            match c.code {
+        fn step<'i>(self, mut p: gll::runtime::Parser<'_, 'i, _C, I>) {
+            match self {
                 #(#code_label_arms)*
             }
         }
