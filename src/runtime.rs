@@ -245,9 +245,9 @@ impl InputMatch<RangeInclusive<char>> for str {
 pub struct Parser<'a, 'i, C: CodeLabel, I: Input> {
     state: &'a mut ParserState<'i, C, I>,
     current: C,
-    pub saved: Option<ParseNode<'i, C::ParseNodeKind>>,
-    pub result: Range<'i>,
-    pub range: Range<'i>,
+    saved: Option<ParseNode<'i, C::ParseNodeKind>>,
+    result: Range<'i>,
+    remaining: Range<'i>,
 }
 
 struct ParserState<'i, C: CodeLabel, I: Input> {
@@ -331,7 +331,7 @@ impl<'i, C: CodeStep<I>, I: Input> Parser<'_, 'i, C, I> {
                     current: code,
                     saved,
                     result,
-                    range,
+                    remaining: range,
                 });
             }
 
@@ -366,14 +366,14 @@ impl<'i, C: CodeStep<I>, I: Input> Parser<'_, 'i, C, I> {
     where
         I::Slice: InputMatch<Pat>,
     {
-        let start = self.range.first();
+        let start = self.remaining.first();
         if start > self.state.last_input_pos {
             self.state.last_input_pos = start;
             self.state.expected_pats.clear();
         }
-        match self.state.forest.input(self.range).match_left(pat) {
+        match self.state.forest.input(self.remaining).match_left(pat) {
             Some(n) => {
-                let (matching, after, _) = self.range.split_at(n);
+                let (matching, after, _) = self.remaining.split_at(n);
                 if n > 0 {
                     self.state.last_input_pos = after.first();
                     self.state.expected_pats.clear();
@@ -383,7 +383,7 @@ impl<'i, C: CodeStep<I>, I: Input> Parser<'_, 'i, C, I> {
                     current: self.current,
                     saved: self.saved,
                     result: Range(self.result.join(matching).unwrap()),
-                    range: Range(after),
+                    remaining: Range(after),
                 })
             }
             None => {
@@ -403,19 +403,32 @@ impl<'i, C: CodeStep<I>, I: Input> Parser<'_, 'i, C, I> {
         I::Slice: InputMatch<Pat>,
     {
         // FIXME(eddyb) implement error reporting support like in `input_consume_left`
-        match self.state.forest.input(self.range).match_right(pat) {
+        match self.state.forest.input(self.remaining).match_right(pat) {
             Some(n) => {
-                let (before, matching, _) = self.range.split_at(self.range.len() - n);
+                let (before, matching, _) = self.remaining.split_at(self.remaining.len() - n);
                 Some(Parser {
                     state: self.state,
                     current: self.current,
                     saved: self.saved,
                     result: Range(matching.join(self.result.0).unwrap()),
-                    range: Range(before),
+                    remaining: Range(before),
                 })
             }
             None => None,
         }
+    }
+
+    // FIXME(eddyb) maybe specialize this further, for `forest_add_split`?
+    pub fn save(&mut self, kind: C::ParseNodeKind) {
+        let old_saved = self.saved.replace(ParseNode {
+            kind,
+            range: self.result,
+        });
+        assert_eq!(old_saved, None);
+    }
+
+    pub fn take_saved(&mut self) -> ParseNode<'i, C::ParseNodeKind> {
+        self.saved.take().unwrap()
     }
 
     pub fn forest_add_choice(&mut self, kind: C::ParseNodeKind, choice: C::ParseNodeKind) {
@@ -430,7 +443,12 @@ impl<'i, C: CodeStep<I>, I: Input> Parser<'_, 'i, C, I> {
             .insert(choice);
     }
 
-    pub fn forest_add_split(&mut self, kind: C::ParseNodeKind, split: usize) {
+    // FIXME(eddyb) safeguard this against misuse.
+    pub fn forest_add_split(
+        &mut self,
+        kind: C::ParseNodeKind,
+        left: ParseNode<'i, C::ParseNodeKind>,
+    ) {
         self.state
             .forest
             .possible_splits
@@ -439,7 +457,7 @@ impl<'i, C: CodeStep<I>, I: Input> Parser<'_, 'i, C, I> {
                 range: self.result,
             })
             .or_default()
-            .insert(split);
+            .insert(left.range.len());
     }
 
     pub fn spawn(&mut self, next: C) {
@@ -449,14 +467,14 @@ impl<'i, C: CodeStep<I>, I: Input> Parser<'_, 'i, C, I> {
                 saved: self.saved,
                 result: self.result,
             },
-            self.range,
+            self.remaining,
         );
     }
 
     pub fn call(&mut self, callee: C, next: C) {
         let call = Call {
             callee,
-            range: self.range,
+            range: self.remaining,
         };
         let next = Continuation {
             code: next,
@@ -493,7 +511,7 @@ impl<'i, C: CodeStep<I>, I: Input> Parser<'_, 'i, C, I> {
 
     pub fn ret(&mut self) {
         let call_result = self.result;
-        let remaining = self.range;
+        let remaining = self.remaining;
         let call = Call {
             callee: self.current.enclosing_fn(),
             range: Range(call_result.join(remaining.0).unwrap()),

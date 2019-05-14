@@ -583,7 +583,8 @@ macro_rules! thunk {
 }
 
 fn pop_saved<F: ContFn>(f: impl FnOnce(Src) -> Thunk<F>) -> Thunk<impl ContFn> {
-    f(quote!(p.saved.unwrap()))
+    thunk!(let saved = p.take_saved();)
+        + f(quote!(saved))
         + Thunk::new(|mut cont| {
             if let Some(&None) = cont.nested_frames.last() {
                 *cont.nested_frames.last_mut().unwrap() =
@@ -598,8 +599,8 @@ fn pop_saved<F: ContFn>(f: impl FnOnce(Src) -> Thunk<F>) -> Thunk<impl ContFn> {
         })
 }
 
-fn push_saved(saved: Src) -> Thunk<impl ContFn> {
-    thunk!(p.saved = Some(#saved);)
+fn push_saved(parse_node_kind: ParseNodeKind) -> Thunk<impl ContFn> {
+    thunk!(p.save(#parse_node_kind);)
         + Thunk::new(move |mut cont| {
             if let Some((ret_label, outer_fn_label)) = cont.nested_frames.pop().unwrap() {
                 let inner_fn_label = mem::replace(cont.fn_code_label, outer_fn_label);
@@ -756,14 +757,12 @@ fn concat_and_forest_add(
     right: Thunk<impl ContFn>,
     parse_node_kind: ParseNodeKind,
 ) -> Thunk<impl ContFn> {
-    left + push_saved(quote!(ParseNode {
-        kind: #left_parse_node_kind,
-        range: p.result,
-    })) + right
+    left + push_saved(left_parse_node_kind)
+        + right
         + pop_saved(move |saved| {
             thunk!(p.forest_add_split(
                 #parse_node_kind,
-                #saved.range.len(),
+                #saved,
             );)
         })
 }
