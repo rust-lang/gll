@@ -243,7 +243,7 @@ impl InputMatch<RangeInclusive<char>> for str {
 }
 
 pub struct Parser<'i, C: CodeLabel, I: Input> {
-    pub threads: Threads<'i, C>,
+    threads: Threads<'i, C>,
     gss: GraphStack<'i, C>,
     memoizer: Memoizer<'i, C>,
     forest: ParseForest<'i, C::ParseNodeKind, I>,
@@ -399,6 +399,10 @@ impl<'i, C: CodeStep<I>, I: Input> Parser<'i, C, I> {
             .insert(split);
     }
 
+    pub fn spawn(&mut self, next: Continuation<'i, C>, range: Range<'i>) {
+        self.threads.spawn(next, range);
+    }
+
     pub fn call(&mut self, call: Call<'i, C>, next: Continuation<'i, C>) {
         let returns = self.gss.returns.entry(call).or_default();
         if returns.insert(next) {
@@ -442,13 +446,13 @@ impl<'i, C: CodeStep<I>, I: Input> Parser<'i, C, I> {
     }
 }
 
-pub struct Threads<'i, C: CodeLabel> {
+struct Threads<'i, C: CodeLabel> {
     queue: BinaryHeap<Call<'i, Continuation<'i, C>>>,
     seen: BTreeSet<Call<'i, Continuation<'i, C>>>,
 }
 
 impl<'i, C: CodeLabel> Threads<'i, C> {
-    pub fn spawn(&mut self, next: Continuation<'i, C>, range: Range<'i>) {
+    fn spawn(&mut self, next: Continuation<'i, C>, range: Range<'i>) {
         let t = Call {
             callee: next,
             range,
@@ -457,7 +461,7 @@ impl<'i, C: CodeLabel> Threads<'i, C> {
             self.queue.push(t);
         }
     }
-    pub fn steal(&mut self) -> Option<Call<'i, Continuation<'i, C>>> {
+    fn steal(&mut self) -> Option<Call<'i, Continuation<'i, C>>> {
         if let Some(t) = self.queue.pop() {
             loop {
                 let old = self.seen.iter().rev().next().cloned();
@@ -516,7 +520,7 @@ impl<C: Ord> Ord for Call<'_, C> {
     }
 }
 
-pub struct GraphStack<'i, C: CodeLabel> {
+struct GraphStack<'i, C: CodeLabel> {
     returns: HashMap<Call<'i, C>, BTreeSet<Continuation<'i, C>>>,
 }
 
@@ -545,15 +549,12 @@ impl<C: CodeLabel> GraphStack<'_, C> {
     }
 }
 
-pub struct Memoizer<'i, C: CodeLabel> {
+struct Memoizer<'i, C: CodeLabel> {
     lengths: HashMap<Call<'i, C>, BTreeSet<usize>>,
 }
 
 impl<'i, C: CodeLabel> Memoizer<'i, C> {
-    pub fn results<'a>(
-        &'a self,
-        call: Call<'i, C>,
-    ) -> impl DoubleEndedIterator<Item = Range<'i>> + 'a {
+    fn results<'a>(&'a self, call: Call<'i, C>) -> impl DoubleEndedIterator<Item = Range<'i>> + 'a {
         self.lengths
             .get(&call)
             .into_iter()
@@ -563,7 +564,7 @@ impl<'i, C: CodeLabel> Memoizer<'i, C> {
                     .map(move |&len| Range(call.range.split_at(len).0))
             })
     }
-    pub fn longest_result(&self, call: Call<'i, C>) -> Option<Range<'i>> {
+    fn longest_result(&self, call: Call<'i, C>) -> Option<Range<'i>> {
         self.results(call).rev().next()
     }
 }
@@ -571,8 +572,8 @@ impl<'i, C: CodeLabel> Memoizer<'i, C> {
 /// A parse forest, in SPPF (Shared Packed Parse Forest) representation.
 pub struct ParseForest<'i, P: ParseNodeKind, I: Input> {
     input: Container<'i, I::Container>,
-    pub possible_choices: HashMap<ParseNode<'i, P>, BTreeSet<P>>,
-    pub possible_splits: HashMap<ParseNode<'i, P>, BTreeSet<usize>>,
+    possible_choices: HashMap<ParseNode<'i, P>, BTreeSet<P>>,
+    possible_splits: HashMap<ParseNode<'i, P>, BTreeSet<usize>>,
 }
 
 #[derive(Debug)]

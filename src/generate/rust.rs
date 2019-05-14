@@ -471,7 +471,7 @@ impl Continuation<'_> {
         if let Code::Label(ref label) = self.code {
             self.code = Code::Inline(quote!(
                 c.code = #label;
-                p.threads.spawn(c, _range);
+                p.spawn(c, _range);
             ));
         }
 
