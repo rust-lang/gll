@@ -1,31 +1,36 @@
 // HACK(eddyb) silence warnings from unused exports in the generated code.
 #![allow(unused)]
+#![allow(non_camel_case_types)]
 
 // HACK(eddyb) needed for bootstrapping.
 use crate as gll;
 
 include!(concat!(env!("OUT_DIR"), "/parse_grammar.rs"));
 
+use crate::proc_macro::{FlatToken, Span, TokenStream};
 use crate::runtime;
 use crate::scannerless::Pat as SPat;
 use std::ops::Bound;
 use std::str::FromStr;
 
-impl<Pat: From<SPat>> FromStr for crate::scannerless::WrapperHack<grammer::Grammar<Pat>> {
-    type Err = runtime::ParseError<runtime::LineColumn>;
-    fn from_str(src: &str) -> Result<Self, Self::Err> {
-        let mut grammar = grammer::Grammar::new();
-        Grammar::parse(src)?.with(|g| {
-            for rule_def in g.one().unwrap().rules {
-                let rule_def = rule_def.unwrap().one().unwrap();
-                grammar.define(rule_def.name.source(), rule_def.rule.one().unwrap().lower());
-            }
-        });
-        Ok(crate::scannerless::WrapperHack(grammar))
-    }
+pub fn parse_grammar<Pat: From<SPat>>(
+    stream: TokenStream,
+) -> Result<grammer::Grammar<Pat>, runtime::ParseError<Span>> {
+    let mut grammar = grammer::Grammar::new();
+    Grammar::parse(stream)?.with(|g| {
+        for rule_def in g.one().unwrap().rules {
+            let rule_def = rule_def.unwrap().one().unwrap();
+            let name = match rule_def.name.source() {
+                [FlatToken::Ident(ident)] => ident.to_string(),
+                _ => unreachable!(),
+            };
+            grammar.define(&name, rule_def.rule.one().unwrap().lower());
+        }
+    });
+    Ok(grammar)
 }
 
-impl Or<'_, '_, &str> {
+impl Or<'_, '_, TokenStream> {
     fn lower<Pat: From<SPat>>(self) -> grammer::RuleWithNamedFields<Pat> {
         let mut rules = self.rules.map(|rule| rule.unwrap().one().unwrap().lower());
         let first = rules.next().unwrap();
@@ -33,7 +38,7 @@ impl Or<'_, '_, &str> {
     }
 }
 
-impl Concat<'_, '_, &str> {
+impl Concat<'_, '_, TokenStream> {
     fn lower<Pat: From<SPat>>(self) -> grammer::RuleWithNamedFields<Pat> {
         self.rules
             .map(|rule| rule.unwrap().one().unwrap().lower())
@@ -41,33 +46,43 @@ impl Concat<'_, '_, &str> {
     }
 }
 
-impl Rule<'_, '_, &str> {
+impl Rule<'_, '_, TokenStream> {
     fn lower<Pat: From<SPat>>(self) -> grammer::RuleWithNamedFields<Pat> {
         let mut rule = self.rule.one().unwrap().lower();
         if let Some(modifier) = self.modifier {
             rule = modifier.one().unwrap().lower(rule);
         }
         if let Some(field) = self.field {
-            rule = rule.field(field.source());
+            let field = match field.source() {
+                [FlatToken::Ident(ident)] => ident.to_string(),
+                _ => unreachable!(),
+            };
+            rule = rule.field(&field);
         }
         rule
     }
 }
 
-impl Primary<'_, '_, &str> {
+impl Primary<'_, '_, TokenStream> {
     fn lower<Pat: From<SPat>>(self) -> grammer::RuleWithNamedFields<Pat> {
         match self {
             Primary::Eat(pat) => grammer::eat(pat.one().unwrap().lower()),
             Primary::NegativeLookahead { pat } => {
                 grammer::negative_lookahead(pat.one().unwrap().lower())
             }
-            Primary::Call(name) => grammer::call(name.source()),
+            Primary::Call(name) => {
+                let name = match name.source() {
+                    [FlatToken::Ident(ident)] => ident.to_string(),
+                    _ => unreachable!(),
+                };
+                grammer::call(&name)
+            }
             Primary::Group { or } => or.map_or_else(grammer::empty, |or| or.one().unwrap().lower()),
         }
     }
 }
 
-impl Modifier<'_, '_, &str> {
+impl Modifier<'_, '_, TokenStream> {
     fn lower<Pat: From<SPat>>(
         self,
         rule: grammer::RuleWithNamedFields<Pat>,
@@ -90,7 +105,7 @@ impl Modifier<'_, '_, &str> {
     }
 }
 
-impl SepKind<'_, '_, &str> {
+impl SepKind<'_, '_, TokenStream> {
     fn lower(&self) -> grammer::SepKind {
         match self {
             SepKind::Simple(_) => grammer::SepKind::Simple,
@@ -99,11 +114,14 @@ impl SepKind<'_, '_, &str> {
     }
 }
 
-impl Pattern<'_, '_, &str> {
+impl Pattern<'_, '_, TokenStream> {
     fn lower(self) -> SPat {
-        fn unescape<T>(handle: Handle<'_, '_, &str, T>) -> String {
+        fn unescape<T>(handle: Handle<'_, '_, TokenStream, T>) -> String {
             let mut out = String::new();
-            let s = handle.source();
+            let s = match handle.source() {
+                [FlatToken::Literal(lit)] => lit.to_string(),
+                _ => unreachable!(),
+            };
             let mut chars = s[1..s.len() - 1].chars();
             while let Some(c) = chars.next() {
                 let c = match c {

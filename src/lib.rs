@@ -18,5 +18,12 @@ pub mod runtime;
 #[forbid(unsafe_code)]
 pub mod scannerless;
 
+// HACK(eddyb) this contains impls for types in `proc_macro`, which depend on
+// `runtime`. Those parts of `runtime` should be moved to `grammer::input`.
+#[forbid(unsafe_code)]
+mod proc_macro_runtime;
+
 #[forbid(unsafe_code)]
 mod parse_grammar;
+
+pub use parse_grammar::parse_grammar;
