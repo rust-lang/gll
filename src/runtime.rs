@@ -244,7 +244,9 @@ impl InputMatch<RangeInclusive<char>> for str {
 
 pub struct Parser<'a, 'i, C: CodeLabel, I: Input> {
     state: &'a mut ParserState<'i, C, I>,
-    current: Continuation<'i, C>,
+    current: C,
+    saved: Option<ParseNode<'i, C::ParseNodeKind>>,
+    result: Range<'i>,
     remaining: Range<'i>,
 }
 
@@ -314,10 +316,21 @@ impl<'i, C: CodeStep<I>, I: Input> Parser<'_, 'i, C, I> {
             );
 
             // Run all threads to completion.
-            while let Some(Call { callee, range }) = state.threads.steal() {
-                callee.code.step(Parser {
+            while let Some(next) = state.threads.steal() {
+                let Call {
+                    callee:
+                        Continuation {
+                            code,
+                            saved,
+                            result,
+                        },
+                    range,
+                } = next;
+                code.step(Parser {
                     state: &mut state,
-                    current: callee,
+                    current: code,
+                    saved,
+                    result,
                     remaining: range,
                 });
             }
@@ -367,10 +380,9 @@ impl<'i, C: CodeStep<I>, I: Input> Parser<'_, 'i, C, I> {
                 }
                 Some(Parser {
                     state: self.state,
-                    current: Continuation {
-                        result: Range(self.current.result.join(matching).unwrap()),
-                        ..self.current
-                    },
+                    current: self.current,
+                    saved: self.saved,
+                    result: Range(self.result.join(matching).unwrap()),
                     remaining: Range(after),
                 })
             }
@@ -396,10 +408,9 @@ impl<'i, C: CodeStep<I>, I: Input> Parser<'_, 'i, C, I> {
                 let (before, matching, _) = self.remaining.split_at(self.remaining.len() - n);
                 Some(Parser {
                     state: self.state,
-                    current: Continuation {
-                        result: Range(matching.join(self.current.result.0).unwrap()),
-                        ..self.current
-                    },
+                    current: self.current,
+                    saved: self.saved,
+                    result: Range(matching.join(self.result.0).unwrap()),
                     remaining: Range(before),
                 })
             }
@@ -409,15 +420,15 @@ impl<'i, C: CodeStep<I>, I: Input> Parser<'_, 'i, C, I> {
 
     // FIXME(eddyb) maybe specialize this further, for `forest_add_split`?
     pub fn save(&mut self, kind: C::ParseNodeKind) {
-        let old_saved = self.current.saved.replace(ParseNode {
+        let old_saved = self.saved.replace(ParseNode {
             kind,
-            range: self.current.result,
+            range: self.result,
         });
         assert_eq!(old_saved, None);
     }
 
     pub fn take_saved(&mut self) -> ParseNode<'i, C::ParseNodeKind> {
-        self.current.saved.take().unwrap()
+        self.saved.take().unwrap()
     }
 
     pub fn forest_add_choice(&mut self, kind: C::ParseNodeKind, choice: C::ParseNodeKind) {
@@ -426,7 +437,7 @@ impl<'i, C: CodeStep<I>, I: Input> Parser<'_, 'i, C, I> {
             .possible_choices
             .entry(ParseNode {
                 kind,
-                range: self.current.result,
+                range: self.result,
             })
             .or_default()
             .insert(choice);
@@ -443,7 +454,7 @@ impl<'i, C: CodeStep<I>, I: Input> Parser<'_, 'i, C, I> {
             .possible_splits
             .entry(ParseNode {
                 kind,
-                range: self.current.result,
+                range: self.result,
             })
             .or_default()
             .insert(left.range.len());
@@ -453,7 +464,8 @@ impl<'i, C: CodeStep<I>, I: Input> Parser<'_, 'i, C, I> {
         self.state.threads.spawn(
             Continuation {
                 code: next,
-                ..self.current
+                saved: self.saved,
+                result: self.result,
             },
             self.remaining,
         );
@@ -466,7 +478,8 @@ impl<'i, C: CodeStep<I>, I: Input> Parser<'_, 'i, C, I> {
         };
         let next = Continuation {
             code: next,
-            ..self.current
+            saved: self.saved,
+            result: self.result,
         };
         let returns = self.state.gss.returns.entry(call).or_default();
         if returns.insert(next) {
@@ -497,10 +510,10 @@ impl<'i, C: CodeStep<I>, I: Input> Parser<'_, 'i, C, I> {
     }
 
     pub fn ret(&mut self) {
-        let call_result = self.current.result;
+        let call_result = self.result;
         let remaining = self.remaining;
         let call = Call {
-            callee: self.current.code.enclosing_fn(),
+            callee: self.current.enclosing_fn(),
             range: Range(call_result.join(remaining.0).unwrap()),
         };
         if self
