@@ -169,4 +169,11 @@ testcases![
     ),
     b: 1:3-1:4
 }";
+
+    repeat_many_trailing {
+        A = "a"* %% "b";
+    }:
+    A("abab") => "1:1-1:5",
+    A("aba") => "1:1-1:4",
+    A("b") => r#"1:1: error: expected ["a"]"#;
 ];

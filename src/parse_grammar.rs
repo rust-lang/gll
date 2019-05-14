@@ -74,13 +74,27 @@ impl Modifier<'_, '_, &str> {
     ) -> grammer::RuleWithNamedFields<Pat> {
         match self {
             Modifier::Opt(_) => rule.opt(),
-            Modifier::Repeat { repeat, sep } => {
-                let sep = sep.map(|sep| sep.one().unwrap().lower());
+            Modifier::Repeat { repeat, sep, kind } => {
+                let sep = sep.map(|sep| {
+                    (
+                        sep.one().unwrap().lower(),
+                        kind.unwrap().one().unwrap().lower(),
+                    )
+                });
                 match repeat.one().unwrap() {
                     Repeat::Many(_) => rule.repeat_many(sep),
                     Repeat::More(_) => rule.repeat_more(sep),
                 }
             }
+        }
+    }
+}
+
+impl SepKind<'_, '_, &str> {
+    fn lower(&self) -> grammer::SepKind {
+        match self {
+            SepKind::Simple(_) => grammer::SepKind::Simple,
+            SepKind::Trailing(_) => grammer::SepKind::Trailing,
         }
     }
 }
