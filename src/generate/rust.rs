@@ -747,7 +747,7 @@ fn reify_as(label: Rc<CodeLabel>) -> Thunk<impl ContFn> {
 }
 
 fn forest_add_choice(parse_node_kind: &ParseNodeKind, choice: ParseNodeKind) -> Thunk<impl ContFn> {
-    thunk!(p.forest_add_choice(#parse_node_kind, p.fn_input.subtract_suffix(p.range), #choice);)
+    thunk!(p.forest_add_choice(#parse_node_kind, #choice);)
 }
 
 fn concat_and_forest_add(
@@ -766,7 +766,6 @@ fn concat_and_forest_add(
         + pop_saved(move |saved| {
             thunk!(p.forest_add_split(
                 #parse_node_kind,
-                p.fn_input.subtract_suffix(p.range),
                 #saved.range.len(),
             );)
         })

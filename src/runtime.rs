@@ -247,6 +247,7 @@ pub struct Parser<'a, 'i, C: CodeLabel, I: Input> {
     current: C,
     pub fn_input: Range<'i>,
     pub saved: Option<ParseNode<'i, C::ParseNodeKind>>,
+    result: Range<'i>,
     pub range: Range<'i>,
 }
 
@@ -311,6 +312,7 @@ impl<'i, C: CodeStep<I>, I: Input> Parser<'_, 'i, C, I> {
                     code: call.callee,
                     fn_input: call.range,
                     saved: None,
+                    result: Range(call.range.frontiers().0),
                 },
                 call.range,
             );
@@ -323,6 +325,7 @@ impl<'i, C: CodeStep<I>, I: Input> Parser<'_, 'i, C, I> {
                             code,
                             fn_input,
                             saved,
+                            result,
                         },
                     range,
                 } = next;
@@ -331,6 +334,7 @@ impl<'i, C: CodeStep<I>, I: Input> Parser<'_, 'i, C, I> {
                     current: code,
                     fn_input,
                     saved,
+                    result,
                     range,
                 });
             }
@@ -373,7 +377,7 @@ impl<'i, C: CodeStep<I>, I: Input> Parser<'_, 'i, C, I> {
         }
         match self.state.forest.input(self.range).match_left(pat) {
             Some(n) => {
-                let after = Range(self.range.split_at(n).1);
+                let (matching, after, _) = self.range.split_at(n);
                 if n > 0 {
                     self.state.last_input_pos = after.first();
                     self.state.expected_pats.clear();
@@ -383,7 +387,8 @@ impl<'i, C: CodeStep<I>, I: Input> Parser<'_, 'i, C, I> {
                     current: self.current,
                     fn_input: self.fn_input,
                     saved: self.saved,
-                    range: after,
+                    result: Range(self.result.join(matching).unwrap()),
+                    range: Range(after),
                 })
             }
             None => {
@@ -405,38 +410,40 @@ impl<'i, C: CodeStep<I>, I: Input> Parser<'_, 'i, C, I> {
         // FIXME(eddyb) implement error reporting support like in `input_consume_left`
         match self.state.forest.input(self.range).match_right(pat) {
             Some(n) => {
-                let before = Range(self.range.split_at(self.range.len() - n).0);
+                let (before, matching, _) = self.range.split_at(self.range.len() - n);
                 Some(Parser {
                     state: self.state,
                     current: self.current,
                     fn_input: self.fn_input,
                     saved: self.saved,
-                    range: before,
+                    result: Range(matching.join(self.result.0).unwrap()),
+                    range: Range(before),
                 })
             }
             None => None,
         }
     }
 
-    pub fn forest_add_choice(
-        &mut self,
-        kind: C::ParseNodeKind,
-        range: Range<'i>,
-        choice: C::ParseNodeKind,
-    ) {
+    pub fn forest_add_choice(&mut self, kind: C::ParseNodeKind, choice: C::ParseNodeKind) {
         self.state
             .forest
             .possible_choices
-            .entry(ParseNode { kind, range })
+            .entry(ParseNode {
+                kind,
+                range: self.result,
+            })
             .or_default()
             .insert(choice);
     }
 
-    pub fn forest_add_split(&mut self, kind: C::ParseNodeKind, range: Range<'i>, split: usize) {
+    pub fn forest_add_split(&mut self, kind: C::ParseNodeKind, split: usize) {
         self.state
             .forest
             .possible_splits
-            .entry(ParseNode { kind, range })
+            .entry(ParseNode {
+                kind,
+                range: self.result,
+            })
             .or_default()
             .insert(split);
     }
@@ -447,6 +454,7 @@ impl<'i, C: CodeStep<I>, I: Input> Parser<'_, 'i, C, I> {
                 code: next,
                 fn_input: self.fn_input,
                 saved: self.saved,
+                result: self.result,
             },
             self.range,
         );
@@ -461,15 +469,21 @@ impl<'i, C: CodeStep<I>, I: Input> Parser<'_, 'i, C, I> {
             code: next,
             fn_input: self.fn_input,
             saved: self.saved,
+            result: self.result,
         };
         let returns = self.state.gss.returns.entry(call).or_default();
         if returns.insert(next) {
             if returns.len() > 1 {
                 if let Some(lengths) = self.state.memoizer.lengths.get(&call) {
                     for &len in lengths {
-                        self.state
-                            .threads
-                            .spawn(next, Range(call.range.split_at(len).1));
+                        let (call_result, remaining, _) = call.range.split_at(len);
+                        self.state.threads.spawn(
+                            Continuation {
+                                result: Range(next.result.join(call_result).unwrap()),
+                                ..next
+                            },
+                            Range(remaining),
+                        );
                     }
                 }
             } else {
@@ -478,6 +492,7 @@ impl<'i, C: CodeStep<I>, I: Input> Parser<'_, 'i, C, I> {
                         code: call.callee,
                         fn_input: call.range,
                         saved: None,
+                        result: Range(call.range.frontiers().0),
                     },
                     call.range,
                 );
@@ -486,22 +501,30 @@ impl<'i, C: CodeStep<I>, I: Input> Parser<'_, 'i, C, I> {
     }
 
     pub fn ret(&mut self) {
+        let call_result = self.result;
+        let remaining = self.range;
         let call = Call {
             callee: self.current.enclosing_fn(),
-            range: self.fn_input,
+            range: Range(call_result.join(remaining.0).unwrap()),
         };
-        let remaining = self.range;
+        assert_eq!(call.range, self.fn_input);
         if self
             .state
             .memoizer
             .lengths
             .entry(call)
             .or_default()
-            .insert(call.range.subtract_suffix(remaining).len())
+            .insert(call_result.len())
         {
             if let Some(returns) = self.state.gss.returns.get(&call) {
                 for &next in returns {
-                    self.state.threads.spawn(next, remaining);
+                    self.state.threads.spawn(
+                        Continuation {
+                            result: Range(next.result.join(call_result.0).unwrap()),
+                            ..next
+                        },
+                        remaining,
+                    );
                 }
             }
         }
@@ -550,6 +573,7 @@ struct Continuation<'i, C: CodeLabel> {
     code: C,
     fn_input: Range<'i>,
     saved: Option<ParseNode<'i, C::ParseNodeKind>>,
+    result: Range<'i>,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
