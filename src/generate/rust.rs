@@ -116,7 +116,7 @@ impl<Pat> RuleTypeMethods for Rule<Pat> {
 
     fn field_type(&self, path: &[usize]) -> Src {
         match self {
-            Rule::Empty | Rule::Eat(_) | Rule::NegativeLookahead(_) => {
+            Rule::Empty | Rule::Eat(_) => {
                 assert_eq!(path, []);
                 quote!(())
             }
@@ -199,7 +199,6 @@ impl<Pat: Ord + Hash + RustInputPat> RuleRuleMapMethods<Pat> for Rule<Pat> {
         match self {
             Rule::Empty => "".to_string(),
             Rule::Eat(pat) => pat.rust_matcher().to_pretty_string(),
-            Rule::NegativeLookahead(pat) => format!("!{}", pat.rust_matcher().to_pretty_string()),
             Rule::Call(r) => r.clone(),
             Rule::Concat([left, right]) => format!(
                 "({} {})",
@@ -246,7 +245,7 @@ impl<Pat: Ord + Hash + RustInputPat> RuleRuleMapMethods<Pat> for Rule<Pat> {
         rules: &RuleMap<'_, Pat>,
     ) -> ParseNodeShape<ParseNodeKind> {
         match &**rc_self {
-            Rule::Empty | Rule::Eat(_) | Rule::NegativeLookahead(_) => ParseNodeShape::Opaque,
+            Rule::Empty | Rule::Eat(_) => ParseNodeShape::Opaque,
             Rule::Call(_) => unreachable!(),
             Rule::Concat([left, right]) => {
                 ParseNodeShape::Split(left.parse_node_kind(rules), right.parse_node_kind(rules))
@@ -802,10 +801,6 @@ impl<Pat: Ord + Hash + RustInputPat> RuleGenerateMethods<Pat> for Rule<Pat> {
                 let pat = pat.rust_matcher();
                 check(quote!(let Some(_range) = p.input_consume_left(_range, &(#pat)))).apply(cont)
             }
-            (Rule::NegativeLookahead(pat), _) => {
-                let pat = pat.rust_matcher();
-                check(quote!(!p.input_lookahead_left(_range, &(#pat)))).apply(cont)
-            }
             (Rule::Call(r), _) => call(Rc::new(CodeLabel::NamedRule(r.clone()))).apply(cont),
             (Rule::Concat([left, right]), None) => {
                 (left.generate_parse(None) + right.generate_parse(None)).apply(cont)
@@ -902,7 +897,6 @@ impl<Pat: Ord + Hash + RustInputPat> RuleGenerateMethods<Pat> for Rule<Pat> {
         match self {
             Rule::Empty
             | Rule::Eat(_)
-            | Rule::NegativeLookahead(_)
             | Rule::Call(_)
             | Rule::RepeatMany(..)
             | Rule::RepeatMore(..) => {

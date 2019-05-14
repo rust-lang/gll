@@ -1,15 +1,13 @@
 use crate::generate::rust::RustInputPat;
 use crate::generate::src::{quotable_to_src, quote, Src, ToSrc};
-use crate::runtime::{Input, InputMatch, Range};
 use crate::scannerless::Pat as SPat;
-use grammer::{self, call, eat, MatchesEmpty, MaybeKnown};
-use indexing::{proof::Provable, Container, Index, Unknown};
+use grammer::{call, eat, MatchesEmpty, MaybeKnown};
 pub use proc_macro2::{
     Delimiter, Ident, LexError, Literal, Punct, Spacing, Span, TokenStream, TokenTree,
 };
-use std::{ops, str::FromStr};
+use std::str::FromStr;
 
-pub type Grammar = crate::scannerless::WrapperHack<grammer::Grammar<Pat>>;
+pub type Grammar = grammer::Grammar<Pat>;
 
 pub fn builtin() -> Grammar {
     let mut g = grammer::Grammar::new();
@@ -44,7 +42,7 @@ pub fn builtin() -> Grammar {
         ident | punct | literal | group('(', ')') | group('[', ']') | group('{', '}'),
     );
 
-    crate::scannerless::WrapperHack(g)
+    g
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -67,6 +65,13 @@ impl FromStr for Pat {
     }
 }
 
+// FIXME(eddyb) perhaps support `TryFrom`/`TryInto` directly in `grammer`?
+impl From<&str> for Pat {
+    fn from(s: &str) -> Self {
+        s.parse().unwrap()
+    }
+}
+
 impl From<FlatTokenPat<String>> for Pat {
     fn from(pat: FlatTokenPat<String>) -> Self {
         Pat(vec![pat])
@@ -76,7 +81,7 @@ impl From<FlatTokenPat<String>> for Pat {
 impl From<SPat> for Pat {
     fn from(pat: SPat) -> Self {
         match pat {
-            SPat::String(s) => s.parse().unwrap(),
+            SPat::String(s) => s[..].into(),
             SPat::Range(..) => unimplemented!("char ranges are unsupported"),
         }
     }
@@ -185,7 +190,7 @@ impl FlatToken {
     }
 }
 
-fn flatten(stream: TokenStream, out: &mut Vec<FlatToken>) {
+pub(crate) fn flatten(stream: TokenStream, out: &mut Vec<FlatToken>) {
     for tt in stream {
         let flat = match tt {
             TokenTree::Group(tt) => {
@@ -214,84 +219,5 @@ fn flatten(stream: TokenStream, out: &mut Vec<FlatToken>) {
             TokenTree::Literal(tt) => FlatToken::Literal(tt),
         };
         out.push(flat);
-    }
-}
-
-impl Input for TokenStream {
-    type Container = Vec<FlatToken>;
-    type Slice = [FlatToken];
-    type SourceInfo = ops::Range<Span>;
-    type SourceInfoPoint = Span;
-    fn to_container(self) -> Self::Container {
-        let mut out = vec![];
-        flatten(self, &mut out);
-        out
-    }
-    fn slice<'b, 'i>(
-        input: &'b Container<'i, Self::Container>,
-        range: Range<'i>,
-    ) -> &'b Self::Slice {
-        &input[range.0]
-    }
-    fn source_info<'i>(
-        input: &Container<'i, Self::Container>,
-        range: Range<'i>,
-    ) -> Self::SourceInfo {
-        // FIXME(eddyb) should be joining up spans, but the API
-        // for that is still "semver-exempt" in `proc-macro2`.
-        let last = range
-            .nonempty()
-            .map(|r| r.last().no_proof())
-            .unwrap_or(range.past_the_end());
-        Self::source_info_point(input, range.first())..Self::source_info_point(input, last)
-    }
-    fn source_info_point<'i>(
-        input: &Container<'i, Self::Container>,
-        index: Index<'i, Unknown>,
-    ) -> Self::SourceInfoPoint {
-        // Try to get as much information as possible.
-        let (before, after) = input.split_at(index);
-        let before = &input[before];
-        let after = &input[after];
-        if let Some(first) = after.first() {
-            first.span()
-        } else if let Some(last) = before.last() {
-            // Not correct but we're at the end of the input anyway.
-            last.span()
-        } else {
-            // HACK(eddyb) last resort, make a span up
-            // (a better option should exist)
-            Span::call_site()
-        }
-    }
-}
-
-impl InputMatch<&'static [FlatTokenPat<&'static str>]> for [FlatToken] {
-    fn match_left(&self, &pat: &&[FlatTokenPat<&str>]) -> Option<usize> {
-        if self
-            .iter()
-            .zip(pat)
-            .take_while(|(t, p)| t.matches_pat(p))
-            .count()
-            == pat.len()
-        {
-            Some(pat.len())
-        } else {
-            None
-        }
-    }
-    fn match_right(&self, &pat: &&[FlatTokenPat<&str>]) -> Option<usize> {
-        if self
-            .iter()
-            .zip(pat)
-            .rev()
-            .take_while(|(t, p)| t.matches_pat(p))
-            .count()
-            == pat.len()
-        {
-            Some(pat.len())
-        } else {
-            None
-        }
     }
 }
