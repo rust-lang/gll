@@ -567,9 +567,16 @@ impl<'i, C: CodeLabel> Threads<'i, C> {
 struct Continuation<'i, C: CodeLabel> {
     code: C,
     saved: Option<ParseNode<'i, C::ParseNodeKind>>,
+    // FIXME(eddyb) for GC purposes, this would also need to be a `ParseNode`,
+    // except that's not always the case? But `ParseNode | Range` seems likely
+    // to be a deoptimization, especially if `ParseNode` stops containing a
+    // `Range` (e.g. if it's an index in a node array).
     result: Range<'i>,
 }
 
+// TODO(eddyb) figure out if `Call<Continuation<C>>` can be optimized,
+// based on the fact that `result.end == range.start` should always hold.
+// (Also, `range.end` is constant across a whole parse)
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 struct Call<'i, C> {
     callee: C,
