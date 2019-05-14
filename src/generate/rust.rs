@@ -470,7 +470,7 @@ impl Continuation<'_> {
     fn to_inline(&mut self) -> &mut Src {
         if let Code::Label(ref label) = self.code {
             self.code = Code::Inline(quote!(
-                p.spawn(#label);
+                rt.spawn(#label);
             ));
         }
 
@@ -583,7 +583,7 @@ macro_rules! thunk {
 }
 
 fn pop_saved<F: ContFn>(f: impl FnOnce(Src) -> Thunk<F>) -> Thunk<impl ContFn> {
-    thunk!(let saved = p.take_saved();)
+    thunk!(let saved = rt.take_saved();)
         + f(quote!(saved))
         + Thunk::new(|mut cont| {
             if let Some(&None) = cont.nested_frames.last() {
@@ -600,7 +600,7 @@ fn pop_saved<F: ContFn>(f: impl FnOnce(Src) -> Thunk<F>) -> Thunk<impl ContFn> {
 }
 
 fn push_saved(parse_node_kind: ParseNodeKind) -> Thunk<impl ContFn> {
-    thunk!(p.save(#parse_node_kind);)
+    thunk!(rt.save(#parse_node_kind);)
         + Thunk::new(move |mut cont| {
             if let Some((ret_label, outer_fn_label)) = cont.nested_frames.pop().unwrap() {
                 let inner_fn_label = mem::replace(cont.fn_code_label, outer_fn_label);
@@ -627,14 +627,14 @@ fn call(callee: Rc<CodeLabel>) -> Thunk<impl ContFn> {
     Thunk::new(move |mut cont| {
         let label = cont.to_label().clone();
         cont.code = Code::Inline(quote!(
-            p.call(#callee, #label);
+            rt.call(#callee, #label);
         ));
         cont
     })
 }
 
 fn ret() -> Thunk<impl ContFn> {
-    thunk!(p.ret();)
+    thunk!(rt.ret();)
         + Thunk::new(|mut cont| {
             assert!(cont.to_inline().is_empty());
             cont
@@ -748,7 +748,7 @@ fn reify_as(label: Rc<CodeLabel>) -> Thunk<impl ContFn> {
 }
 
 fn forest_add_choice(parse_node_kind: &ParseNodeKind, choice: ParseNodeKind) -> Thunk<impl ContFn> {
-    thunk!(p.forest_add_choice(#parse_node_kind, #choice);)
+    thunk!(rt.forest_add_choice(#parse_node_kind, #choice);)
 }
 
 fn concat_and_forest_add(
@@ -760,7 +760,7 @@ fn concat_and_forest_add(
     left + push_saved(left_parse_node_kind)
         + right
         + pop_saved(move |saved| {
-            thunk!(p.forest_add_split(
+            thunk!(rt.forest_add_split(
                 #parse_node_kind,
                 #saved,
             );)
@@ -792,7 +792,7 @@ impl<Pat: Ord + Hash + RustInputPat> RuleGenerateMethods<Pat> for Rule<Pat> {
             (Rule::Empty, _) => cont,
             (Rule::Eat(pat), _) => {
                 let pat = pat.rust_matcher();
-                check(quote!(let Some(mut p) = p.input_consume_left(&(#pat)))).apply(cont)
+                check(quote!(let Some(mut rt) = rt.input_consume_left(&(#pat)))).apply(cont)
             }
             (Rule::Call(r), _) => call(Rc::new(CodeLabel::NamedRule(r.clone()))).apply(cont),
             (Rule::Concat([left, right]), None) => {
@@ -942,7 +942,7 @@ where
                     gll::runtime::ParseError<I::SourceInfoPoint>,
                 >
             {
-                gll::runtime::Parser::parse(
+                gll::runtime::Runtime::parse(
                     input,
                     #code_label,
                     #parse_node_kind,
@@ -1387,7 +1387,7 @@ where
     quote!(impl<I> gll::runtime::CodeStep<I> for _C
         where I: gll::input::Input<Slice = #rust_slice_ty>,
     {
-        fn step<'i>(self, mut p: gll::runtime::Parser<'_, 'i, _C, I>) {
+        fn step<'i>(self, mut rt: gll::runtime::Runtime<'_, 'i, _C, I>) {
             match self {
                 #(#code_label_arms)*
             }

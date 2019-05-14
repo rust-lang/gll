@@ -8,19 +8,14 @@ use std::fmt;
 use std::hash::Hash;
 use std::io::{self, Write};
 
-pub struct Parser<'a, 'i, C: CodeLabel, I: Input> {
-    state: &'a mut ParserState<'i, C, I>,
-    current: C,
-    saved: Option<ParseNode<'i, C::ParseNodeKind>>,
+pub struct Parser<'a, 'i, P: ParseNodeKind, I: Input> {
+    state: &'a mut ParserState<'i, P, I>,
     result: Range<'i>,
     remaining: Range<'i>,
 }
 
-struct ParserState<'i, C: CodeLabel, I: Input> {
-    threads: Threads<'i, C>,
-    gss: GraphStack<'i, C>,
-    memoizer: Memoizer<'i, C>,
-    forest: ParseForest<'i, C::ParseNodeKind, I>,
+struct ParserState<'i, P: ParseNodeKind, I: Input> {
+    forest: ParseForest<'i, P, I>,
     last_input_pos: Index<'i, Unknown>,
     expected_pats: Vec<&'static dyn fmt::Debug>,
 }
@@ -33,18 +28,156 @@ pub struct ParseError<A> {
 
 pub type ParseResult<A, T> = Result<T, ParseError<A>>;
 
-impl<'i, C: CodeStep<I>, I: Input> Parser<'_, 'i, C, I> {
+impl<'i, P: ParseNodeKind, I: Input> Parser<'_, 'i, P, I> {
+    pub fn parse_with(
+        input: I,
+        f: impl for<'i2> FnOnce(Parser<'_, 'i2, P, I>) -> Option<ParseNode<'i2, P>>,
+    ) -> ParseResult<I::SourceInfoPoint, OwnedParseForestAndNode<P, I>> {
+        ErasableL::indexing_scope(input.to_container(), |lifetime, input| {
+            let range = Range(input.range());
+            let mut state = ParserState {
+                forest: ParseForest {
+                    input,
+                    possible_choices: HashMap::new(),
+                    possible_splits: HashMap::new(),
+                },
+                last_input_pos: range.first(),
+                expected_pats: vec![],
+            };
+
+            let result = f(Parser {
+                state: &mut state,
+                result: Range(range.frontiers().0),
+                remaining: range,
+            });
+
+            let error = ParseError {
+                at: I::source_info_point(&state.forest.input, state.last_input_pos),
+                expected: state.expected_pats,
+            };
+            match result {
+                None => Err(error),
+                Some(node) => {
+                    // The result is only a successful parse if it's as long as the input.
+                    if node.range == range {
+                        Ok(OwnedParseForestAndNode::pack(
+                            lifetime,
+                            (state.forest, node),
+                        ))
+                    } else {
+                        Err(error)
+                    }
+                }
+            }
+        })
+    }
+
+    pub fn input_consume_left<'a, Pat: fmt::Debug>(
+        &'a mut self,
+        pat: &'static Pat,
+    ) -> Option<Parser<'a, 'i, P, I>>
+    where
+        I::Slice: InputMatch<Pat>,
+    {
+        let start = self.remaining.first();
+        if start > self.state.last_input_pos {
+            self.state.last_input_pos = start;
+            self.state.expected_pats.clear();
+        }
+        match self.state.forest.input(self.remaining).match_left(pat) {
+            Some(n) => {
+                let (matching, after, _) = self.remaining.split_at(n);
+                if n > 0 {
+                    self.state.last_input_pos = after.first();
+                    self.state.expected_pats.clear();
+                }
+                Some(Parser {
+                    state: self.state,
+                    result: Range(self.result.join(matching).unwrap()),
+                    remaining: Range(after),
+                })
+            }
+            None => {
+                if start == self.state.last_input_pos {
+                    self.state.expected_pats.push(pat);
+                }
+                None
+            }
+        }
+    }
+
+    pub fn input_consume_right<'a, Pat>(
+        &'a mut self,
+        pat: &'static Pat,
+    ) -> Option<Parser<'a, 'i, P, I>>
+    where
+        I::Slice: InputMatch<Pat>,
+    {
+        // FIXME(eddyb) implement error reporting support like in `input_consume_left`
+        match self.state.forest.input(self.remaining).match_right(pat) {
+            Some(n) => {
+                let (before, matching, _) = self.remaining.split_at(self.remaining.len() - n);
+                Some(Parser {
+                    state: self.state,
+                    result: Range(matching.join(self.result.0).unwrap()),
+                    remaining: Range(before),
+                })
+            }
+            None => None,
+        }
+    }
+
+    pub fn forest_add_choice(&mut self, kind: P, choice: P) {
+        self.state
+            .forest
+            .possible_choices
+            .entry(ParseNode {
+                kind,
+                range: self.result,
+            })
+            .or_default()
+            .insert(choice);
+    }
+
+    // FIXME(eddyb) safeguard this against misuse.
+    pub fn forest_add_split(&mut self, kind: P, left: ParseNode<'i, P>) {
+        self.state
+            .forest
+            .possible_splits
+            .entry(ParseNode {
+                kind,
+                range: self.result,
+            })
+            .or_default()
+            .insert(left.range.len());
+    }
+}
+
+pub struct Runtime<'a, 'i, C: CodeLabel, I: Input> {
+    parser: Parser<'a, 'i, C::ParseNodeKind, I>,
+    state: &'a mut RuntimeState<'i, C>,
+    current: C,
+    saved: Option<ParseNode<'i, C::ParseNodeKind>>,
+}
+
+struct RuntimeState<'i, C: CodeLabel> {
+    threads: Threads<'i, C>,
+    gss: GraphStack<'i, C>,
+    memoizer: Memoizer<'i, C>,
+}
+
+impl<'i, C: CodeStep<I>, I: Input> Runtime<'_, 'i, C, I> {
     pub fn parse(
         input: I,
         callee: C,
         kind: C::ParseNodeKind,
     ) -> ParseResult<I::SourceInfoPoint, OwnedParseForestAndNode<C::ParseNodeKind, I>> {
-        ErasableL::indexing_scope(input.to_container(), |lifetime, input| {
+        Parser::parse_with(input, |parser| {
             let call = Call {
                 callee,
-                range: Range(input.range()),
+                range: parser.remaining,
             };
-            let mut state = ParserState {
+            let mut state = RuntimeState {
                 threads: Threads {
                     queue: BinaryHeap::new(),
                     seen: BTreeSet::new(),
@@ -55,13 +188,6 @@ impl<'i, C: CodeStep<I>, I: Input> Parser<'_, 'i, C, I> {
                 memoizer: Memoizer {
                     lengths: HashMap::new(),
                 },
-                forest: ParseForest {
-                    input,
-                    possible_choices: HashMap::new(),
-                    possible_splits: HashMap::new(),
-                },
-                last_input_pos: call.range.first(),
-                expected_pats: vec![],
             };
 
             // Start with one thread, at the provided entry-point.
@@ -85,94 +211,60 @@ impl<'i, C: CodeStep<I>, I: Input> Parser<'_, 'i, C, I> {
                         },
                     range,
                 } = next;
-                code.step(Parser {
+                code.step(Runtime {
+                    parser: Parser {
+                        state: parser.state,
+                        result,
+                        remaining: range,
+                    },
                     state: &mut state,
                     current: code,
                     saved,
-                    result,
-                    remaining: range,
                 });
             }
 
             // If the function call we started with ever returned,
             // we will find an entry for it in the memoizer, from
-            // which we pick the longest match, which is only a
-            // successful parse if it's as long as the input.
-            let error = ParseError {
-                at: I::source_info_point(&state.forest.input, state.last_input_pos),
-                expected: state.expected_pats,
-            };
-            match state.memoizer.longest_result(call) {
-                None => Err(error),
-                Some(range) => {
-                    if range == call.range {
-                        Ok(OwnedParseForestAndNode::pack(
-                            lifetime,
-                            (state.forest, ParseNode { kind, range }),
-                        ))
-                    } else {
-                        Err(error)
-                    }
-                }
-            }
+            // which we pick the longest match.
+            state
+                .memoizer
+                .longest_result(call)
+                .map(|range| ParseNode { kind, range })
         })
     }
 
     pub fn input_consume_left<'a, Pat: fmt::Debug>(
         &'a mut self,
         pat: &'static Pat,
-    ) -> Option<Parser<'a, 'i, C, I>>
+    ) -> Option<Runtime<'a, 'i, C, I>>
     where
         I::Slice: InputMatch<Pat>,
     {
-        let start = self.remaining.first();
-        if start > self.state.last_input_pos {
-            self.state.last_input_pos = start;
-            self.state.expected_pats.clear();
-        }
-        match self.state.forest.input(self.remaining).match_left(pat) {
-            Some(n) => {
-                let (matching, after, _) = self.remaining.split_at(n);
-                if n > 0 {
-                    self.state.last_input_pos = after.first();
-                    self.state.expected_pats.clear();
-                }
-                Some(Parser {
-                    state: self.state,
-                    current: self.current,
-                    saved: self.saved,
-                    result: Range(self.result.join(matching).unwrap()),
-                    remaining: Range(after),
-                })
-            }
-            None => {
-                if start == self.state.last_input_pos {
-                    self.state.expected_pats.push(pat);
-                }
-                None
-            }
+        match self.parser.input_consume_left(pat) {
+            Some(parser) => Some(Runtime {
+                parser,
+                state: self.state,
+                current: self.current,
+                saved: self.saved,
+            }),
+            None => None,
         }
     }
 
     pub fn input_consume_right<'a, Pat>(
         &'a mut self,
         pat: &'static Pat,
-    ) -> Option<Parser<'a, 'i, C, I>>
+    ) -> Option<Runtime<'a, 'i, C, I>>
     where
         I::Slice: InputMatch<Pat>,
     {
-        // FIXME(eddyb) implement error reporting support like in `input_consume_left`
-        match self.state.forest.input(self.remaining).match_right(pat) {
-            Some(n) => {
-                let (before, matching, _) = self.remaining.split_at(self.remaining.len() - n);
-                Some(Parser {
-                    state: self.state,
-                    current: self.current,
-                    saved: self.saved,
-                    result: Range(matching.join(self.result.0).unwrap()),
-                    remaining: Range(before),
-                })
-            }
+        match self.parser.input_consume_right(pat) {
+            Some(parser) => Some(Runtime {
+                parser,
+                state: self.state,
+                current: self.current,
+                saved: self.saved,
+            }),
             None => None,
         }
     }
@@ -181,7 +273,7 @@ impl<'i, C: CodeStep<I>, I: Input> Parser<'_, 'i, C, I> {
     pub fn save(&mut self, kind: C::ParseNodeKind) {
         let old_saved = self.saved.replace(ParseNode {
             kind,
-            range: self.result,
+            range: self.parser.result,
         });
         assert_eq!(old_saved, None);
     }
@@ -191,15 +283,7 @@ impl<'i, C: CodeStep<I>, I: Input> Parser<'_, 'i, C, I> {
     }
 
     pub fn forest_add_choice(&mut self, kind: C::ParseNodeKind, choice: C::ParseNodeKind) {
-        self.state
-            .forest
-            .possible_choices
-            .entry(ParseNode {
-                kind,
-                range: self.result,
-            })
-            .or_default()
-            .insert(choice);
+        self.parser.forest_add_choice(kind, choice);
     }
 
     // FIXME(eddyb) safeguard this against misuse.
@@ -208,15 +292,7 @@ impl<'i, C: CodeStep<I>, I: Input> Parser<'_, 'i, C, I> {
         kind: C::ParseNodeKind,
         left: ParseNode<'i, C::ParseNodeKind>,
     ) {
-        self.state
-            .forest
-            .possible_splits
-            .entry(ParseNode {
-                kind,
-                range: self.result,
-            })
-            .or_default()
-            .insert(left.range.len());
+        self.parser.forest_add_split(kind, left);
     }
 
     pub fn spawn(&mut self, next: C) {
@@ -224,21 +300,21 @@ impl<'i, C: CodeStep<I>, I: Input> Parser<'_, 'i, C, I> {
             Continuation {
                 code: next,
                 saved: self.saved,
-                result: self.result,
+                result: self.parser.result,
             },
-            self.remaining,
+            self.parser.remaining,
         );
     }
 
     pub fn call(&mut self, callee: C, next: C) {
         let call = Call {
             callee,
-            range: self.remaining,
+            range: self.parser.remaining,
         };
         let next = Continuation {
             code: next,
             saved: self.saved,
-            result: self.result,
+            result: self.parser.result,
         };
         let returns = self.state.gss.returns.entry(call).or_default();
         if returns.insert(next) {
@@ -269,8 +345,8 @@ impl<'i, C: CodeStep<I>, I: Input> Parser<'_, 'i, C, I> {
     }
 
     pub fn ret(&mut self) {
-        let call_result = self.result;
-        let remaining = self.remaining;
+        let call_result = self.parser.result;
+        let remaining = self.parser.remaining;
         let call = Call {
             callee: self.current.enclosing_fn(),
             range: Range(call_result.join(remaining.0).unwrap()),
@@ -435,5 +511,5 @@ pub trait CodeLabel: fmt::Debug + Ord + Hash + Copy + 'static {
 }
 
 pub trait CodeStep<I: Input>: CodeLabel {
-    fn step<'i>(self, p: Parser<'_, 'i, Self, I>);
+    fn step<'i>(self, rt: Runtime<'_, 'i, Self, I>);
 }
