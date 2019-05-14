@@ -31,7 +31,7 @@ doctest = false
 test = false
 
 [patch.'crates-io']
-grammer = { git = "https://github.com/lykenware/grammer", rev = "e108acbe83271761538bf5b2ff2daeaaafa5919c" }
+grammer = { git = "https://github.com/lykenware/grammer", rev = "ed4fc4f9be9aa2c1a6c3245ba4e91684ddff5f2f" }
 
 [workspace]
 members = [

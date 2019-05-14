@@ -67,9 +67,6 @@ impl Primary<'_, '_, TokenStream> {
     fn lower<Pat: From<SPat>>(self) -> grammer::RuleWithNamedFields<Pat> {
         match self {
             Primary::Eat(pat) => grammer::eat(pat.one().unwrap().lower()),
-            Primary::NegativeLookahead { pat } => {
-                grammer::negative_lookahead(pat.one().unwrap().lower())
-            }
             Primary::Call(name) => {
                 let name = match name.source() {
                     [FlatToken::Ident(ident)] => ident.to_string(),

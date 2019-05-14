@@ -367,13 +367,6 @@ impl<'i, C: CodeStep<I>, I: Input> Parser<'i, C, I> {
         }
     }
 
-    pub fn input_lookahead_left<Pat>(&mut self, range: Range<'i>, pat: &'static Pat) -> bool
-    where
-        I::Slice: InputMatch<Pat>,
-    {
-        self.forest.input(range).match_left(pat).is_some()
-    }
-
     pub fn input_consume_right<Pat>(&self, range: Range<'i>, pat: &'static Pat) -> Option<Range<'i>>
     where
         I::Slice: InputMatch<Pat>,
@@ -383,13 +376,6 @@ impl<'i, C: CodeStep<I>, I: Input> Parser<'i, C, I> {
             .input(range)
             .match_right(pat)
             .map(|n| Range(range.split_at(range.len() - n).0))
-    }
-
-    pub fn input_lookbehind_right<Pat>(&self, range: Range<'i>, pat: &'static Pat) -> bool
-    where
-        I::Slice: InputMatch<Pat>,
-    {
-        self.forest.input(range).match_right(pat).is_some()
     }
 
     pub fn forest_add_choice(
