@@ -939,7 +939,7 @@ where
             pub fn parse(input: I)
                 -> Result<
                     OwnedHandle<I, Self>,
-                    gll::runtime::ParseError<I::SourceInfoPoint>,
+                    gll::parser::ParseError<I::SourceInfoPoint>,
                 >
             {
                 gll::runtime::Runtime::parse(

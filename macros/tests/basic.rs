@@ -37,7 +37,7 @@ macro_rules! testcases {
 
             let result = match &result {
                 Ok(result) => format!("{:#?}", result),
-                Err(gll::runtime::ParseError {
+                Err(gll::parser::ParseError {
                     at,
                     expected,
                 }) => {

@@ -10,7 +10,7 @@ use std::str;
 
 /// A parse forest, in SPPF (Shared Packed Parse Forest) representation.
 pub struct ParseForest<'i, P: ParseNodeKind, I: Input> {
-    // HACK(eddyb) `pub(crate)` only for `runtime`.
+    // HACK(eddyb) `pub(crate)` only for `parser`.
     pub(crate) input: Container<'i, I::Container>,
     pub(crate) possible_choices: HashMap<ParseNode<'i, P>, BTreeSet<P>>,
     pub(crate) possible_splits: HashMap<ParseNode<'i, P>, BTreeSet<usize>>,
