@@ -10,6 +10,8 @@ mod indexing_str;
 #[forbid(unsafe_code)]
 pub mod generate;
 #[forbid(unsafe_code)]
+pub mod input;
+#[forbid(unsafe_code)]
 pub mod parse_node;
 #[forbid(unsafe_code)]
 pub mod proc_macro;
@@ -19,9 +21,9 @@ pub mod runtime;
 pub mod scannerless;
 
 // HACK(eddyb) this contains impls for types in `proc_macro`, which depend on
-// `runtime`. Those parts of `runtime` should be moved to `grammer::input`.
+// `input`. Those parts of `input` should be moved to `grammer::input`.
 #[forbid(unsafe_code)]
-mod proc_macro_runtime;
+mod proc_macro_input;
 
 #[forbid(unsafe_code)]
 mod parse_grammar;

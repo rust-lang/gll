@@ -934,7 +934,7 @@ where
     let rust_slice_ty = Pat::rust_slice_ty();
     quote!(
         impl<I> #ident<'_, '_, I>
-            where I: gll::runtime::Input<Slice = #rust_slice_ty>,
+            where I: gll::input::Input<Slice = #rust_slice_ty>,
         {
             pub fn parse(input: I)
                 -> Result<
@@ -953,7 +953,7 @@ where
             }
         }
 
-        impl<I: gll::runtime::Input> OwnedHandle<I, #ident<'_, '_, I>> {
+        impl<I: gll::input::Input> OwnedHandle<I, #ident<'_, '_, I>> {
             pub fn with<R>(&self, f: impl for<'a, 'i> FnOnce(Handle<'a, 'i, I, #ident<'a, 'i, I>>) -> R) -> R {
                 self.forest_and_node.unpack_ref(|_, forest_and_node| {
                     let (ref forest, node) = *forest_and_node;
@@ -1005,7 +1005,7 @@ where
         });
         quote!(
             #[allow(non_camel_case_types)]
-            pub enum #ident<'a, 'i, I: gll::runtime::Input> {
+            pub enum #ident<'a, 'i, I: gll::input::Input> {
                 #(#variants),*
             }
         )
@@ -1022,7 +1022,7 @@ where
         };
         quote!(
             #[allow(non_camel_case_types)]
-            pub struct #ident<'a, 'i, I: gll::runtime::Input> {
+            pub struct #ident<'a, 'i, I: gll::input::Input> {
                 #(pub #fields_ident: #fields_ty),*
                 #marker_field
             }
@@ -1132,7 +1132,7 @@ where
         )
     };
 
-    quote!(impl<'a, 'i, I: gll::runtime::Input> #ident<'a, 'i, I> {
+    quote!(impl<'a, 'i, I: gll::input::Input> #ident<'a, 'i, I> {
         #methods
     })
 }
@@ -1220,7 +1220,7 @@ where
     };
 
     quote!(impl<'a, 'i, I> Handle<'a, 'i, I, #ident<'a, 'i, I>>
-        where I: gll::runtime::Input,
+        where I: gll::input::Input,
     {
         pub fn one(self) -> Result<#ident<'a, 'i, I>, Ambiguity<Self>> {
             // HACK(eddyb) using a closure to catch `Err`s from `?`
@@ -1313,7 +1313,7 @@ fn rule_debug_impl<Pat>(
             d.finish()
         )
     };
-    quote!(impl<I: gll::runtime::Input> fmt::Debug for #ident<'_, '_, I> {
+    quote!(impl<I: gll::input::Input> fmt::Debug for #ident<'_, '_, I> {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             #body
         }
@@ -1338,7 +1338,7 @@ fn rule_handle_debug_impl(name: &str, has_fields: bool) -> Src {
         )
     };
     quote!(
-        impl<'a, 'i, I: gll::runtime::Input> fmt::Debug for Handle<'a, 'i, I, #ident<'a, 'i, I>> {
+        impl<'a, 'i, I: gll::input::Input> fmt::Debug for Handle<'a, 'i, I, #ident<'a, 'i, I>> {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 write!(f, "{:?}", self.source_info())?;
                 #body
@@ -1346,7 +1346,7 @@ fn rule_handle_debug_impl(name: &str, has_fields: bool) -> Src {
             }
         }
 
-        impl<I: gll::runtime::Input> fmt::Debug for OwnedHandle<I, #ident<'_, '_, I>> {
+        impl<I: gll::input::Input> fmt::Debug for OwnedHandle<I, #ident<'_, '_, I>> {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 self.with(|handle| handle.fmt(f))
             }
@@ -1385,7 +1385,7 @@ where
 
     let rust_slice_ty = Pat::rust_slice_ty();
     quote!(impl<I> gll::runtime::CodeStep<I> for _C
-        where I: gll::runtime::Input<Slice = #rust_slice_ty>,
+        where I: gll::input::Input<Slice = #rust_slice_ty>,
     {
         fn step<'i>(self, mut p: gll::runtime::Parser<'_, 'i, _C, I>) {
             match self {
@@ -1447,7 +1447,7 @@ fn impl_debug_for_handle_any(all_parse_nodes: &[ParseNode]) -> Src {
             }),)
             })
         });
-    quote!(impl<I: gll::runtime::Input> fmt::Debug for Handle<'_, '_, I, Any> {
+    quote!(impl<I: gll::input::Input> fmt::Debug for Handle<'_, '_, I, Any> {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             match self.node.kind {
                 #(#arms)*

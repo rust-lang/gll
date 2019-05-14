@@ -1,5 +1,5 @@
+use crate::input::{Input, InputMatch, Range};
 use crate::proc_macro::{flatten, FlatToken, FlatTokenPat, Span, TokenStream};
-use crate::runtime::{Input, InputMatch, Range};
 use indexing::{proof::Provable, Container, Index, Unknown};
 use std::ops;
 

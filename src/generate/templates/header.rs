@@ -3,12 +3,12 @@ pub type Any = dyn any::Any;
 #[derive(Debug)]
 pub struct Ambiguity<T>(T);
 
-pub struct OwnedHandle<I: gll::runtime::Input, T: ?Sized> {
+pub struct OwnedHandle<I: gll::input::Input, T: ?Sized> {
     forest_and_node: gll::runtime::OwnedParseForestAndNode<_P, I>,
     _marker: PhantomData<T>,
 }
 
-impl<I: gll::runtime::Input, T: ?Sized> OwnedHandle<I, T> {
+impl<I: gll::input::Input, T: ?Sized> OwnedHandle<I, T> {
     pub fn source_info(&self) -> I::SourceInfo {
         self.forest_and_node.unpack_ref(|_, forest_and_node| {
             let (ref forest, node) = *forest_and_node;
@@ -17,21 +17,21 @@ impl<I: gll::runtime::Input, T: ?Sized> OwnedHandle<I, T> {
     }
 }
 
-pub struct Handle<'a, 'i, I: gll::runtime::Input, T: ?Sized> {
+pub struct Handle<'a, 'i, I: gll::input::Input, T: ?Sized> {
     pub node: ParseNode<'i, _P>,
     pub forest: &'a gll::runtime::ParseForest<'i, _P, I>,
     _marker: PhantomData<T>,
 }
 
-impl<I: gll::runtime::Input, T: ?Sized> Copy for Handle<'_, '_, I, T> {}
+impl<I: gll::input::Input, T: ?Sized> Copy for Handle<'_, '_, I, T> {}
 
-impl<I: gll::runtime::Input, T: ?Sized> Clone for Handle<'_, '_, I, T> {
+impl<I: gll::input::Input, T: ?Sized> Clone for Handle<'_, '_, I, T> {
     fn clone(&self) -> Self {
         *self
     }
 }
 
-impl<'a, I: gll::runtime::Input, T: ?Sized> Handle<'a, '_, I, T> {
+impl<'a, I: gll::input::Input, T: ?Sized> Handle<'a, '_, I, T> {
     pub fn source(self) -> &'a I::Slice {
         self.forest.input(self.node.range)
     }
@@ -40,7 +40,7 @@ impl<'a, I: gll::runtime::Input, T: ?Sized> Handle<'a, '_, I, T> {
     }
 }
 
-impl<'a, 'i, I: gll::runtime::Input, T> From<Ambiguity<Handle<'a, 'i, I, T>>>
+impl<'a, 'i, I: gll::input::Input, T> From<Ambiguity<Handle<'a, 'i, I, T>>>
     for Ambiguity<Handle<'a, 'i, I, Any>>
 {
     fn from(x: Ambiguity<Handle<'a, 'i, I, T>>) -> Self {
@@ -52,7 +52,7 @@ impl<'a, 'i, I: gll::runtime::Input, T> From<Ambiguity<Handle<'a, 'i, I, T>>>
     }
 }
 
-impl<'a, 'i, I: gll::runtime::Input, T> From<Ambiguity<Handle<'a, 'i, I, [T]>>>
+impl<'a, 'i, I: gll::input::Input, T> From<Ambiguity<Handle<'a, 'i, I, [T]>>>
     for Ambiguity<Handle<'a, 'i, I, Any>>
 {
     fn from(x: Ambiguity<Handle<'a, 'i, I, [T]>>) -> Self {
@@ -64,13 +64,13 @@ impl<'a, 'i, I: gll::runtime::Input, T> From<Ambiguity<Handle<'a, 'i, I, [T]>>>
     }
 }
 
-impl<I: gll::runtime::Input> fmt::Debug for Handle<'_, '_, I, ()> {
+impl<I: gll::input::Input> fmt::Debug for Handle<'_, '_, I, ()> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:?}", self.source_info())
     }
 }
 
-impl<'a, 'i, I: gll::runtime::Input, T> fmt::Debug for Handle<'a, 'i, I, [T]>
+impl<'a, 'i, I: gll::input::Input, T> fmt::Debug for Handle<'a, 'i, I, [T]>
 where
     Handle<'a, 'i, I, T>: fmt::Debug,
 {
@@ -116,7 +116,7 @@ where
     }
 }
 
-impl<'a, 'i, I: gll::runtime::Input, T> Iterator for Handle<'a, 'i, I, [T]> {
+impl<'a, 'i, I: gll::input::Input, T> Iterator for Handle<'a, 'i, I, [T]> {
     type Item = Result<Handle<'a, 'i, I, T>, Ambiguity<Self>>;
     fn next(&mut self) -> Option<Self::Item> {
         match self.all_list_heads() {
@@ -129,7 +129,7 @@ impl<'a, 'i, I: gll::runtime::Input, T> Iterator for Handle<'a, 'i, I, [T]> {
                 } else {
                     match self.node.kind.shape() {
                         ParseNodeShape::Opt(_) => {
-                            self.node.range = Range(original.node.range.split_at(0).0);
+                            self.node.range.0 = original.node.range.frontiers().0;
                         }
                         _ => unreachable!(),
                     }
@@ -150,7 +150,7 @@ pub enum ListHead<C> {
     Nil,
 }
 
-impl<'a, 'i, I: gll::runtime::Input, T> Handle<'a, 'i, I, [T]> {
+impl<'a, 'i, I: gll::input::Input, T> Handle<'a, 'i, I, [T]> {
     fn one_list_head(self) -> ListHead<Result<(Handle<'a, 'i, I, T>, Self), Ambiguity<Self>>> {
         match self.all_list_heads() {
             ListHead::Cons(mut iter) => {
