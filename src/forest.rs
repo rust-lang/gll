@@ -48,7 +48,7 @@ impl<'i, P: ParseNodeKind, I: Input> ParseForest<'i, P, I> {
                     range: node.range,
                 })
             }
-            shape => unreachable!("one_choice({}): non-choice shape {}", node, shape),
+            shape => unreachable!("one_choice({:?}): non-choice shape {:?}", node, shape),
         }
     }
 
@@ -67,7 +67,7 @@ impl<'i, P: ParseNodeKind, I: Input> ParseForest<'i, P, I> {
                     kind,
                     range: node.range,
                 }),
-            shape => unreachable!("all_choices({}): non-choice shape {}", node, shape),
+            shape => unreachable!("all_choices({:?}): non-choice shape {:?}", node, shape),
         }
     }
 
@@ -94,7 +94,7 @@ impl<'i, P: ParseNodeKind, I: Input> ParseForest<'i, P, I> {
                     },
                 ))
             }
-            shape => unreachable!("one_split({}): non-split shape {}", node, shape),
+            shape => unreachable!("one_split({:?}): non-split shape {:?}", node, shape),
         }
     }
 
@@ -122,11 +122,14 @@ impl<'i, P: ParseNodeKind, I: Input> ParseForest<'i, P, I> {
                         },
                     )
                 }),
-            shape => unreachable!("all_splits({}): non-split shape {}", node, shape),
+            shape => unreachable!("all_splits({:?}): non-split shape {:?}", node, shape),
         }
     }
 
-    pub fn dump_graphviz(&self, out: &mut dyn Write) -> io::Result<()> {
+    pub fn dump_graphviz(&self, out: &mut dyn Write) -> io::Result<()>
+    where
+        P: fmt::Display,
+    {
         writeln!(out, "digraph forest {{")?;
         let mut queue: VecDeque<_> = self
             .possible_choices
@@ -136,18 +139,27 @@ impl<'i, P: ParseNodeKind, I: Input> ParseForest<'i, P, I> {
             .collect();
         let mut seen: BTreeSet<_> = queue.iter().cloned().collect();
         let mut p = 0;
+        let node_name = |node: ParseNode<'i, P>| {
+            format!(
+                "{} @ {}..{}",
+                node.kind,
+                node.range.start(),
+                node.range.end()
+            )
+        };
         while let Some(source) = queue.pop_front() {
-            writeln!(out, "    {:?} [shape=box]", source.to_string())?;
+            let source_name = node_name(source);
+            writeln!(out, "    {:?} [shape=box]", source_name)?;
             let mut add_children = |children: &[(&str, ParseNode<'i, P>)]| -> io::Result<()> {
                 writeln!(out, r#"    p{} [label="" shape=point]"#, p)?;
-                writeln!(out, "    {:?} -> p{}:n", source.to_string(), p)?;
+                writeln!(out, "    {:?} -> p{}:n", source_name, p)?;
                 for &(port, child) in children {
                     writeln!(
                         out,
                         "    p{}:{} -> {:?}:n [dir=none]",
                         p,
                         port,
-                        child.to_string()
+                        node_name(child)
                     )?;
                     if seen.insert(child) {
                         queue.push_back(child);
@@ -199,7 +211,7 @@ impl<P: ParseNodeKind> ParseNode<'_, P> {
                 kind: inner,
                 range: self.range,
             },
-            shape => unreachable!("unpack_alias({}): non-alias shape {}", self, shape),
+            shape => unreachable!("unpack_alias({:?}): non-alias shape {:?}", self, shape),
         }
     }
 
@@ -215,16 +227,16 @@ impl<P: ParseNodeKind> ParseNode<'_, P> {
                     })
                 }
             }
-            shape => unreachable!("unpack_opt({}): non-opt shape {}", self, shape),
+            shape => unreachable!("unpack_opt({:?}): non-opt shape {:?}", self, shape),
         }
     }
 }
 
-impl<P: ParseNodeKind> fmt::Display for ParseNode<'_, P> {
+impl<P: fmt::Debug> fmt::Debug for ParseNode<'_, P> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "{} @ {}..{}",
+            "{:?} @ {}..{}",
             self.kind,
             self.range.start(),
             self.range.end()
@@ -232,19 +244,7 @@ impl<P: ParseNodeKind> fmt::Display for ParseNode<'_, P> {
     }
 }
 
-impl<P: ParseNodeKind> fmt::Debug for ParseNode<'_, P> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{} @ {}..{}",
-            self.kind,
-            self.range.start(),
-            self.range.end()
-        )
-    }
-}
-
-pub trait ParseNodeKind: fmt::Display + Ord + Hash + Copy + 'static {
+pub trait ParseNodeKind: fmt::Debug + Ord + Hash + Copy {
     fn shape(self) -> ParseNodeShape<Self>;
 }
 
