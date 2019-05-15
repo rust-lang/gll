@@ -139,14 +139,8 @@ impl<'i, P: ParseNodeKind, I: Input> ParseForest<'i, P, I> {
             .collect();
         let mut seen: BTreeSet<_> = queue.iter().cloned().collect();
         let mut p = 0;
-        let node_name = |node: ParseNode<'i, P>| {
-            format!(
-                "{} @ {}..{}",
-                node.kind,
-                node.range.start(),
-                node.range.end()
-            )
-        };
+        let node_name =
+            |ParseNode { kind, range }| format!("{} @ {:?}", kind, self.source_info(range));
         while let Some(source) = queue.pop_front() {
             let source_name = node_name(source);
             writeln!(out, "    {:?} [shape=box]", source_name)?;
