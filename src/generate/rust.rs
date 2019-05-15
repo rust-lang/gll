@@ -943,6 +943,7 @@ where
                 >
             {
                 gll::runtime::Runtime::parse(
+                    _G,
                     input,
                     #code_label,
                     #parse_node_kind,
@@ -1099,7 +1100,7 @@ where
         quote!(#(
             #[allow(non_snake_case)]
             fn #variants_from_forest_ident(
-                forest: &'a gll::forest::ParseForest<'i, _P, I>,
+                forest: &'a gll::forest::ParseForest<'i, _G, I>,
                 _node: ParseNode<'i, _P>,
                 _r: traverse!(typeof(ParseNode<'i, _P>) #variants_shape),
             ) -> Self {
@@ -1120,7 +1121,7 @@ where
         };
         quote!(
             fn from_forest(
-                forest: &'a gll::forest::ParseForest<'i, _P, I>,
+                forest: &'a gll::forest::ParseForest<'i, _G, I>,
                 _node: ParseNode<'i, _P>,
                 _r: traverse!(typeof(ParseNode<'i, _P>) #shape),
             ) -> Self {
@@ -1168,10 +1169,10 @@ where
 
         (
             quote!(
-                let node = _forest.one_choice(node)?;
+                let node = forest.one_choice(node)?;
                 match node.kind {
                     #(#variants_kind => {
-                        let r = traverse!(one(_forest, node) #variants_shape);
+                        let r = traverse!(one(forest, node) #variants_shape);
                         #ident::#variants_from_forest_ident(self.forest, node, r)
                     })*
                     _ => unreachable!()
@@ -1192,10 +1193,10 @@ where
                     }
                 }
 
-                _forest.all_choices(node).flat_map(move |node| {
+                forest.all_choices(node).flat_map(move |node| {
                     match node.kind {
                         #(#variants_kind => Iter::#i_ident(
-                            traverse!(all(_forest) #variants_shape)
+                            traverse!(all(forest) #variants_shape)
                                 .apply(node)
                                 .map(move |r| #ident::#variants_from_forest_ident(self.forest, node, r))
                         ),)*
@@ -1208,11 +1209,11 @@ where
         let shape = rule.rule.generate_traverse_shape(false, rules);
         (
             quote!(
-                let r = traverse!(one(_forest, node) #shape);
+                let r = traverse!(one(forest, node) #shape);
                 #ident::from_forest(self.forest, node, r)
             ),
             quote!(
-                traverse!(all(_forest) #shape)
+                traverse!(all(forest) #shape)
                     .apply(node)
                     .map(move |r| #ident::from_forest(self.forest, node, r))
             ),
@@ -1225,15 +1226,15 @@ where
         pub fn one(self) -> Result<#ident<'a, 'i, I>, Ambiguity<Self>> {
             // HACK(eddyb) using a closure to catch `Err`s from `?`
             (|| Ok({
-                let _forest = self.forest;
-                let node = self.node.unpack_alias();
+                let forest = self.forest;
+                let node = forest.unpack_alias(self.node);
                 #one
             }))().map_err(|gll::forest::MoreThanOne| Ambiguity(self))
         }
 
         pub fn all(self) -> impl Iterator<Item = #ident<'a, 'i, I>> {
-            let _forest = self.forest;
-            let node = self.node.unpack_alias();
+            let forest = self.forest;
+            let node = forest.unpack_alias(self.node);
             #all
         }
     })
@@ -1403,33 +1404,36 @@ fn declare_parse_node_kind(all_parse_nodes: &[ParseNode]) -> Src {
         .map(|node| &node.kind)
         .collect::<Vec<_>>();
     let nodes_kind_ident = nodes_kind.iter().map(|kind| kind.ident());
-    let nodes_desc = all_parse_nodes
+    let nodes_doc = all_parse_nodes
         .iter()
-        .map(|node| Src::new(format!("`{}`", node.desc.replace('`', "\\`"))))
-        .collect::<Vec<_>>();
+        .map(|node| format!("`{}`", node.desc.replace('`', "\\`")));
+    let nodes_desc = all_parse_nodes.iter().map(|node| &node.desc);
     let nodes_shape = all_parse_nodes.iter().map(|node| &node.shape);
 
     quote!(
+        pub struct _G;
+
         #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
         pub enum _P {
             #(
-                #[doc = #nodes_desc]
+                #[doc = #nodes_doc]
                 #nodes_kind_ident,
             )*
         }
-        impl fmt::Display for _P {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                let s = match *self {
-                    #(#nodes_kind => #nodes_desc),*
-                };
-                write!(f, "{}", s)
-            }
-        }
-        impl ParseNodeKind for _P {
-            fn shape(self) -> ParseNodeShape<Self> {
-                match self {
+
+        impl gll::forest::GrammarReflector for _G {
+            type ParseNodeKind = _P;
+
+            fn parse_node_shape(&self, kind: _P) -> ParseNodeShape<_P> {
+                match kind {
                     #(#nodes_kind => #nodes_shape),*
                 }
+            }
+            fn parse_node_desc(&self, kind: _P) -> String {
+                let s = match kind {
+                    #(#nodes_kind => #nodes_desc),*
+                };
+                s.to_string()
             }
         }
     )
@@ -1489,6 +1493,7 @@ fn code_label_decl_and_impls<Pat>(
             #(#all_labels_ident),*
         }
         impl gll::runtime::CodeLabel for _C {
+            type GrammarReflector = _G;
             type ParseNodeKind = _P;
 
             fn enclosing_fn(self) -> Self {

@@ -1,18 +1,19 @@
-use crate::forest::{OwnedParseForestAndNode, ParseForest, ParseNode, ParseNodeKind};
+use crate::forest::{GrammarReflector, OwnedParseForestAndNode, ParseForest, ParseNode};
 use crate::high::ErasableL;
 use crate::input::{Input, InputMatch, Range};
 use indexing::{self, Index, Unknown};
 use std::collections::HashMap;
 use std::fmt;
+use std::hash::Hash;
 
-pub struct Parser<'a, 'i, P: ParseNodeKind, I: Input> {
-    state: &'a mut ParserState<'i, P, I>,
+pub struct Parser<'a, 'i, G: GrammarReflector, I: Input> {
+    state: &'a mut ParserState<'i, G, I>,
     result: Range<'i>,
     remaining: Range<'i>,
 }
 
-struct ParserState<'i, P: ParseNodeKind, I: Input> {
-    forest: ParseForest<'i, P, I>,
+struct ParserState<'i, G: GrammarReflector, I: Input> {
+    forest: ParseForest<'i, G, I>,
     last_input_pos: Index<'i, Unknown>,
     expected_pats: Vec<&'static dyn fmt::Debug>,
 }
@@ -25,15 +26,23 @@ pub struct ParseError<A> {
 
 pub type ParseResult<A, T> = Result<T, ParseError<A>>;
 
-impl<'i, P: ParseNodeKind, I: Input> Parser<'_, 'i, P, I> {
+impl<'i, P, G, I: Input> Parser<'_, 'i, G, I>
+where
+    // FIXME(eddyb) these shouldn't be needed, as they are bounds on
+    // `GrammarReflector::ParseNodeKind`, but that's ignored currently.
+    P: fmt::Debug + Ord + Hash + Copy,
+    G: GrammarReflector<ParseNodeKind = P>,
+{
     pub fn parse_with(
+        grammar: G,
         input: I,
-        f: impl for<'i2> FnOnce(Parser<'_, 'i2, P, I>) -> Option<ParseNode<'i2, P>>,
-    ) -> ParseResult<I::SourceInfoPoint, OwnedParseForestAndNode<P, I>> {
+        f: impl for<'i2> FnOnce(Parser<'_, 'i2, G, I>) -> Option<ParseNode<'i2, P>>,
+    ) -> ParseResult<I::SourceInfoPoint, OwnedParseForestAndNode<G, P, I>> {
         ErasableL::indexing_scope(input.to_container(), |lifetime, input| {
             let range = Range(input.range());
             let mut state = ParserState {
                 forest: ParseForest {
+                    grammar,
                     input,
                     possible_choices: HashMap::new(),
                     possible_splits: HashMap::new(),
@@ -82,7 +91,7 @@ impl<'i, P: ParseNodeKind, I: Input> Parser<'_, 'i, P, I> {
         &'a mut self,
         result: Range<'i>,
         remaining: Range<'i>,
-    ) -> Parser<'a, 'i, P, I> {
+    ) -> Parser<'a, 'i, G, I> {
         // HACK(eddyb) enforce that `result` and `remaining` are inside `self`.
         assert_eq!(self.result, Range(self.remaining.frontiers().0));
         let full_new_range = result.join(remaining.0).unwrap();
@@ -99,7 +108,7 @@ impl<'i, P: ParseNodeKind, I: Input> Parser<'_, 'i, P, I> {
     pub fn input_consume_left<'a, Pat: fmt::Debug>(
         &'a mut self,
         pat: &'static Pat,
-    ) -> Option<Parser<'a, 'i, P, I>>
+    ) -> Option<Parser<'a, 'i, G, I>>
     where
         I::Slice: InputMatch<Pat>,
     {
@@ -133,7 +142,7 @@ impl<'i, P: ParseNodeKind, I: Input> Parser<'_, 'i, P, I> {
     pub fn input_consume_right<'a, Pat>(
         &'a mut self,
         pat: &'static Pat,
-    ) -> Option<Parser<'a, 'i, P, I>>
+    ) -> Option<Parser<'a, 'i, G, I>>
     where
         I::Slice: InputMatch<Pat>,
     {

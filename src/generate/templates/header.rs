@@ -4,7 +4,7 @@ pub type Any = dyn any::Any;
 pub struct Ambiguity<T>(T);
 
 pub struct OwnedHandle<I: gll::input::Input, T: ?Sized> {
-    forest_and_node: gll::forest::OwnedParseForestAndNode<_P, I>,
+    forest_and_node: gll::forest::OwnedParseForestAndNode<_G, _P, I>,
     _marker: PhantomData<T>,
 }
 
@@ -19,7 +19,7 @@ impl<I: gll::input::Input, T: ?Sized> OwnedHandle<I, T> {
 
 pub struct Handle<'a, 'i, I: gll::input::Input, T: ?Sized> {
     pub node: ParseNode<'i, _P>,
-    pub forest: &'a gll::forest::ParseForest<'i, _P, I>,
+    pub forest: &'a gll::forest::ParseForest<'i, _G, I>,
     _marker: PhantomData<T>,
 }
 
@@ -127,7 +127,7 @@ impl<'a, 'i, I: gll::input::Input, T> Iterator for Handle<'a, 'i, I, [T]> {
                 if iter.next().is_none() {
                     Some(Ok(elem))
                 } else {
-                    match self.node.kind.shape() {
+                    match self.forest.grammar.parse_node_shape(self.node.kind) {
                         ParseNodeShape::Opt(_) => {
                             self.node.range.0 = original.node.range.frontiers().0;
                         }
@@ -167,8 +167,8 @@ impl<'a, 'i, I: gll::input::Input, T> Handle<'a, 'i, I, [T]> {
     fn all_list_heads(
         mut self,
     ) -> ListHead<impl Iterator<Item = (Handle<'a, 'i, I, T>, Handle<'a, 'i, I, [T]>)>> {
-        if let ParseNodeShape::Opt(_) = self.node.kind.shape() {
-            if let Some(opt_child) = self.node.unpack_opt() {
+        if let ParseNodeShape::Opt(_) = self.forest.grammar.parse_node_shape(self.node.kind) {
+            if let Some(opt_child) = self.forest.unpack_opt(self.node) {
                 self.node = opt_child;
             } else {
                 return ListHead::Nil;
@@ -178,7 +178,9 @@ impl<'a, 'i, I: gll::input::Input, T> Handle<'a, 'i, I, [T]> {
             self.forest
                 .all_splits(self.node)
                 .flat_map(move |(elem, rest)| {
-                    if let ParseNodeShape::Split(..) = rest.kind.shape() {
+                    if let ParseNodeShape::Split(..) =
+                        self.forest.grammar.parse_node_shape(rest.kind)
+                    {
                         Some(self.forest.all_splits(rest))
                             .into_iter()
                             .flatten()

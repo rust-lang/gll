@@ -1,4 +1,4 @@
-use crate::forest::{OwnedParseForestAndNode, ParseNode, ParseNodeKind};
+use crate::forest::{GrammarReflector, OwnedParseForestAndNode, ParseNode};
 use crate::input::{Input, InputMatch, Range};
 use crate::parser::{ParseResult, Parser};
 use std::cmp::{Ordering, Reverse};
@@ -8,7 +8,7 @@ use std::hash::Hash;
 use std::io::{self, Write};
 
 pub struct Runtime<'a, 'i, C: CodeLabel, I: Input> {
-    parser: Parser<'a, 'i, C::ParseNodeKind, I>,
+    parser: Parser<'a, 'i, C::GrammarReflector, I>,
     state: &'a mut RuntimeState<'i, C>,
     current: C,
     saved: Option<ParseNode<'i, C::ParseNodeKind>>,
@@ -20,13 +20,21 @@ struct RuntimeState<'i, C: CodeLabel> {
     memoizer: Memoizer<'i, C>,
 }
 
-impl<'i, C: CodeStep<I>, I: Input> Runtime<'_, 'i, C, I> {
+impl<'i, P, G, C, I: Input> Runtime<'_, 'i, C, I>
+where
+    // FIXME(eddyb) these shouldn't be needed, as they are bounds on
+    // `GrammarReflector::ParseNodeKind`, but that's ignored currently.
+    P: fmt::Debug + Ord + Hash + Copy,
+    G: GrammarReflector<ParseNodeKind = P>,
+    C: CodeStep<I, GrammarReflector = G, ParseNodeKind = P>,
+{
     pub fn parse(
+        grammar: G,
         input: I,
         callee: C,
-        kind: C::ParseNodeKind,
-    ) -> ParseResult<I::SourceInfoPoint, OwnedParseForestAndNode<C::ParseNodeKind, I>> {
-        Parser::parse_with(input, |mut parser| {
+        kind: P,
+    ) -> ParseResult<I::SourceInfoPoint, OwnedParseForestAndNode<G, P, I>> {
+        Parser::parse_with(grammar, input, |mut parser| {
             let call = Call {
                 callee,
                 range: parser.remaining(),
@@ -120,7 +128,7 @@ impl<'i, C: CodeStep<I>, I: Input> Runtime<'_, 'i, C, I> {
     }
 
     // FIXME(eddyb) maybe specialize this further, for `forest_add_split`?
-    pub fn save(&mut self, kind: C::ParseNodeKind) {
+    pub fn save(&mut self, kind: P) {
         let old_saved = self.saved.replace(ParseNode {
             kind,
             range: self.parser.result(),
@@ -128,20 +136,16 @@ impl<'i, C: CodeStep<I>, I: Input> Runtime<'_, 'i, C, I> {
         assert_eq!(old_saved, None);
     }
 
-    pub fn take_saved(&mut self) -> ParseNode<'i, C::ParseNodeKind> {
+    pub fn take_saved(&mut self) -> ParseNode<'i, P> {
         self.saved.take().unwrap()
     }
 
-    pub fn forest_add_choice(&mut self, kind: C::ParseNodeKind, choice: C::ParseNodeKind) {
+    pub fn forest_add_choice(&mut self, kind: P, choice: P) {
         self.parser.forest_add_choice(kind, choice);
     }
 
     // FIXME(eddyb) safeguard this against misuse.
-    pub fn forest_add_split(
-        &mut self,
-        kind: C::ParseNodeKind,
-        left: ParseNode<'i, C::ParseNodeKind>,
-    ) {
+    pub fn forest_add_split(&mut self, kind: P, left: ParseNode<'i, P>) {
         self.parser.forest_add_split(kind, left);
     }
 
@@ -355,7 +359,10 @@ impl<'i, C: CodeLabel> Memoizer<'i, C> {
 }
 
 pub trait CodeLabel: fmt::Debug + Ord + Hash + Copy + 'static {
-    type ParseNodeKind: ParseNodeKind;
+    // HACK(eddyb) this allows using `C::ParseNodeKind` in structs without
+    // autoderiving adding spurious bounds on `C::GrammarReflector`.
+    type GrammarReflector: GrammarReflector<ParseNodeKind = Self::ParseNodeKind>;
+    type ParseNodeKind: fmt::Debug + Ord + Hash + Copy;
 
     fn enclosing_fn(self) -> Self;
 }
