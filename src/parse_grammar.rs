@@ -1,11 +1,11 @@
-// HACK(eddyb) silence warnings from unused exports in the generated code.
-#![allow(unused)]
-#![allow(non_camel_case_types)]
-
-// HACK(eddyb) needed for bootstrapping.
-use crate as gll;
-
-include!(concat!(env!("OUT_DIR"), "/parse_grammar.rs"));
+// HACK(eddyb) silence warnings from the generated code.
+#![allow(unused, non_camel_case_types, clippy::redundant_closure_call)]
+mod included {
+    // HACK(eddyb) needed for bootstrapping.
+    use crate as gll;
+    include!(concat!(env!("OUT_DIR"), "/parse_grammar.rs"));
+}
+pub use self::included::*;
 
 use crate::parser::ParseError;
 use crate::proc_macro::{FlatToken, Span, TokenStream};

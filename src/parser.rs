@@ -1,7 +1,7 @@
 use crate::forest::{GrammarReflector, OwnedParseForestAndNode, ParseForest, ParseNode};
 use crate::high::ErasableL;
 use crate::input::{Input, InputMatch, Range};
-use indexing::{self, Index, Unknown};
+use indexing::{self, proof::Unknown, Index};
 use std::collections::HashMap;
 use std::fmt;
 use std::hash::Hash;
@@ -14,7 +14,7 @@ pub struct Parser<'a, 'i, G: GrammarReflector, I: Input> {
 
 struct ParserState<'i, G: GrammarReflector, I: Input> {
     forest: ParseForest<'i, G, I>,
-    last_input_pos: Index<'i, Unknown>,
+    last_input_pos: Index<'i, u32, Unknown>,
     expected_pats: Vec<&'static dyn fmt::Debug>,
 }
 
@@ -47,7 +47,7 @@ where
                     possible_choices: HashMap::new(),
                     possible_splits: HashMap::new(),
                 },
-                last_input_pos: range.first(),
+                last_input_pos: range.start(),
                 expected_pats: vec![],
             };
 
@@ -112,16 +112,19 @@ where
     where
         I::Slice: InputMatch<Pat>,
     {
-        let start = self.remaining.first();
+        let start = self.remaining.start();
         if start > self.state.last_input_pos {
             self.state.last_input_pos = start;
             self.state.expected_pats.clear();
         }
         match self.state.forest.input(self.remaining).match_left(pat) {
             Some(n) => {
-                let (matching, after, _) = self.remaining.split_at(n);
+                let (matching, after) = self
+                    .remaining
+                    .split_at::<Unknown>(/*n*/ unimplemented!())
+                    .unwrap();
                 if n > 0 {
-                    self.state.last_input_pos = after.first();
+                    self.state.last_input_pos = after.start();
                     self.state.expected_pats.clear();
                 }
                 Some(Parser {
@@ -149,7 +152,10 @@ where
         // FIXME(eddyb) implement error reporting support like in `input_consume_left`
         match self.state.forest.input(self.remaining).match_right(pat) {
             Some(n) => {
-                let (before, matching, _) = self.remaining.split_at(self.remaining.len() - n);
+                let (before, matching) = self
+                    .remaining
+                    .split_at::<Unknown>(/*self.remaining.len() - n*/ unimplemented!())
+                    .unwrap();
                 Some(Parser {
                     state: self.state,
                     result: Range(matching.join(self.result.0).unwrap()),
@@ -182,6 +188,6 @@ where
                 range: self.result,
             })
             .or_default()
-            .insert(left.range.len());
+            .insert(left.range.len() as usize);
     }
 }

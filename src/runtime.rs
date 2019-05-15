@@ -1,6 +1,7 @@
 use crate::forest::{GrammarReflector, OwnedParseForestAndNode, ParseNode};
 use crate::input::{Input, InputMatch, Range};
 use crate::parser::{ParseResult, Parser};
+use indexing::proof::Unknown;
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BTreeSet, BinaryHeap, HashMap};
 use std::fmt;
@@ -175,7 +176,10 @@ where
             if returns.len() > 1 {
                 if let Some(lengths) = self.state.memoizer.lengths.get(&call) {
                     for &len in lengths {
-                        let (call_result, remaining, _) = call.range.split_at(len);
+                        let (call_result, remaining) = call
+                            .range
+                            .split_at::<Unknown>(/*len*/ unimplemented!())
+                            .unwrap();
                         self.state.threads.spawn(
                             Continuation {
                                 result: Range(next.result.join(call_result).unwrap()),
@@ -211,7 +215,7 @@ where
             .lengths
             .entry(call)
             .or_default()
-            .insert(call_result.len())
+            .insert(call_result.len() as usize)
         {
             if let Some(returns) = self.state.gss.returns.get(&call) {
                 for &next in returns {
@@ -291,8 +295,8 @@ impl<C: fmt::Display> fmt::Display for Call<'_, C> {
             f,
             "{}({}..{})",
             self.callee,
-            self.range.start(),
-            self.range.end()
+            self.range.start().untrusted(),
+            self.range.end().untrusted()
         )
     }
 }
@@ -350,7 +354,7 @@ impl<'i, C: CodeLabel> Memoizer<'i, C> {
             .flat_map(move |lengths| {
                 lengths
                     .iter()
-                    .map(move |&len| Range(call.range.split_at(len).0))
+                    .map(move |&len| /*Range(call.range.split_at(len).0)*/ unimplemented!())
             })
     }
     fn longest_result(&self, call: Call<'i, C>) -> Option<Range<'i>> {

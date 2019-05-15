@@ -1,7 +1,7 @@
 use crate::high::{type_lambda, ExistsL, PairL};
 use crate::input::{Input, Range};
 use crate::parse_node::ParseNodeShape;
-use indexing::{self, Container};
+use indexing::{self, proof::Unknown, Container};
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::fmt;
 use std::hash::Hash;
@@ -33,8 +33,8 @@ impl<P: fmt::Debug> fmt::Debug for ParseNode<'_, P> {
             f,
             "{:?} @ {}..{}",
             self.kind,
-            self.range.start(),
-            self.range.end()
+            self.range.start().untrusted(),
+            self.range.end().untrusted(),
         )
     }
 }
@@ -124,7 +124,10 @@ where
                     return Err(MoreThanOne);
                 }
                 let &split = splits.iter().next().unwrap();
-                let (left, right, _) = node.range.split_at(split);
+                let (left, right) = node
+                    .range
+                    .split_at::<Unknown>(/*split*/ unimplemented!())
+                    .unwrap_or_else(|| (node.range.erased(), node.range.frontiers().1));
                 Ok((
                     ParseNode {
                         kind: left_kind,
@@ -155,7 +158,10 @@ where
                 .flatten()
                 .cloned()
                 .map(move |i| {
-                    let (left, right, _) = node.range.split_at(i);
+                    let (left, right) = node
+                        .range
+                        .split_at::<Unknown>(/*i*/ unimplemented!())
+                        .unwrap_or_else(|| (node.range.erased(), node.range.frontiers().1));
                     (
                         ParseNode {
                             kind: left_kind,

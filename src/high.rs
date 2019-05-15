@@ -84,7 +84,7 @@ impl ErasableL<'_> {
 
     /// Enter an `indexing::scope`, where the closure also receives a proof that
     /// the generative lifetime is erasable (it doesn't come from a borrow).
-    pub fn indexing_scope<A: ::indexing::container_traits::Trustworthy, R>(
+    pub fn indexing_scope<A: ::indexing::traits::TrustedContainer, R>(
         a: A,
         f: impl for<'id> FnOnce(ErasableL<'id>, ::indexing::Container<'id, A>) -> R,
     ) -> R {

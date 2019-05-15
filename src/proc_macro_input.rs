@@ -1,6 +1,6 @@
 use crate::input::{Input, InputMatch, Range};
 use crate::proc_macro::{flatten, FlatToken, FlatTokenPat, Span, TokenStream};
-use indexing::{proof::Provable, Container, Index, Unknown};
+use indexing::{proof::Unknown, Container, Index};
 use std::ops;
 
 impl Input for TokenStream {
@@ -27,13 +27,13 @@ impl Input for TokenStream {
         // for that is still "semver-exempt" in `proc-macro2`.
         let last = range
             .nonempty()
-            .map(|r| r.last().no_proof())
-            .unwrap_or(range.past_the_end());
-        Self::source_info_point(input, range.first())..Self::source_info_point(input, last)
+            .map(|r| /*r.last().no_proof()*/ unimplemented!())
+            .unwrap_or(range.end());
+        Self::source_info_point(input, range.start())..Self::source_info_point(input, last)
     }
     fn source_info_point<'i>(
         input: &Container<'i, Self::Container>,
-        index: Index<'i, Unknown>,
+        index: Index<'i, u32, Unknown>,
     ) -> Self::SourceInfoPoint {
         // Try to get as much information as possible.
         let (before, after) = input.split_at(index);
