@@ -470,7 +470,7 @@ impl Continuation<'_> {
     fn to_inline(&mut self) -> &mut Src {
         if let Code::Label(ref label) = self.code {
             self.code = Code::Inline(quote!(
-                p.spawn(#label);
+                rt.spawn(#label);
             ));
         }
 
@@ -583,7 +583,7 @@ macro_rules! thunk {
 }
 
 fn pop_saved<F: ContFn>(f: impl FnOnce(Src) -> Thunk<F>) -> Thunk<impl ContFn> {
-    thunk!(let saved = p.take_saved();)
+    thunk!(let saved = rt.take_saved();)
         + f(quote!(saved))
         + Thunk::new(|mut cont| {
             if let Some(&None) = cont.nested_frames.last() {
@@ -600,7 +600,7 @@ fn pop_saved<F: ContFn>(f: impl FnOnce(Src) -> Thunk<F>) -> Thunk<impl ContFn> {
 }
 
 fn push_saved(parse_node_kind: ParseNodeKind) -> Thunk<impl ContFn> {
-    thunk!(p.save(#parse_node_kind);)
+    thunk!(rt.save(#parse_node_kind);)
         + Thunk::new(move |mut cont| {
             if let Some((ret_label, outer_fn_label)) = cont.nested_frames.pop().unwrap() {
                 let inner_fn_label = mem::replace(cont.fn_code_label, outer_fn_label);
@@ -627,14 +627,14 @@ fn call(callee: Rc<CodeLabel>) -> Thunk<impl ContFn> {
     Thunk::new(move |mut cont| {
         let label = cont.to_label().clone();
         cont.code = Code::Inline(quote!(
-            p.call(#callee, #label);
+            rt.call(#callee, #label);
         ));
         cont
     })
 }
 
 fn ret() -> Thunk<impl ContFn> {
-    thunk!(p.ret();)
+    thunk!(rt.ret();)
         + Thunk::new(|mut cont| {
             assert!(cont.to_inline().is_empty());
             cont
@@ -748,7 +748,7 @@ fn reify_as(label: Rc<CodeLabel>) -> Thunk<impl ContFn> {
 }
 
 fn forest_add_choice(parse_node_kind: &ParseNodeKind, choice: ParseNodeKind) -> Thunk<impl ContFn> {
-    thunk!(p.forest_add_choice(#parse_node_kind, #choice);)
+    thunk!(rt.forest_add_choice(#parse_node_kind, #choice);)
 }
 
 fn concat_and_forest_add(
@@ -760,7 +760,7 @@ fn concat_and_forest_add(
     left + push_saved(left_parse_node_kind)
         + right
         + pop_saved(move |saved| {
-            thunk!(p.forest_add_split(
+            thunk!(rt.forest_add_split(
                 #parse_node_kind,
                 #saved,
             );)
@@ -792,7 +792,7 @@ impl<Pat: Ord + Hash + RustInputPat> RuleGenerateMethods<Pat> for Rule<Pat> {
             (Rule::Empty, _) => cont,
             (Rule::Eat(pat), _) => {
                 let pat = pat.rust_matcher();
-                check(quote!(let Some(mut p) = p.input_consume_left(&(#pat)))).apply(cont)
+                check(quote!(let Some(mut rt) = rt.input_consume_left(&(#pat)))).apply(cont)
             }
             (Rule::Call(r), _) => call(Rc::new(CodeLabel::NamedRule(r.clone()))).apply(cont),
             (Rule::Concat([left, right]), None) => {
@@ -934,15 +934,15 @@ where
     let rust_slice_ty = Pat::rust_slice_ty();
     quote!(
         impl<I> #ident<'_, '_, I>
-            where I: gll::runtime::Input<Slice = #rust_slice_ty>,
+            where I: gll::input::Input<Slice = #rust_slice_ty>,
         {
             pub fn parse(input: I)
                 -> Result<
                     OwnedHandle<I, Self>,
-                    gll::runtime::ParseError<I::SourceInfoPoint>,
+                    gll::parser::ParseError<I::SourceInfoPoint>,
                 >
             {
-                gll::runtime::Parser::parse(
+                gll::runtime::Runtime::parse(
                     input,
                     #code_label,
                     #parse_node_kind,
@@ -953,7 +953,7 @@ where
             }
         }
 
-        impl<I: gll::runtime::Input> OwnedHandle<I, #ident<'_, '_, I>> {
+        impl<I: gll::input::Input> OwnedHandle<I, #ident<'_, '_, I>> {
             pub fn with<R>(&self, f: impl for<'a, 'i> FnOnce(Handle<'a, 'i, I, #ident<'a, 'i, I>>) -> R) -> R {
                 self.forest_and_node.unpack_ref(|_, forest_and_node| {
                     let (ref forest, node) = *forest_and_node;
@@ -1005,7 +1005,7 @@ where
         });
         quote!(
             #[allow(non_camel_case_types)]
-            pub enum #ident<'a, 'i, I: gll::runtime::Input> {
+            pub enum #ident<'a, 'i, I: gll::input::Input> {
                 #(#variants),*
             }
         )
@@ -1022,7 +1022,7 @@ where
         };
         quote!(
             #[allow(non_camel_case_types)]
-            pub struct #ident<'a, 'i, I: gll::runtime::Input> {
+            pub struct #ident<'a, 'i, I: gll::input::Input> {
                 #(pub #fields_ident: #fields_ty),*
                 #marker_field
             }
@@ -1099,7 +1099,7 @@ where
         quote!(#(
             #[allow(non_snake_case)]
             fn #variants_from_forest_ident(
-                forest: &'a gll::runtime::ParseForest<'i, _P, I>,
+                forest: &'a gll::forest::ParseForest<'i, _P, I>,
                 _node: ParseNode<'i, _P>,
                 _r: traverse!(typeof(ParseNode<'i, _P>) #variants_shape),
             ) -> Self {
@@ -1120,7 +1120,7 @@ where
         };
         quote!(
             fn from_forest(
-                forest: &'a gll::runtime::ParseForest<'i, _P, I>,
+                forest: &'a gll::forest::ParseForest<'i, _P, I>,
                 _node: ParseNode<'i, _P>,
                 _r: traverse!(typeof(ParseNode<'i, _P>) #shape),
             ) -> Self {
@@ -1132,7 +1132,7 @@ where
         )
     };
 
-    quote!(impl<'a, 'i, I: gll::runtime::Input> #ident<'a, 'i, I> {
+    quote!(impl<'a, 'i, I: gll::input::Input> #ident<'a, 'i, I> {
         #methods
     })
 }
@@ -1220,7 +1220,7 @@ where
     };
 
     quote!(impl<'a, 'i, I> Handle<'a, 'i, I, #ident<'a, 'i, I>>
-        where I: gll::runtime::Input,
+        where I: gll::input::Input,
     {
         pub fn one(self) -> Result<#ident<'a, 'i, I>, Ambiguity<Self>> {
             // HACK(eddyb) using a closure to catch `Err`s from `?`
@@ -1228,7 +1228,7 @@ where
                 let _forest = self.forest;
                 let node = self.node.unpack_alias();
                 #one
-            }))().map_err(|gll::runtime::MoreThanOne| Ambiguity(self))
+            }))().map_err(|gll::forest::MoreThanOne| Ambiguity(self))
         }
 
         pub fn all(self) -> impl Iterator<Item = #ident<'a, 'i, I>> {
@@ -1313,7 +1313,7 @@ fn rule_debug_impl<Pat>(
             d.finish()
         )
     };
-    quote!(impl<I: gll::runtime::Input> fmt::Debug for #ident<'_, '_, I> {
+    quote!(impl<I: gll::input::Input> fmt::Debug for #ident<'_, '_, I> {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             #body
         }
@@ -1338,7 +1338,7 @@ fn rule_handle_debug_impl(name: &str, has_fields: bool) -> Src {
         )
     };
     quote!(
-        impl<'a, 'i, I: gll::runtime::Input> fmt::Debug for Handle<'a, 'i, I, #ident<'a, 'i, I>> {
+        impl<'a, 'i, I: gll::input::Input> fmt::Debug for Handle<'a, 'i, I, #ident<'a, 'i, I>> {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 write!(f, "{:?}", self.source_info())?;
                 #body
@@ -1346,7 +1346,7 @@ fn rule_handle_debug_impl(name: &str, has_fields: bool) -> Src {
             }
         }
 
-        impl<I: gll::runtime::Input> fmt::Debug for OwnedHandle<I, #ident<'_, '_, I>> {
+        impl<I: gll::input::Input> fmt::Debug for OwnedHandle<I, #ident<'_, '_, I>> {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 self.with(|handle| handle.fmt(f))
             }
@@ -1385,9 +1385,9 @@ where
 
     let rust_slice_ty = Pat::rust_slice_ty();
     quote!(impl<I> gll::runtime::CodeStep<I> for _C
-        where I: gll::runtime::Input<Slice = #rust_slice_ty>,
+        where I: gll::input::Input<Slice = #rust_slice_ty>,
     {
-        fn step<'i>(self, mut p: gll::runtime::Parser<'_, 'i, _C, I>) {
+        fn step<'i>(self, mut rt: gll::runtime::Runtime<'_, 'i, _C, I>) {
             match self {
                 #(#code_label_arms)*
             }
@@ -1447,7 +1447,7 @@ fn impl_debug_for_handle_any(all_parse_nodes: &[ParseNode]) -> Src {
             }),)
             })
         });
-    quote!(impl<I: gll::runtime::Input> fmt::Debug for Handle<'_, '_, I, Any> {
+    quote!(impl<I: gll::input::Input> fmt::Debug for Handle<'_, '_, I, Any> {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             match self.node.kind {
                 #(#arms)*
@@ -1488,7 +1488,7 @@ fn code_label_decl_and_impls<Pat>(
         enum _C {
             #(#all_labels_ident),*
         }
-        impl CodeLabel for _C {
+        impl gll::runtime::CodeLabel for _C {
             type ParseNodeKind = _P;
 
             fn enclosing_fn(self) -> Self {

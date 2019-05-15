@@ -7,15 +7,15 @@ use crate as gll;
 
 include!(concat!(env!("OUT_DIR"), "/parse_grammar.rs"));
 
+use crate::parser::ParseError;
 use crate::proc_macro::{FlatToken, Span, TokenStream};
-use crate::runtime;
 use crate::scannerless::Pat as SPat;
 use std::ops::Bound;
 use std::str::FromStr;
 
 pub fn parse_grammar<Pat: From<SPat>>(
     stream: TokenStream,
-) -> Result<grammer::Grammar<Pat>, runtime::ParseError<Span>> {
+) -> Result<grammer::Grammar<Pat>, ParseError<Span>> {
     let mut grammar = grammer::Grammar::new();
     Grammar::parse(stream)?.with(|g| {
         for rule_def in g.one().unwrap().rules {
