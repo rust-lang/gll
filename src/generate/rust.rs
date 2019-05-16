@@ -1,7 +1,7 @@
 use crate::generate::src::{quotable_to_src, quote, Src, ToSrc};
 use crate::parse_node::ParseNodeShape;
 use crate::scannerless::Pat as SPat;
-use grammer::{Grammar, MatchesEmpty, Rule, RuleWithNamedFields, SepKind};
+use grammer::rule::{MatchesEmpty, Rule, RuleWithNamedFields, SepKind};
 
 use indexmap::{map::Entry, IndexMap, IndexSet};
 use std::borrow::Cow;
@@ -353,11 +353,13 @@ trait GrammarGenerateMethods {
     fn generate_rust(&self) -> Src;
 }
 
-pub fn generate<Pat: Ord + Hash + MatchesEmpty + RustInputPat>(g: &Grammar<Pat>) -> Src {
+pub fn generate<Pat: Ord + Hash + MatchesEmpty + RustInputPat>(g: &grammer::Grammar<Pat>) -> Src {
     g.generate_rust()
 }
 
-impl<Pat: Ord + Hash + MatchesEmpty + RustInputPat> GrammarGenerateMethods for Grammar<Pat> {
+impl<Pat: Ord + Hash + MatchesEmpty + RustInputPat> GrammarGenerateMethods
+    for grammer::Grammar<Pat>
+{
     fn generate_rust(&self) -> Src {
         self.check();
 

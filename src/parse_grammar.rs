@@ -10,6 +10,7 @@ include!(concat!(env!("OUT_DIR"), "/parse_grammar.rs"));
 use crate::parser::ParseError;
 use crate::proc_macro::{FlatToken, Span, TokenStream};
 use crate::scannerless::Pat as SPat;
+use grammer::rule;
 use std::ops::Bound;
 use std::str::FromStr;
 
@@ -31,7 +32,7 @@ pub fn parse_grammar<Pat: From<SPat>>(
 }
 
 impl Or<'_, '_, TokenStream> {
-    fn lower<Pat: From<SPat>>(self) -> grammer::RuleWithNamedFields<Pat> {
+    fn lower<Pat: From<SPat>>(self) -> rule::RuleWithNamedFields<Pat> {
         let mut rules = self.rules.map(|rule| rule.unwrap().one().unwrap().lower());
         let first = rules.next().unwrap();
         rules.fold(first, |a, b| a | b)
@@ -39,15 +40,15 @@ impl Or<'_, '_, TokenStream> {
 }
 
 impl Concat<'_, '_, TokenStream> {
-    fn lower<Pat: From<SPat>>(self) -> grammer::RuleWithNamedFields<Pat> {
+    fn lower<Pat: From<SPat>>(self) -> rule::RuleWithNamedFields<Pat> {
         self.rules
             .map(|rule| rule.unwrap().one().unwrap().lower())
-            .fold(grammer::empty(), |a, b| a + b)
+            .fold(rule::empty(), |a, b| a + b)
     }
 }
 
 impl Rule<'_, '_, TokenStream> {
-    fn lower<Pat: From<SPat>>(self) -> grammer::RuleWithNamedFields<Pat> {
+    fn lower<Pat: From<SPat>>(self) -> rule::RuleWithNamedFields<Pat> {
         let mut rule = self.rule.one().unwrap().lower();
         if let Some(modifier) = self.modifier {
             rule = modifier.one().unwrap().lower(rule);
@@ -64,17 +65,17 @@ impl Rule<'_, '_, TokenStream> {
 }
 
 impl Primary<'_, '_, TokenStream> {
-    fn lower<Pat: From<SPat>>(self) -> grammer::RuleWithNamedFields<Pat> {
+    fn lower<Pat: From<SPat>>(self) -> rule::RuleWithNamedFields<Pat> {
         match self {
-            Primary::Eat(pat) => grammer::eat(pat.one().unwrap().lower()),
+            Primary::Eat(pat) => rule::eat(pat.one().unwrap().lower()),
             Primary::Call(name) => {
                 let name = match name.source() {
                     [FlatToken::Ident(ident)] => ident.to_string(),
                     _ => unreachable!(),
                 };
-                grammer::call(&name)
+                rule::call(&name)
             }
-            Primary::Group { or } => or.map_or_else(grammer::empty, |or| or.one().unwrap().lower()),
+            Primary::Group { or } => or.map_or_else(rule::empty, |or| or.one().unwrap().lower()),
         }
     }
 }
@@ -82,8 +83,8 @@ impl Primary<'_, '_, TokenStream> {
 impl Modifier<'_, '_, TokenStream> {
     fn lower<Pat: From<SPat>>(
         self,
-        rule: grammer::RuleWithNamedFields<Pat>,
-    ) -> grammer::RuleWithNamedFields<Pat> {
+        rule: rule::RuleWithNamedFields<Pat>,
+    ) -> rule::RuleWithNamedFields<Pat> {
         match self {
             Modifier::Opt(_) => rule.opt(),
             Modifier::Repeat { repeat, sep, kind } => {
@@ -103,10 +104,10 @@ impl Modifier<'_, '_, TokenStream> {
 }
 
 impl SepKind<'_, '_, TokenStream> {
-    fn lower(&self) -> grammer::SepKind {
+    fn lower(&self) -> rule::SepKind {
         match self {
-            SepKind::Simple(_) => grammer::SepKind::Simple,
-            SepKind::Trailing(_) => grammer::SepKind::Trailing,
+            SepKind::Simple(_) => rule::SepKind::Simple,
+            SepKind::Trailing(_) => rule::SepKind::Trailing,
         }
     }
 }

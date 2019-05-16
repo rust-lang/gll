@@ -1,4 +1,4 @@
-use grammer::{self, MatchesEmpty, MaybeKnown};
+use grammer::rule::{MatchesEmpty, MaybeKnown};
 use std::char;
 use std::ops::{self, Bound, RangeBounds};
 

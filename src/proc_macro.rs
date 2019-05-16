@@ -1,7 +1,7 @@
 use crate::generate::rust::RustInputPat;
 use crate::generate::src::{quotable_to_src, quote, Src, ToSrc};
 use crate::scannerless::Pat as SPat;
-use grammer::{call, eat, MatchesEmpty, MaybeKnown};
+use grammer::rule::{call, eat, MatchesEmpty, MaybeKnown};
 pub use proc_macro2::{
     Delimiter, Ident, LexError, Literal, Punct, Spacing, Span, TokenStream, TokenTree,
 };
