@@ -769,28 +769,21 @@ fn concat_and_forest_add(
         })
 }
 
-trait RuleGenerateMethods<Pat> {
+trait RcRuleGenerateMethods<Pat> {
     fn generate_parse<'a>(
         &'a self,
-        rc_self_and_rules: Option<(&'a Rc<Self>, &'a RuleMap<'_, Pat>)>,
+        rules: Option<&'a RuleMap<'_, Pat>>,
     ) -> Thunk<Box<dyn ContFn + 'a>>;
 
     fn generate_traverse_shape(&self, refutable: bool, rules: &RuleMap<'_, Pat>) -> Src;
 }
 
-impl<Pat: Ord + Hash + RustInputPat> RuleGenerateMethods<Pat> for Rule<Pat> {
-    // HACK(eddyb) the `Rc<Self>` points to the same `Self` value as `self`,
-    // but can't be `self` itself without `#![feature(arbitrary_self_types)]`.
-    // HACK(eddyb) this should be using `Thunk<impl ContFn + 'a>` but that
-    // doesn't work with traits yet. Ideally we'll just move to having an IR.
+impl<Pat: Ord + Hash + RustInputPat> RcRuleGenerateMethods<Pat> for Rc<Rule<Pat>> {
     fn generate_parse<'a>(
         &'a self,
-        rc_self_and_rules: Option<(&'a Rc<Self>, &'a RuleMap<'_, Pat>)>,
+        rules: Option<&'a RuleMap<'_, Pat>>,
     ) -> Thunk<Box<dyn ContFn + 'a>> {
-        if let Some((rc_self, _)) = rc_self_and_rules {
-            assert!(std::ptr::eq(self, &**rc_self));
-        }
-        Thunk::new(move |cont| match (self, rc_self_and_rules) {
+        Thunk::new(move |cont| match (&**self, rules) {
             (Rule::Empty, _) => cont,
             (Rule::Eat(pat), _) => {
                 let pat = pat.rust_matcher();
@@ -800,37 +793,32 @@ impl<Pat: Ord + Hash + RustInputPat> RuleGenerateMethods<Pat> for Rule<Pat> {
             (Rule::Concat([left, right]), None) => {
                 (left.generate_parse(None) + right.generate_parse(None)).apply(cont)
             }
-            (Rule::Concat([left, right]), Some((rc_self, rules))) => concat_and_forest_add(
+            (Rule::Concat([left, right]), Some(rules)) => concat_and_forest_add(
                 left.parse_node_kind(rules),
-                left.generate_parse(Some((left, rules))),
-                right.generate_parse(Some((right, rules))),
-                rc_self.parse_node_kind(rules),
+                left.generate_parse(Some(rules)),
+                right.generate_parse(Some(rules)),
+                self.parse_node_kind(rules),
             )
             .apply(cont),
             (Rule::Or(cases), None) => parallel(ThunkIter(
                 cases.iter().map(|rule| rule.generate_parse(None)),
             ))
             .apply(cont),
-            (Rule::Or(cases), Some((rc_self, rules))) => {
-                (parallel(ThunkIter(cases.iter().map(|rule| {
-                    let parse_node_kind = rule.parse_node_kind(rules);
-                    rule.generate_parse(Some((rule, rules)))
-                        + forest_add_choice(&rc_self.parse_node_kind(rules), parse_node_kind)
-                }))))
-                .apply(cont)
-            }
-            (Rule::Opt(rule), _) => {
-                opt(rule.generate_parse(rc_self_and_rules.map(|(_, rules)| (rule, rules))))
-                    .apply(cont)
-            }
+            (Rule::Or(cases), Some(rules)) => (parallel(ThunkIter(cases.iter().map(|rule| {
+                let parse_node_kind = rule.parse_node_kind(rules);
+                rule.generate_parse(Some(rules))
+                    + forest_add_choice(&self.parse_node_kind(rules), parse_node_kind)
+            }))))
+            .apply(cont),
+            (Rule::Opt(rule), _) => opt(rule.generate_parse(rules)).apply(cont),
             (Rule::RepeatMany(rule, None), None) => {
                 fix(|label| opt(rule.generate_parse(None) + call(label))).apply(cont)
             }
-            (Rule::RepeatMany(rule, None), Some((_, rules))) => fix(|label| {
+            (Rule::RepeatMany(rule, None), Some(rules)) => fix(|label| {
                 let more = Rc::new(Rule::RepeatMore(rule.clone(), None));
                 opt(concat_and_forest_add(
                     rule.parse_node_kind(rules),
-                    rule.generate_parse(Some((rule, rules))),
+                    rule.generate_parse(Some(rules)),
                     call(label),
                     more.parse_node_kind(rules),
                 ))
@@ -838,8 +826,7 @@ impl<Pat: Ord + Hash + RustInputPat> RuleGenerateMethods<Pat> for Rule<Pat> {
             .apply(cont),
             (Rule::RepeatMany(elem, Some(sep)), _) => {
                 let rule = Rc::new(Rule::RepeatMore(elem.clone(), Some(sep.clone())));
-                opt(rule.generate_parse(rc_self_and_rules.map(|(_, rules)| (&rule, rules))))
-                    .apply(cont)
+                opt(rule.generate_parse(rules)).apply(cont)
             }
             (Rule::RepeatMore(rule, None), None) => {
                 fix(|label| rule.generate_parse(None) + opt(call(label))).apply(cont)
@@ -848,47 +835,42 @@ impl<Pat: Ord + Hash + RustInputPat> RuleGenerateMethods<Pat> for Rule<Pat> {
                 fix(|label| elem.generate_parse(None) + opt(sep.generate_parse(None) + call(label)))
                     .apply(cont)
             }
-            (Rule::RepeatMore(rule, None), Some((rc_self, rules))) => fix(|label| {
+            (Rule::RepeatMore(rule, None), Some(rules)) => fix(|label| {
                 concat_and_forest_add(
                     rule.parse_node_kind(rules),
-                    rule.generate_parse(Some((rule, rules))),
+                    rule.generate_parse(Some(rules)),
                     opt(call(label)),
-                    rc_self.parse_node_kind(rules),
+                    self.parse_node_kind(rules),
                 )
             })
             .apply(cont),
-            (Rule::RepeatMore(elem, Some((sep, SepKind::Simple))), Some((rc_self, rules))) => {
-                fix(|label| {
-                    concat_and_forest_add(
-                        elem.parse_node_kind(rules),
-                        elem.generate_parse(Some((elem, rules))),
-                        opt(concat_and_forest_add(
-                            sep.parse_node_kind(rules),
-                            sep.generate_parse(None),
-                            call(label),
-                            Rc::new(Rule::Concat([sep.clone(), rc_self.clone()]))
-                                .parse_node_kind(rules),
-                        )),
-                        rc_self.parse_node_kind(rules),
-                    )
-                })
-                .apply(cont)
-            }
+            (Rule::RepeatMore(elem, Some((sep, SepKind::Simple))), Some(rules)) => fix(|label| {
+                concat_and_forest_add(
+                    elem.parse_node_kind(rules),
+                    elem.generate_parse(Some(rules)),
+                    opt(concat_and_forest_add(
+                        sep.parse_node_kind(rules),
+                        sep.generate_parse(None),
+                        call(label),
+                        Rc::new(Rule::Concat([sep.clone(), self.clone()])).parse_node_kind(rules),
+                    )),
+                    self.parse_node_kind(rules),
+                )
+            })
+            .apply(cont),
             (Rule::RepeatMore(elem, Some((sep, SepKind::Trailing))), _) => {
                 let rule = Rc::new(Rule::RepeatMore(
                     elem.clone(),
                     Some((sep.clone(), SepKind::Simple)),
                 ));
-                (rule.generate_parse(rc_self_and_rules.map(|(_, rules)| (&rule, rules)))
-                    + opt(sep.generate_parse(rc_self_and_rules.map(|(_, rules)| (sep, rules)))))
-                .apply(cont)
+                (rule.generate_parse(rules) + opt(sep.generate_parse(rules))).apply(cont)
             }
         })
         .boxed()
     }
 
     fn generate_traverse_shape(&self, refutable: bool, rules: &RuleMap<'_, Pat>) -> Src {
-        match self {
+        match &**self {
             Rule::Empty
             | Rule::Eat(_)
             | Rule::Call(_)
@@ -1372,18 +1354,15 @@ where
         } else {
             Some(rules)
         };
-        (rule
-            .rule
-            .generate_parse(rules.map(|rules| (&rule.rule, rules)))
-            + ret())
-        .apply(Continuation {
-            code_labels,
-            fn_code_label: &mut code_label.clone(),
-            code_label_arms: &mut code_label_arms,
-            code: Code::Inline(quote!()),
-            nested_frames: vec![],
-        })
-        .reify_as(code_label);
+        (rule.rule.generate_parse(rules) + ret())
+            .apply(Continuation {
+                code_labels,
+                fn_code_label: &mut code_label.clone(),
+                code_label_arms: &mut code_label_arms,
+                code: Code::Inline(quote!()),
+                nested_frames: vec![],
+            })
+            .reify_as(code_label);
     }
 
     let rust_slice_ty = Pat::rust_slice_ty();
