@@ -2,7 +2,7 @@ use grammer::rule::{MatchesEmpty, MaybeKnown};
 use std::char;
 use std::ops::{self, Bound, RangeBounds};
 
-pub type Grammar<S = String> = grammer::Grammar<Pat<S>>;
+pub type Context<S = String> = grammer::context::Context<Pat<S>>;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Pat<S = String, C = char> {

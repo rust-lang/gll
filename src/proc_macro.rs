@@ -7,39 +7,41 @@ pub use proc_macro2::{
 };
 use std::str::FromStr;
 
-pub type Grammar = grammer::Grammar<Pat>;
+pub type Context = grammer::context::Context<Pat>;
 
-pub fn builtin() -> Grammar {
+pub fn builtin(cx: &mut Context) -> grammer::Grammar {
     let mut g = grammer::Grammar::new();
 
-    let ident = eat(Pat(vec![FlatTokenPat::Ident(None)]));
-    g.define("IDENT", ident.clone());
+    let ident = eat(Pat(vec![FlatTokenPat::Ident(None)])).finish(cx);
+    g.define(cx.intern("IDENT"), ident.clone());
 
     g.define(
-        "LIFETIME",
+        cx.intern("LIFETIME"),
         eat(Pat(vec![
             FlatTokenPat::Punct {
                 ch: Some('\''),
                 joint: Some(true),
             },
             FlatTokenPat::Ident(None),
-        ])),
+        ]))
+        .finish(cx),
     );
 
     let punct = eat(Pat(vec![FlatTokenPat::Punct {
         ch: None,
         joint: None,
-    }]));
-    g.define("PUNCT", punct.clone());
+    }]))
+    .finish(cx);
+    g.define(cx.intern("PUNCT"), punct.clone());
 
-    let literal = eat(Pat(vec![FlatTokenPat::Literal]));
-    g.define("LITERAL", literal.clone());
+    let literal = eat(Pat(vec![FlatTokenPat::Literal])).finish(cx);
+    g.define(cx.intern("LITERAL"), literal.clone());
 
     let delim = |c| eat(FlatTokenPat::Delim(c));
-    let group = |open, close| delim(open) + call("TOKEN_TREE").repeat_many(None) + delim(close);
+    let group = |open, close| delim(open) + call("TOKEN_TREE").repeat_many() + delim(close);
     g.define(
-        "TOKEN_TREE",
-        ident | punct | literal | group('(', ')') | group('[', ']') | group('{', '}'),
+        cx.intern("TOKEN_TREE"),
+        (ident | punct | literal | group('(', ')') | group('[', ']') | group('{', '}')).finish(cx),
     );
 
     g
