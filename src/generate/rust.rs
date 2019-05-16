@@ -431,7 +431,8 @@ impl<Pat: Ord + Hash + MatchesEmpty + RustInputPat> GrammarGenerateMethods
 }
 
 #[must_use]
-struct Continuation<'a> {
+struct Continuation<'a, Pat> {
+    rules: Option<&'a RuleMap<'a, Pat>>,
     code_labels: &'a mut IndexMap<Rc<CodeLabel>, usize>,
     fn_code_label: &'a mut Rc<CodeLabel>,
     code_label_arms: &'a mut Vec<Src>,
@@ -445,7 +446,7 @@ enum Code {
     Label(Rc<CodeLabel>),
 }
 
-impl Continuation<'_> {
+impl<Pat> Continuation<'_, Pat> {
     fn next_code_label(&mut self) -> Rc<CodeLabel> {
         let counter = self
             .code_labels
@@ -459,8 +460,9 @@ impl Continuation<'_> {
         label
     }
 
-    fn clone(&mut self) -> Continuation<'_> {
+    fn clone(&mut self) -> Continuation<'_, Pat> {
         Continuation {
+            rules: self.rules,
             code_labels: self.code_labels,
             fn_code_label: self.fn_code_label,
             code_label_arms: self.code_label_arms,
@@ -501,38 +503,38 @@ impl Continuation<'_> {
     }
 }
 
-trait ContFn {
-    fn apply(self, cont: Continuation<'_>) -> Continuation<'_>;
+trait ContFn<Pat> {
+    fn apply(self, cont: Continuation<'_, Pat>) -> Continuation<'_, Pat>;
     // HACK(eddyb) `Box<dyn FnOnce<A>>: FnOnce<A>` is not stable yet,
     // so this is needed to implement `ContFn` for `Box<dyn ContFn>`.
-    fn apply_box(self: Box<Self>, cont: Continuation<'_>) -> Continuation<'_>;
+    fn apply_box(self: Box<Self>, cont: Continuation<'_, Pat>) -> Continuation<'_, Pat>;
 }
 
-impl<F: FnOnce(Continuation<'_>) -> Continuation<'_>> ContFn for F {
-    fn apply(self, cont: Continuation<'_>) -> Continuation<'_> {
+impl<Pat, F: FnOnce(Continuation<'_, Pat>) -> Continuation<'_, Pat>> ContFn<Pat> for F {
+    fn apply(self, cont: Continuation<'_, Pat>) -> Continuation<'_, Pat> {
         self(cont)
     }
-    fn apply_box(self: Box<Self>, cont: Continuation<'_>) -> Continuation<'_> {
+    fn apply_box(self: Box<Self>, cont: Continuation<'_, Pat>) -> Continuation<'_, Pat> {
         (*self).apply(cont)
     }
 }
 
-impl<'a> ContFn for Box<dyn ContFn + 'a> {
-    fn apply(self, cont: Continuation<'_>) -> Continuation<'_> {
+impl<Pat> ContFn<Pat> for Box<dyn ContFn<Pat> + '_> {
+    fn apply(self, cont: Continuation<'_, Pat>) -> Continuation<'_, Pat> {
         self.apply_box(cont)
     }
-    fn apply_box(self: Box<Self>, cont: Continuation<'_>) -> Continuation<'_> {
+    fn apply_box(self: Box<Self>, cont: Continuation<'_, Pat>) -> Continuation<'_, Pat> {
         (*self).apply(cont)
     }
 }
 
 struct Compose<F, G>(F, G);
 
-impl<F: ContFn, G: ContFn> ContFn for Compose<F, G> {
-    fn apply(self, cont: Continuation<'_>) -> Continuation<'_> {
+impl<Pat, F: ContFn<Pat>, G: ContFn<Pat>> ContFn<Pat> for Compose<F, G> {
+    fn apply(self, cont: Continuation<'_, Pat>) -> Continuation<'_, Pat> {
         self.1.apply(self.0.apply(cont))
     }
-    fn apply_box(self: Box<Self>, cont: Continuation<'_>) -> Continuation<'_> {
+    fn apply_box(self: Box<Self>, cont: Continuation<'_, Pat>) -> Continuation<'_, Pat> {
         (*self).apply(cont)
     }
 }
@@ -541,16 +543,16 @@ impl<F: ContFn, G: ContFn> ContFn for Compose<F, G> {
 struct Thunk<F>(F);
 
 impl<F> Thunk<F> {
-    fn new(f: F) -> Self
+    fn new<Pat>(f: F) -> Self
     where
-        F: FnOnce(Continuation<'_>) -> Continuation<'_>,
+        F: FnOnce(Continuation<'_, Pat>) -> Continuation<'_, Pat>,
     {
         Thunk(f)
     }
 
-    fn boxed<'a>(self) -> Thunk<Box<dyn ContFn + 'a>>
+    fn boxed<'a, Pat>(self) -> Thunk<Box<dyn ContFn<Pat> + 'a>>
     where
-        F: ContFn + 'a,
+        F: ContFn<Pat> + 'a,
     {
         Thunk(Box::new(self.0))
     }
@@ -563,11 +565,11 @@ impl<F, G> Add<Thunk<G>> for Thunk<F> {
     }
 }
 
-impl<F: ContFn> ContFn for Thunk<F> {
-    fn apply(self, cont: Continuation<'_>) -> Continuation<'_> {
+impl<Pat, F: ContFn<Pat>> ContFn<Pat> for Thunk<F> {
+    fn apply(self, cont: Continuation<'_, Pat>) -> Continuation<'_, Pat> {
         self.0.apply(cont)
     }
-    fn apply_box(self: Box<Self>, cont: Continuation<'_>) -> Continuation<'_> {
+    fn apply_box(self: Box<Self>, cont: Continuation<'_, Pat>) -> Continuation<'_, Pat> {
         (*self).apply(cont)
     }
 }
@@ -584,7 +586,7 @@ macro_rules! thunk {
     }}
 }
 
-fn pop_saved<F: ContFn>(f: impl FnOnce(Src) -> Thunk<F>) -> Thunk<impl ContFn> {
+fn pop_saved<Pat, F: ContFn<Pat>>(f: impl FnOnce(Src) -> Thunk<F>) -> Thunk<impl ContFn<Pat>> {
     thunk!(let saved = rt.take_saved();)
         + f(quote!(saved))
         + Thunk::new(|mut cont| {
@@ -601,7 +603,7 @@ fn pop_saved<F: ContFn>(f: impl FnOnce(Src) -> Thunk<F>) -> Thunk<impl ContFn> {
         })
 }
 
-fn push_saved(parse_node_kind: ParseNodeKind) -> Thunk<impl ContFn> {
+fn push_saved<Pat>(parse_node_kind: ParseNodeKind) -> Thunk<impl ContFn<Pat>> {
     thunk!(rt.save(#parse_node_kind);)
         + Thunk::new(move |mut cont| {
             if let Some((ret_label, outer_fn_label)) = cont.nested_frames.pop().unwrap() {
@@ -613,7 +615,7 @@ fn push_saved(parse_node_kind: ParseNodeKind) -> Thunk<impl ContFn> {
         })
 }
 
-fn check(condition: Src) -> Thunk<impl ContFn> {
+fn check<Pat>(condition: Src) -> Thunk<impl ContFn<Pat>> {
     Thunk::new(move |mut cont| {
         let code = cont.to_inline();
         *code = quote!(
@@ -625,7 +627,7 @@ fn check(condition: Src) -> Thunk<impl ContFn> {
     })
 }
 
-fn call(callee: Rc<CodeLabel>) -> Thunk<impl ContFn> {
+fn call<Pat>(callee: Rc<CodeLabel>) -> Thunk<impl ContFn<Pat>> {
     Thunk::new(move |mut cont| {
         let label = cont.to_label().clone();
         cont.code = Code::Inline(quote!(
@@ -635,7 +637,7 @@ fn call(callee: Rc<CodeLabel>) -> Thunk<impl ContFn> {
     })
 }
 
-fn ret() -> Thunk<impl ContFn> {
+fn ret<Pat>() -> Thunk<impl ContFn<Pat>> {
     thunk!(rt.ret();)
         + Thunk::new(|mut cont| {
             assert!(cont.to_inline().is_empty());
@@ -643,25 +645,33 @@ fn ret() -> Thunk<impl ContFn> {
         })
 }
 
-trait ForEachThunk {
-    fn for_each_thunk(self, cont: &mut Continuation<'_>, f: impl FnMut(Continuation<'_>));
+trait ForEachThunk<Pat> {
+    fn for_each_thunk(self, cont: &mut Continuation<'_, Pat>, f: impl FnMut(Continuation<'_, Pat>));
 }
 
-impl<F> ForEachThunk for Thunk<F>
+impl<Pat, F> ForEachThunk<Pat> for Thunk<F>
 where
-    F: ContFn,
+    F: ContFn<Pat>,
 {
-    fn for_each_thunk(self, cont: &mut Continuation<'_>, mut f: impl FnMut(Continuation<'_>)) {
+    fn for_each_thunk(
+        self,
+        cont: &mut Continuation<'_, Pat>,
+        mut f: impl FnMut(Continuation<'_, Pat>),
+    ) {
         f(self.apply(cont.clone()));
     }
 }
 
-impl<T, U> ForEachThunk for (T, U)
+impl<Pat, T, U> ForEachThunk<Pat> for (T, U)
 where
-    T: ForEachThunk,
-    U: ForEachThunk,
+    T: ForEachThunk<Pat>,
+    U: ForEachThunk<Pat>,
 {
-    fn for_each_thunk(self, cont: &mut Continuation<'_>, mut f: impl FnMut(Continuation<'_>)) {
+    fn for_each_thunk(
+        self,
+        cont: &mut Continuation<'_, Pat>,
+        mut f: impl FnMut(Continuation<'_, Pat>),
+    ) {
         self.0.for_each_thunk(cont, &mut f);
         self.1.for_each_thunk(cont, &mut f);
     }
@@ -669,19 +679,23 @@ where
 
 struct ThunkIter<I>(I);
 
-impl<I, T> ForEachThunk for ThunkIter<I>
+impl<Pat, I, T> ForEachThunk<Pat> for ThunkIter<I>
 where
     I: Iterator<Item = T>,
-    T: ForEachThunk,
+    T: ForEachThunk<Pat>,
 {
-    fn for_each_thunk(self, cont: &mut Continuation<'_>, mut f: impl FnMut(Continuation<'_>)) {
+    fn for_each_thunk(
+        self,
+        cont: &mut Continuation<'_, Pat>,
+        mut f: impl FnMut(Continuation<'_, Pat>),
+    ) {
         self.0.for_each(|x| {
             x.for_each_thunk(cont, &mut f);
         });
     }
 }
 
-fn parallel(thunks: impl ForEachThunk) -> Thunk<impl ContFn> {
+fn parallel<Pat>(thunks: impl ForEachThunk<Pat>) -> Thunk<impl ContFn<Pat>> {
     Thunk::new(|mut cont| {
         cont.to_label();
         let mut code = quote!();
@@ -720,11 +734,11 @@ fn parallel(thunks: impl ForEachThunk) -> Thunk<impl ContFn> {
     })
 }
 
-fn opt(thunk: Thunk<impl ContFn>) -> Thunk<impl ContFn> {
+fn opt<Pat>(thunk: Thunk<impl ContFn<Pat>>) -> Thunk<impl ContFn<Pat>> {
     parallel((thunk, thunk!()))
 }
 
-fn fix<F: ContFn>(f: impl FnOnce(Rc<CodeLabel>) -> Thunk<F>) -> Thunk<impl ContFn> {
+fn fix<Pat, F: ContFn<Pat>>(f: impl FnOnce(Rc<CodeLabel>) -> Thunk<F>) -> Thunk<impl ContFn<Pat>> {
     Thunk::new(|mut cont| {
         let nested_frames = mem::replace(&mut cont.nested_frames, vec![]);
         let ret_label = cont.to_label().clone();
@@ -742,23 +756,26 @@ fn fix<F: ContFn>(f: impl FnOnce(Rc<CodeLabel>) -> Thunk<F>) -> Thunk<impl ContF
     })
 }
 
-fn reify_as(label: Rc<CodeLabel>) -> Thunk<impl ContFn> {
+fn reify_as<Pat>(label: Rc<CodeLabel>) -> Thunk<impl ContFn<Pat>> {
     Thunk::new(|mut cont| {
         cont.reify_as(label);
         cont
     })
 }
 
-fn forest_add_choice(parse_node_kind: &ParseNodeKind, choice: ParseNodeKind) -> Thunk<impl ContFn> {
+fn forest_add_choice<Pat>(
+    parse_node_kind: &ParseNodeKind,
+    choice: ParseNodeKind,
+) -> Thunk<impl ContFn<Pat>> {
     thunk!(rt.forest_add_choice(#parse_node_kind, #choice);)
 }
 
-fn concat_and_forest_add(
+fn concat_and_forest_add<Pat>(
     left_parse_node_kind: ParseNodeKind,
-    left: Thunk<impl ContFn>,
-    right: Thunk<impl ContFn>,
+    left: Thunk<impl ContFn<Pat>>,
+    right: Thunk<impl ContFn<Pat>>,
     parse_node_kind: ParseNodeKind,
-) -> Thunk<impl ContFn> {
+) -> Thunk<impl ContFn<Pat>> {
     left + push_saved(left_parse_node_kind)
         + right
         + pop_saved(move |saved| {
@@ -770,20 +787,14 @@ fn concat_and_forest_add(
 }
 
 trait RcRuleGenerateMethods<Pat> {
-    fn generate_parse<'a>(
-        &'a self,
-        rules: Option<&'a RuleMap<'_, Pat>>,
-    ) -> Thunk<Box<dyn ContFn + 'a>>;
+    fn generate_parse<'a>(&'a self) -> Thunk<Box<dyn ContFn<Pat> + 'a>>;
 
     fn generate_traverse_shape(&self, refutable: bool, rules: &RuleMap<'_, Pat>) -> Src;
 }
 
 impl<Pat: Ord + Hash + RustInputPat> RcRuleGenerateMethods<Pat> for Rc<Rule<Pat>> {
-    fn generate_parse<'a>(
-        &'a self,
-        rules: Option<&'a RuleMap<'_, Pat>>,
-    ) -> Thunk<Box<dyn ContFn + 'a>> {
-        Thunk::new(move |cont| match (&**self, rules) {
+    fn generate_parse<'a>(&'a self) -> Thunk<Box<dyn ContFn<Pat> + 'a>> {
+        Thunk::new(move |cont| match (&**self, cont.rules) {
             (Rule::Empty, _) => cont,
             (Rule::Eat(pat), _) => {
                 let pat = pat.rust_matcher();
@@ -791,34 +802,33 @@ impl<Pat: Ord + Hash + RustInputPat> RcRuleGenerateMethods<Pat> for Rc<Rule<Pat>
             }
             (Rule::Call(r), _) => call(Rc::new(CodeLabel::NamedRule(r.clone()))).apply(cont),
             (Rule::Concat([left, right]), None) => {
-                (left.generate_parse(None) + right.generate_parse(None)).apply(cont)
+                (left.generate_parse() + right.generate_parse()).apply(cont)
             }
             (Rule::Concat([left, right]), Some(rules)) => concat_and_forest_add(
                 left.parse_node_kind(rules),
-                left.generate_parse(Some(rules)),
-                right.generate_parse(Some(rules)),
+                left.generate_parse(),
+                right.generate_parse(),
                 self.parse_node_kind(rules),
             )
             .apply(cont),
-            (Rule::Or(cases), None) => parallel(ThunkIter(
-                cases.iter().map(|rule| rule.generate_parse(None)),
-            ))
-            .apply(cont),
+            (Rule::Or(cases), None) => {
+                parallel(ThunkIter(cases.iter().map(|rule| rule.generate_parse()))).apply(cont)
+            }
             (Rule::Or(cases), Some(rules)) => (parallel(ThunkIter(cases.iter().map(|rule| {
                 let parse_node_kind = rule.parse_node_kind(rules);
-                rule.generate_parse(Some(rules))
+                rule.generate_parse()
                     + forest_add_choice(&self.parse_node_kind(rules), parse_node_kind)
             }))))
             .apply(cont),
-            (Rule::Opt(rule), _) => opt(rule.generate_parse(rules)).apply(cont),
+            (Rule::Opt(rule), _) => opt(rule.generate_parse()).apply(cont),
             (Rule::RepeatMany(rule, None), None) => {
-                fix(|label| opt(rule.generate_parse(None) + call(label))).apply(cont)
+                fix(|label| opt(rule.generate_parse() + call(label))).apply(cont)
             }
             (Rule::RepeatMany(rule, None), Some(rules)) => fix(|label| {
                 let more = Rc::new(Rule::RepeatMore(rule.clone(), None));
                 opt(concat_and_forest_add(
                     rule.parse_node_kind(rules),
-                    rule.generate_parse(Some(rules)),
+                    rule.generate_parse(),
                     call(label),
                     more.parse_node_kind(rules),
                 ))
@@ -826,19 +836,19 @@ impl<Pat: Ord + Hash + RustInputPat> RcRuleGenerateMethods<Pat> for Rc<Rule<Pat>
             .apply(cont),
             (Rule::RepeatMany(elem, Some(sep)), _) => {
                 let rule = Rc::new(Rule::RepeatMore(elem.clone(), Some(sep.clone())));
-                opt(rule.generate_parse(rules)).apply(cont)
+                opt(rule.generate_parse()).apply(cont)
             }
             (Rule::RepeatMore(rule, None), None) => {
-                fix(|label| rule.generate_parse(None) + opt(call(label))).apply(cont)
+                fix(|label| rule.generate_parse() + opt(call(label))).apply(cont)
             }
             (Rule::RepeatMore(elem, Some((sep, SepKind::Simple))), None) => {
-                fix(|label| elem.generate_parse(None) + opt(sep.generate_parse(None) + call(label)))
+                fix(|label| elem.generate_parse() + opt(sep.generate_parse() + call(label)))
                     .apply(cont)
             }
             (Rule::RepeatMore(rule, None), Some(rules)) => fix(|label| {
                 concat_and_forest_add(
                     rule.parse_node_kind(rules),
-                    rule.generate_parse(Some(rules)),
+                    rule.generate_parse(),
                     opt(call(label)),
                     self.parse_node_kind(rules),
                 )
@@ -847,10 +857,10 @@ impl<Pat: Ord + Hash + RustInputPat> RcRuleGenerateMethods<Pat> for Rc<Rule<Pat>
             (Rule::RepeatMore(elem, Some((sep, SepKind::Simple))), Some(rules)) => fix(|label| {
                 concat_and_forest_add(
                     elem.parse_node_kind(rules),
-                    elem.generate_parse(Some(rules)),
+                    elem.generate_parse(),
                     opt(concat_and_forest_add(
                         sep.parse_node_kind(rules),
-                        sep.generate_parse(None),
+                        sep.generate_parse(),
                         call(label),
                         Rc::new(Rule::Concat([sep.clone(), self.clone()])).parse_node_kind(rules),
                     )),
@@ -863,7 +873,7 @@ impl<Pat: Ord + Hash + RustInputPat> RcRuleGenerateMethods<Pat> for Rc<Rule<Pat>
                     elem.clone(),
                     Some((sep.clone(), SepKind::Simple)),
                 ));
-                (rule.generate_parse(rules) + opt(sep.generate_parse(rules))).apply(cont)
+                (rule.generate_parse() + opt(sep.generate_parse())).apply(cont)
             }
         })
         .boxed()
@@ -1354,8 +1364,9 @@ where
         } else {
             Some(rules)
         };
-        (rule.rule.generate_parse(rules) + ret())
+        (rule.rule.generate_parse() + ret())
             .apply(Continuation {
+                rules,
                 code_labels,
                 fn_code_label: &mut code_label.clone(),
                 code_label_arms: &mut code_label_arms,
