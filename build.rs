@@ -1,8 +1,4 @@
-extern crate grammer;
-extern crate indexing;
-extern crate ordermap;
-extern crate proc_macro2;
-extern crate proc_quote;
+#![deny(rust_2018_idioms)]
 
 // HACK(eddyb) bootstrap by including a subset of the `gll` crate.
 #[path = "src/generate/mod.rs"]

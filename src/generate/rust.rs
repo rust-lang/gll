@@ -3,7 +3,7 @@ use crate::parse_node::ParseNodeShape;
 use crate::scannerless::Pat as SPat;
 use grammer::{Grammar, MatchesEmpty, Rule, RuleWithNamedFields, SepKind};
 
-use ordermap::{Entry, OrderMap, OrderSet};
+use indexmap::{map::Entry, IndexMap, IndexSet};
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::fmt::Write as FmtWrite;
@@ -30,10 +30,10 @@ impl<S: AsRef<str>> RustInputPat for SPat<S> {
 }
 
 struct RuleMap<'a, Pat> {
-    named: &'a OrderMap<String, RuleWithNamedFields<Pat>>,
-    anon: RefCell<OrderSet<Rc<Rule<Pat>>>>,
-    desc: RefCell<OrderMap<Rc<Rule<Pat>>, String>>,
-    anon_shape: RefCell<OrderMap<Rc<Rule<Pat>>, ParseNodeShape<ParseNodeKind>>>,
+    named: &'a IndexMap<String, RuleWithNamedFields<Pat>>,
+    anon: RefCell<IndexSet<Rc<Rule<Pat>>>>,
+    desc: RefCell<IndexMap<Rc<Rule<Pat>>, String>>,
+    anon_shape: RefCell<IndexMap<Rc<Rule<Pat>>, ParseNodeShape<ParseNodeKind>>>,
 }
 
 struct ParseNode {
@@ -46,7 +46,7 @@ struct ParseNode {
 struct Variant<'a, Pat> {
     rule: Rc<Rule<Pat>>,
     name: &'a str,
-    fields: OrderMap<&'a str, OrderSet<Vec<usize>>>,
+    fields: IndexMap<&'a str, IndexSet<Vec<usize>>>,
 }
 
 trait RuleWithNamedFieldsMethods<Pat> {
@@ -64,7 +64,7 @@ impl<Pat: PartialEq> RuleWithNamedFieldsMethods<Pat> for RuleWithNamedFields<Pat
                 .map(|rule| Variant {
                     rule: rule.clone(),
                     name: "",
-                    fields: OrderMap::new(),
+                    fields: IndexMap::new(),
                 })
                 .collect();
             for (field, paths) in &self.fields {
@@ -78,7 +78,7 @@ impl<Pat: PartialEq> RuleWithNamedFieldsMethods<Pat> for RuleWithNamedFields<Pat
                             variants[path[0]]
                                 .fields
                                 .entry(&field[..])
-                                .or_insert_with(OrderSet::new)
+                                .or_insert_with(IndexSet::new)
                                 .insert(path[1..].to_vec());
                         }
                     }
@@ -95,12 +95,12 @@ impl<Pat: PartialEq> RuleWithNamedFieldsMethods<Pat> for RuleWithNamedFields<Pat
 }
 
 trait RuleTypeMethods {
-    fn field_pathset_type(&self, paths: &OrderSet<Vec<usize>>) -> Src;
+    fn field_pathset_type(&self, paths: &IndexSet<Vec<usize>>) -> Src;
     fn field_type(&self, path: &[usize]) -> Src;
 }
 
 impl<Pat> RuleTypeMethods for Rule<Pat> {
-    fn field_pathset_type(&self, paths: &OrderSet<Vec<usize>>) -> Src {
+    fn field_pathset_type(&self, paths: &IndexSet<Vec<usize>>) -> Src {
         let ty = self.field_type(paths.get_index(0).unwrap());
         if paths.len() > 1 {
             // HACK(eddyb) find a way to compare `Src` w/o printing (`to_ugly_string`).
@@ -363,9 +363,9 @@ impl<Pat: Ord + Hash + MatchesEmpty + RustInputPat> GrammarGenerateMethods for G
 
         let rules = &RuleMap {
             named: &self.rules,
-            anon: RefCell::new(OrderSet::new()),
-            desc: RefCell::new(OrderMap::new()),
-            anon_shape: RefCell::new(OrderMap::new()),
+            anon: RefCell::new(IndexSet::new()),
+            desc: RefCell::new(IndexMap::new()),
+            anon_shape: RefCell::new(IndexMap::new()),
         };
 
         let mut out = concat!(
@@ -379,7 +379,7 @@ impl<Pat: Ord + Hash + MatchesEmpty + RustInputPat> GrammarGenerateMethods for G
             out += declare_rule(name, rule, rules) + impl_parse_with::<Pat>(name);
         }
 
-        let mut code_labels = OrderMap::new();
+        let mut code_labels = IndexMap::new();
         out += define_parse_fn(rules, &mut code_labels);
 
         let mut i = 0;
@@ -430,7 +430,7 @@ impl<Pat: Ord + Hash + MatchesEmpty + RustInputPat> GrammarGenerateMethods for G
 
 #[must_use]
 struct Continuation<'a> {
-    code_labels: &'a mut OrderMap<Rc<CodeLabel>, usize>,
+    code_labels: &'a mut IndexMap<Rc<CodeLabel>, usize>,
     fn_code_label: &'a mut Rc<CodeLabel>,
     code_label_arms: &'a mut Vec<Src>,
     code: Code,
@@ -1045,7 +1045,7 @@ where
     Pat: Ord + Hash + RustInputPat,
 {
     let ident = Src::ident(name);
-    let field_handle_expr = |rule: &Rule<_>, paths: &OrderSet<Vec<usize>>| {
+    let field_handle_expr = |rule: &Rule<_>, paths: &IndexSet<Vec<usize>>| {
         let paths_expr = paths.iter().map(|path| {
             // HACK(eddyb) workaround `quote!(#i)` producing `0usize`.
             let path = path
@@ -1357,7 +1357,7 @@ fn rule_handle_debug_impl(name: &str, has_fields: bool) -> Src {
 
 fn define_parse_fn<Pat>(
     rules: &RuleMap<'_, Pat>,
-    code_labels: &mut OrderMap<Rc<CodeLabel>, usize>,
+    code_labels: &mut IndexMap<Rc<CodeLabel>, usize>,
 ) -> Src
 where
     Pat: Ord + Hash + RustInputPat,
@@ -1467,7 +1467,7 @@ fn impl_debug_for_handle_any(all_parse_nodes: &[ParseNode]) -> Src {
 
 fn code_label_decl_and_impls<Pat>(
     rules: &RuleMap<'_, Pat>,
-    code_labels: &OrderMap<Rc<CodeLabel>, usize>,
+    code_labels: &IndexMap<Rc<CodeLabel>, usize>,
 ) -> Src {
     let all_labels = rules
         .named
