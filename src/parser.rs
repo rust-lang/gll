@@ -87,6 +87,14 @@ where
         self.remaining
     }
 
+    /// Get the current result range, and leave behind an empty range
+    /// (at the end of the current result / start of the remaining input).
+    pub fn take_result(&mut self) -> Range<'i> {
+        let result = self.result;
+        self.result = Range(result.frontiers().1);
+        result
+    }
+
     pub fn with_result_and_remaining<'a>(
         &'a mut self,
         result: Range<'i>,
@@ -174,6 +182,7 @@ where
 
     // FIXME(eddyb) safeguard this against misuse.
     pub fn forest_add_split(&mut self, kind: P, left: ParseNode<'i, P>) {
+        self.result = Range(left.range.join(self.result.0).unwrap());
         self.state
             .forest
             .possible_splits
