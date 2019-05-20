@@ -180,7 +180,9 @@ testcases![
     nested_or {
         A = x:"x" { a:"a" | b:"b" };
     }:
-    // FIXME(eddyb) figure out why the output is not `... => A {...}`.
     A("xa") => "\
-1:1-1:3 => ";
+1:1-1:3 => A {
+    x: 1:1-1:2,
+    a: 1:2-1:3,
+}";
 ];

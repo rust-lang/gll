@@ -131,7 +131,7 @@ where
     pub fn save(&mut self, kind: P) {
         let old_saved = self.saved.replace(ParseNode {
             kind,
-            range: self.parser.result(),
+            range: self.parser.take_result(),
         });
         assert_eq!(old_saved, None);
     }
