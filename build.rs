@@ -1,8 +1,4 @@
-extern crate grammer;
-extern crate indexing;
-extern crate ordermap;
-extern crate proc_macro2;
-extern crate proc_quote;
+#![deny(rust_2018_idioms)]
 
 // HACK(eddyb) bootstrap by including a subset of the `gll` crate.
 #[path = "src/generate/mod.rs"]
@@ -23,12 +19,13 @@ fn main() {
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
 
-    let mut grammar = proc_macro::builtin();
-    grammar.extend(grammer::grammar_grammar());
+    let mut cx = proc_macro::Context::new();
+    let mut grammar = proc_macro::builtin(&mut cx);
+    grammar.extend(grammer::grammar_grammar(&mut cx));
 
     fs::write(
         &out_dir.join("parse_grammar.rs"),
-        generate::rust::generate(&grammar).to_rustfmt_or_pretty_string(),
+        generate::rust::generate(&mut cx, &grammar).to_rustfmt_or_pretty_string(),
     )
     .unwrap();
 }
