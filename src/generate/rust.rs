@@ -6,7 +6,6 @@ use grammer::rule::{FieldPathset, MatchesEmpty, Rule, RuleWithNamedFields, SepKi
 
 use indexmap::{map::Entry, IndexMap, IndexSet};
 use std::borrow::Cow;
-use std::cell::RefCell;
 use std::fmt::Write as FmtWrite;
 use std::hash::Hash;
 use std::ops::Add;
@@ -32,9 +31,9 @@ impl<S: AsRef<str>> RustInputPat for SPat<S> {
 
 struct RuleMap<'a> {
     named: &'a IndexMap<IStr, RuleWithNamedFields>,
-    anon: RefCell<IndexSet<IRule>>,
-    desc: RefCell<IndexMap<IRule, String>>,
-    anon_shape: RefCell<IndexMap<IRule, ParseNodeShape<ParseNodeKind>>>,
+    anon: IndexSet<IRule>,
+    desc: IndexMap<IRule, String>,
+    shape: IndexMap<IRule, ParseNodeShape<ParseNodeKind>>,
 }
 
 struct ParseNode {
@@ -106,14 +105,14 @@ impl<Pat> RuleWithNamedFieldsMethods<Pat> for RuleWithNamedFields {
 trait RuleMethods<Pat> {
     fn field_pathset_type(self, cx: &Context<Pat>, paths: &FieldPathset) -> Src;
     fn field_type(self, cx: &Context<Pat>, path: &[usize]) -> Src;
-    fn parse_node_kind(self, cx: &Context<Pat>, rules: &RuleMap<'_>) -> ParseNodeKind;
-    fn parse_node_desc(self, cx: &Context<Pat>, rules: &RuleMap<'_>) -> String;
-    fn fill_parse_node_shape(self, cx: &mut Context<Pat>, rules: &RuleMap<'_>);
-    fn parse_node_desc_uncached(self, cx: &Context<Pat>, rules: &RuleMap<'_>) -> String;
+    fn parse_node_kind(self, cx: &Context<Pat>, rules: &mut RuleMap<'_>) -> ParseNodeKind;
+    fn parse_node_desc(self, cx: &Context<Pat>, rules: &mut RuleMap<'_>) -> String;
+    fn fill_parse_node_shape(self, cx: &mut Context<Pat>, rules: &mut RuleMap<'_>);
+    fn parse_node_desc_uncached(self, cx: &Context<Pat>, rules: &mut RuleMap<'_>) -> String;
     fn parse_node_shape_uncached(
         self,
         cx: &mut Context<Pat>,
-        rules: &RuleMap<'_>,
+        rules: &mut RuleMap<'_>,
     ) -> ParseNodeShape<ParseNodeKind>;
 }
 
@@ -158,41 +157,37 @@ impl<Pat: Eq + Hash + RustInputPat> RuleMethods<Pat> for IRule {
         }
     }
 
-    fn parse_node_kind(self, cx: &Context<Pat>, rules: &RuleMap<'_>) -> ParseNodeKind {
+    fn parse_node_kind(self, cx: &Context<Pat>, rules: &mut RuleMap<'_>) -> ParseNodeKind {
         if let Rule::Call(r) = cx[self] {
             return ParseNodeKind::NamedRule(cx[r].to_string());
         }
 
-        if let Some((i, _)) = rules.anon.borrow().get_full(&self) {
+        if let Some((i, _)) = rules.anon.get_full(&self) {
             return ParseNodeKind::Anon(i);
         }
-        let i = rules.anon.borrow().len();
-        rules.anon.borrow_mut().insert(self);
+        let i = rules.anon.len();
+        rules.anon.insert(self);
         ParseNodeKind::Anon(i)
     }
-    fn parse_node_desc(self, cx: &Context<Pat>, rules: &RuleMap<'_>) -> String {
-        if let Some(desc) = rules.desc.borrow().get(&self) {
+    fn parse_node_desc(self, cx: &Context<Pat>, rules: &mut RuleMap<'_>) -> String {
+        if let Some(desc) = rules.desc.get(&self) {
             return desc.clone();
         }
         let desc = self.parse_node_desc_uncached(cx, rules);
-        match rules.desc.borrow_mut().entry(self) {
+        match rules.desc.entry(self) {
             Entry::Vacant(entry) => entry.insert(desc).clone(),
             Entry::Occupied(_) => unreachable!(),
         }
     }
     // FIXME(eddyb) this probably doesn't need the "fill" API anymore.
-    fn fill_parse_node_shape(self, cx: &mut Context<Pat>, rules: &RuleMap<'_>) {
-        if let Rule::Call(_) = cx[self] {
-            return;
-        }
-
-        if rules.anon_shape.borrow().contains_key(&self) {
+    fn fill_parse_node_shape(self, cx: &mut Context<Pat>, rules: &mut RuleMap<'_>) {
+        if rules.shape.contains_key(&self) {
             return;
         }
         let shape = self.parse_node_shape_uncached(cx, rules);
-        rules.anon_shape.borrow_mut().insert(self, shape);
+        rules.shape.insert(self, shape);
     }
-    fn parse_node_desc_uncached(self, cx: &Context<Pat>, rules: &RuleMap<'_>) -> String {
+    fn parse_node_desc_uncached(self, cx: &Context<Pat>, rules: &mut RuleMap<'_>) -> String {
         match cx[self] {
             Rule::Empty => "".to_string(),
             Rule::Eat(ref pat) => pat.rust_matcher().to_pretty_string(),
@@ -240,11 +235,18 @@ impl<Pat: Eq + Hash + RustInputPat> RuleMethods<Pat> for IRule {
     fn parse_node_shape_uncached(
         self,
         cx: &mut Context<Pat>,
-        rules: &RuleMap<'_>,
+        rules: &mut RuleMap<'_>,
     ) -> ParseNodeShape<ParseNodeKind> {
         match cx[self] {
             Rule::Empty | Rule::Eat(_) => ParseNodeShape::Opaque,
-            Rule::Call(_) => unreachable!(),
+            Rule::Call(name) => {
+                let rule = &rules.named[&name];
+                if rule.fields.is_empty() {
+                    ParseNodeShape::Opaque
+                } else {
+                    ParseNodeShape::Alias(rule.rule.parse_node_kind(cx, rules))
+                }
+            }
             Rule::Concat([left, right]) => ParseNodeShape::Split(
                 left.parse_node_kind(cx, rules),
                 right.parse_node_kind(cx, rules),
@@ -366,11 +368,11 @@ impl<Pat: Eq + Hash + MatchesEmpty + RustInputPat> GrammarGenerateMethods<Pat>
     fn generate_rust(&self, cx: &mut Context<Pat>) -> Src {
         self.check(cx);
 
-        let rules = &RuleMap {
+        let mut rules = RuleMap {
             named: &self.rules,
-            anon: RefCell::new(IndexSet::new()),
-            desc: RefCell::new(IndexMap::new()),
-            anon_shape: RefCell::new(IndexMap::new()),
+            anon: IndexSet::new(),
+            desc: IndexMap::new(),
+            shape: IndexMap::new(),
         };
 
         let mut out = concat!(
@@ -381,47 +383,36 @@ impl<Pat: Eq + Hash + MatchesEmpty + RustInputPat> GrammarGenerateMethods<Pat>
         .unwrap();
 
         for (&name, rule) in rules.named {
-            out += declare_rule(name, rule, cx, rules) + impl_parse_with(cx, name);
+            out += declare_rule(name, rule, cx, &mut rules) + impl_parse_with(cx, name);
         }
 
         let mut code_labels = IndexMap::new();
-        out += define_parse_fn(cx, rules, &mut code_labels);
+        out += define_parse_fn(cx, &mut rules, &mut code_labels);
 
-        for rule in rules.named.values() {
-            if !rule.fields.is_empty() {
-                rule.rule.parse_node_kind(cx, rules);
-            }
+        for &name in rules.named.keys() {
+            cx.intern(Rule::Call(name))
+                .fill_parse_node_shape(cx, &mut rules);
         }
 
         let mut i = 0;
-        while i < rules.anon.borrow().len() {
-            let rule = *rules.anon.borrow().get_index(i).unwrap();
-            rule.fill_parse_node_shape(cx, rules);
+        while i < rules.anon.len() {
+            let rule = *rules.anon.get_index(i).unwrap();
+            rule.fill_parse_node_shape(cx, &mut rules);
             i += 1;
         }
-        let all_parse_nodes: Vec<ParseNode> = rules
-            .named
-            .iter()
-            .map(|(&name, rule)| {
-                let ident = Src::ident(&cx[name]);
+        let all_parse_nodes: Vec<ParseNode> = (0..rules.shape.len())
+            .map(|i| {
+                let (&rule, shape) = rules.shape.get_index(i).unwrap();
+                let shape = shape.clone();
                 ParseNode {
-                    kind: ParseNodeKind::NamedRule(cx[name].to_string()),
-                    desc: cx[name].to_string(),
-                    shape: if rule.fields.is_empty() {
-                        ParseNodeShape::Opaque
-                    } else {
-                        ParseNodeShape::Alias(rule.rule.parse_node_kind(cx, rules))
-                    },
-                    ty: Some(quote!(#ident<'_, '_, _>)),
-                }
-            })
-            .chain((0..i).map(|i| {
-                let rule = *rules.anon.borrow().get_index(i).unwrap();
-                ParseNode {
-                    kind: rule.parse_node_kind(cx, rules),
-                    desc: rule.parse_node_desc(cx, rules),
-                    shape: rules.anon_shape.borrow()[&rule].clone(),
+                    kind: rule.parse_node_kind(cx, &mut rules),
+                    desc: rule.parse_node_desc(cx, &mut rules),
+                    shape,
                     ty: match cx[rule] {
+                        Rule::Call(r) => {
+                            let ident = Src::ident(&cx[r]);
+                            Some(quote!(#ident<'_, '_, _>))
+                        }
                         Rule::RepeatMany(elem, _) | Rule::RepeatMore(elem, _) => match cx[elem] {
                             Rule::Eat(_) => Some(quote!([()])),
                             Rule::Call(r) => {
@@ -433,19 +424,19 @@ impl<Pat: Eq + Hash + MatchesEmpty + RustInputPat> GrammarGenerateMethods<Pat>
                         _ => None,
                     },
                 }
-            }))
+            })
             .collect();
 
         out + declare_parse_node_kind(&all_parse_nodes)
             + impl_debug_for_handle_any(&all_parse_nodes)
-            + code_label_decl_and_impls(cx, rules, &code_labels)
+            + code_label_decl_and_impls(cx, &mut rules, &code_labels)
     }
 }
 
 #[must_use]
-struct Continuation<'a, Pat> {
+struct Continuation<'a, 'r, Pat> {
     cx: &'a mut Context<Pat>,
-    rules: Option<&'a RuleMap<'a>>,
+    rules: Option<&'a mut RuleMap<'r>>,
     code_labels: &'a mut IndexMap<Rc<CodeLabel>, usize>,
     fn_code_label: &'a mut Rc<CodeLabel>,
     code_label_arms: &'a mut Vec<Src>,
@@ -459,7 +450,7 @@ enum Code {
     Label(Rc<CodeLabel>),
 }
 
-impl<Pat> Continuation<'_, Pat> {
+impl<'r, Pat> Continuation<'_, 'r, Pat> {
     fn next_code_label(&mut self) -> Rc<CodeLabel> {
         let counter = self
             .code_labels
@@ -473,10 +464,10 @@ impl<Pat> Continuation<'_, Pat> {
         label
     }
 
-    fn clone(&mut self) -> Continuation<'_, Pat> {
+    fn clone(&mut self) -> Continuation<'_, 'r, Pat> {
         Continuation {
             cx: self.cx,
-            rules: self.rules,
+            rules: self.rules.as_mut().map(|rules| &mut **rules),
             code_labels: self.code_labels,
             fn_code_label: self.fn_code_label,
             code_label_arms: self.code_label_arms,
@@ -518,11 +509,14 @@ impl<Pat> Continuation<'_, Pat> {
 }
 
 trait ContFn<Pat> {
-    fn apply(self, cont: Continuation<'_, Pat>) -> Continuation<'_, Pat>;
+    fn apply<'a, 'r>(self, cont: Continuation<'a, 'r, Pat>) -> Continuation<'a, 'r, Pat>;
 }
 
-impl<Pat, F: FnOnce(Continuation<'_, Pat>) -> Continuation<'_, Pat>> ContFn<Pat> for F {
-    fn apply(self, cont: Continuation<'_, Pat>) -> Continuation<'_, Pat> {
+impl<Pat, F> ContFn<Pat> for F
+where
+    F: for<'a, 'r> FnOnce(Continuation<'a, 'r, Pat>) -> Continuation<'a, 'r, Pat>,
+{
+    fn apply<'a, 'r>(self, cont: Continuation<'a, 'r, Pat>) -> Continuation<'a, 'r, Pat> {
         self(cont)
     }
 }
@@ -530,7 +524,7 @@ impl<Pat, F: FnOnce(Continuation<'_, Pat>) -> Continuation<'_, Pat>> ContFn<Pat>
 struct Compose<F, G>(F, G);
 
 impl<Pat, F: ContFn<Pat>, G: ContFn<Pat>> ContFn<Pat> for Compose<F, G> {
-    fn apply(self, cont: Continuation<'_, Pat>) -> Continuation<'_, Pat> {
+    fn apply<'a, 'r>(self, cont: Continuation<'a, 'r, Pat>) -> Continuation<'a, 'r, Pat> {
         self.1.apply(self.0.apply(cont))
     }
 }
@@ -541,7 +535,7 @@ struct Thunk<F>(F);
 impl<F> Thunk<F> {
     fn new<Pat>(f: F) -> Self
     where
-        F: FnOnce(Continuation<'_, Pat>) -> Continuation<'_, Pat>,
+        F: for<'a, 'r> FnOnce(Continuation<'a, 'r, Pat>) -> Continuation<'a, 'r, Pat>,
     {
         Thunk(f)
     }
@@ -555,7 +549,7 @@ impl<F, G> Add<Thunk<G>> for Thunk<F> {
 }
 
 impl<Pat, F: ContFn<Pat>> ContFn<Pat> for Thunk<F> {
-    fn apply(self, cont: Continuation<'_, Pat>) -> Continuation<'_, Pat> {
+    fn apply<'a, 'r>(self, cont: Continuation<'a, 'r, Pat>) -> Continuation<'a, 'r, Pat> {
         self.0.apply(cont)
     }
 }
@@ -632,7 +626,11 @@ fn ret<Pat>() -> Thunk<impl ContFn<Pat>> {
 }
 
 trait ForEachThunk<Pat> {
-    fn for_each_thunk(self, cont: &mut Continuation<'_, Pat>, f: impl FnMut(Continuation<'_, Pat>));
+    fn for_each_thunk(
+        self,
+        cont: &mut Continuation<'_, '_, Pat>,
+        f: impl FnMut(Continuation<'_, '_, Pat>),
+    );
 }
 
 impl<Pat, F> ForEachThunk<Pat> for Thunk<F>
@@ -641,8 +639,8 @@ where
 {
     fn for_each_thunk(
         self,
-        cont: &mut Continuation<'_, Pat>,
-        mut f: impl FnMut(Continuation<'_, Pat>),
+        cont: &mut Continuation<'_, '_, Pat>,
+        mut f: impl FnMut(Continuation<'_, '_, Pat>),
     ) {
         f(self.apply(cont.clone()));
     }
@@ -655,8 +653,8 @@ where
 {
     fn for_each_thunk(
         self,
-        cont: &mut Continuation<'_, Pat>,
-        mut f: impl FnMut(Continuation<'_, Pat>),
+        cont: &mut Continuation<'_, '_, Pat>,
+        mut f: impl FnMut(Continuation<'_, '_, Pat>),
     ) {
         self.0.for_each_thunk(cont, &mut f);
         self.1.for_each_thunk(cont, &mut f);
@@ -672,8 +670,8 @@ where
 {
     fn for_each_thunk(
         self,
-        cont: &mut Continuation<'_, Pat>,
-        mut f: impl FnMut(Continuation<'_, Pat>),
+        cont: &mut Continuation<'_, '_, Pat>,
+        mut f: impl FnMut(Continuation<'_, '_, Pat>),
     ) {
         self.0.for_each(|x| {
             x.for_each_thunk(cont, &mut f);
@@ -775,22 +773,23 @@ fn concat_and_forest_add<Pat>(
 trait RuleGenerateMethods<Pat> {
     fn generate_parse(
         self,
-    ) -> Thunk<Box<dyn FnOnce(Continuation<'_, Pat>) -> Continuation<'_, Pat>>>;
+    ) -> Thunk<Box<dyn for<'a, 'r> FnOnce(Continuation<'a, 'r, Pat>) -> Continuation<'a, 'r, Pat>>>;
 
     fn generate_traverse_shape(
         self,
         refutable: bool,
         cx: &mut Context<Pat>,
-        rules: &RuleMap<'_>,
+        rules: &mut RuleMap<'_>,
     ) -> Src;
 }
 
 impl<Pat: Eq + Hash + RustInputPat> RuleGenerateMethods<Pat> for IRule {
     fn generate_parse(
         self,
-    ) -> Thunk<Box<dyn FnOnce(Continuation<'_, Pat>) -> Continuation<'_, Pat>>> {
-        Thunk::new(Box::new(move |cont: Continuation<'_, Pat>| {
-            match (&cont.cx[self], cont.rules) {
+    ) -> Thunk<Box<dyn for<'a, 'r> FnOnce(Continuation<'a, 'r, Pat>) -> Continuation<'a, 'r, Pat>>>
+    {
+        Thunk::new(Box::new(move |mut cont: Continuation<'_, '_, Pat>| {
+            match (&cont.cx[self], &mut cont.rules) {
                 (Rule::Empty, _) => cont,
                 (Rule::Eat(pat), _) => {
                     let pat = pat.rust_matcher();
@@ -809,22 +808,18 @@ impl<Pat: Eq + Hash + RustInputPat> RuleGenerateMethods<Pat> for IRule {
                     self.parse_node_kind(cont.cx, rules),
                 )
                 .apply(cont),
-                (Rule::Or(cases), None) => {
-                    // HACK(eddyb) only clones a `Vec` to avoid `cx` borrow conflicts.
-                    let cases = cases.clone();
-                    parallel(ThunkIter(cases.iter().map(|rule| rule.generate_parse()))).apply(cont)
-                }
-                (Rule::Or(cases), Some(rules)) => {
+                (Rule::Or(cases), _) => {
                     // HACK(eddyb) only clones a `Vec` to avoid `cx` borrow conflicts.
                     let cases = cases.clone();
                     parallel(ThunkIter(cases.iter().map(|rule| {
-                        Thunk::new(move |cont| {
-                            (rule.generate_parse()
+                        Thunk::new(move |mut cont| match &mut cont.rules {
+                            Some(rules) => (rule.generate_parse()
                                 + forest_add_choice(
                                     &self.parse_node_kind(cont.cx, rules),
                                     rule.parse_node_kind(cont.cx, rules),
                                 ))
-                            .apply(cont)
+                            .apply(cont),
+                            None => rule.generate_parse().apply(cont),
                         })
                     })))
                     .apply(cont)
@@ -940,7 +935,7 @@ impl<Pat: Eq + Hash + RustInputPat> RuleGenerateMethods<Pat> for IRule {
         self,
         refutable: bool,
         cx: &mut Context<Pat>,
-        rules: &RuleMap<'_>,
+        rules: &mut RuleMap<'_>,
     ) -> Src {
         match cx[self] {
             Rule::Empty
@@ -1033,7 +1028,7 @@ fn declare_rule<Pat>(
     name: IStr,
     rule: &RuleWithNamedFields,
     cx: &mut Context<Pat>,
-    rules: &RuleMap<'_>,
+    rules: &mut RuleMap<'_>,
 ) -> Src
 where
     Pat: Eq + Hash + RustInputPat,
@@ -1105,7 +1100,7 @@ fn impl_rule_from_forest<Pat>(
     rule: &RuleWithNamedFields,
     variants: Option<&[Variant]>,
     cx: &mut Context<Pat>,
-    rules: &RuleMap<'_>,
+    rules: &mut RuleMap<'_>,
 ) -> Src
 where
     Pat: Eq + Hash + RustInputPat,
@@ -1211,7 +1206,7 @@ fn impl_rule_one_and_all<Pat>(
     rule: &RuleWithNamedFields,
     variants: Option<&[Variant]>,
     cx: &mut Context<Pat>,
-    rules: &RuleMap<'_>,
+    rules: &mut RuleMap<'_>,
 ) -> Src
 where
     Pat: Eq + Hash + RustInputPat,
@@ -1432,7 +1427,7 @@ fn rule_handle_debug_impl<Pat>(cx: &mut Context<Pat>, name: IStr, has_fields: bo
 
 fn define_parse_fn<Pat>(
     cx: &mut Context<Pat>,
-    rules: &RuleMap<'_>,
+    rules: &mut RuleMap<'_>,
     code_labels: &mut IndexMap<Rc<CodeLabel>, usize>,
 ) -> Src
 where
@@ -1444,7 +1439,7 @@ where
         let rules = if rule.fields.is_empty() {
             None
         } else {
-            Some(rules)
+            Some(&mut *rules)
         };
         (rule.rule.generate_parse() + ret())
             .apply(Continuation {
