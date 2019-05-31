@@ -36,13 +36,6 @@ struct RuleMap<'a> {
     shape: IndexMap<IRule, ParseNodeShape<ParseNodeKind>>,
 }
 
-struct ParseNode {
-    rule: IRule,
-    kind: ParseNodeKind,
-    desc: String,
-    shape: ParseNodeShape<ParseNodeKind>,
-}
-
 struct Variant {
     rule: IRule,
     name: IStr,
@@ -400,21 +393,16 @@ impl<Pat: Eq + Hash + MatchesEmpty + RustInputPat> GrammarGenerateMethods<Pat>
             rule.fill_parse_node_shape(cx, &mut rules);
             i += 1;
         }
-        let all_parse_nodes: Vec<ParseNode> = (0..rules.shape.len())
-            .map(|i| {
-                let (&rule, shape) = rules.shape.get_index(i).unwrap();
-                let shape = shape.clone();
-                ParseNode {
-                    rule,
-                    kind: rule.parse_node_kind(cx, &mut rules),
-                    desc: rule.parse_node_desc(cx, &mut rules),
-                    shape,
-                }
-            })
+
+        let all_rules: Vec<_> = rules
+            .named
+            .keys()
+            .map(|&name| cx.intern(Rule::Call(name)))
+            .chain(rules.anon.iter().cloned())
             .collect();
 
-        out + declare_parse_node_kind(&all_parse_nodes)
-            + impl_debug_for_handle_any(cx, &all_parse_nodes)
+        out + declare_parse_node_kind(cx, &mut rules, &all_rules)
+            + impl_debug_for_handle_any(cx, &mut rules, &all_rules)
             + code_label_decl_and_impls(cx, &mut rules, &code_labels)
     }
 }
@@ -1452,19 +1440,31 @@ where
     })
 }
 
-fn declare_parse_node_kind(all_parse_nodes: &[ParseNode]) -> Src {
+fn declare_parse_node_kind<Pat: Eq + Hash + RustInputPat>(
+    cx: &mut Context<Pat>,
+    rules: &mut RuleMap<'_>,
+    all_rules: &[IRule],
+) -> Src {
     // FIXME(eddyb) figure out a more efficient way to reuse
     // iterators with `quote!(...)` than `.collect::<Vec<_>>()`.
-    let nodes_kind = all_parse_nodes
+    let nodes_kind = all_rules
         .iter()
-        .map(|node| &node.kind)
+        .map(|rule| rule.parse_node_kind(cx, rules))
         .collect::<Vec<_>>();
     let nodes_kind_ident = nodes_kind.iter().map(|kind| kind.ident());
-    let nodes_doc = all_parse_nodes
+    // HACK(eddyb) only collected to a `Vec` to avoid `cx`/`rules` borrow conflicts.
+    let nodes_doc = all_rules
         .iter()
-        .map(|node| format!("`{}`", node.desc.replace('`', "\\`")));
-    let nodes_desc = all_parse_nodes.iter().map(|node| &node.desc);
-    let nodes_shape = all_parse_nodes.iter().map(|node| &node.shape);
+        .map(|&rule| format!("`{}`", rule.parse_node_desc(cx, rules).replace('`', "\\`")))
+        .collect::<Vec<_>>();
+    let nodes_desc = all_rules
+        .iter()
+        .map(|&rule| rule.parse_node_desc(cx, rules))
+        .collect::<Vec<_>>();
+    let nodes_shape = all_rules
+        .iter()
+        .map(|&rule| rules.shape[&rule].clone())
+        .collect::<Vec<_>>();
 
     quote!(
         pub struct _G;
@@ -1495,31 +1495,34 @@ fn declare_parse_node_kind(all_parse_nodes: &[ParseNode]) -> Src {
     )
 }
 
-fn impl_debug_for_handle_any<Pat>(cx: &mut Context<Pat>, all_parse_nodes: &[ParseNode]) -> Src {
-    let arms = all_parse_nodes
-        .iter()
-        .filter_map(|ParseNode { rule, kind, .. }| {
-            let ty = match cx[*rule] {
+fn impl_debug_for_handle_any<Pat: Eq + Hash + RustInputPat>(
+    cx: &mut Context<Pat>,
+    rules: &mut RuleMap<'_>,
+    all_rules: &[IRule],
+) -> Src {
+    let arms = all_rules.iter().filter_map(|&rule| {
+        let ty = match cx[rule] {
+            Rule::Call(r) => {
+                let ident = Src::ident(&cx[r]);
+                quote!(#ident<'_, '_, _>)
+            }
+            Rule::RepeatMany(elem, _) | Rule::RepeatMore(elem, _) => match cx[elem] {
+                Rule::Eat(_) => quote!([()]),
                 Rule::Call(r) => {
                     let ident = Src::ident(&cx[r]);
-                    quote!(#ident<'_, '_, _>)
+                    quote!([#ident<'_, '_, _>])
                 }
-                Rule::RepeatMany(elem, _) | Rule::RepeatMore(elem, _) => match cx[elem] {
-                    Rule::Eat(_) => quote!([()]),
-                    Rule::Call(r) => {
-                        let ident = Src::ident(&cx[r]);
-                        quote!([#ident<'_, '_, _>])
-                    }
-                    _ => return None,
-                },
                 _ => return None,
-            };
-            Some(quote!(#kind => write!(f, "{:?}", Handle::<_, #ty> {
+            },
+            _ => return None,
+        };
+        let kind = rule.parse_node_kind(cx, rules);
+        Some(quote!(#kind => write!(f, "{:?}", Handle::<_, #ty> {
                 node: self.node,
                 forest: self.forest,
                 _marker: PhantomData,
             }),))
-        });
+    });
     quote!(impl<I: gll::input::Input> fmt::Debug for Handle<'_, '_, I, Any> {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             match self.node.kind {
