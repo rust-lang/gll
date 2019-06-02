@@ -384,6 +384,12 @@ impl<Pat: Eq + Hash + MatchesEmpty + RustInputPat> GrammarGenerateMethods<Pat>
         let mut code_labels = IndexMap::new();
         out += define_parse_fn(cx, rules, &mut code_labels);
 
+        for rule in rules.named.values() {
+            if !rule.fields.is_empty() {
+                rule.rule.parse_node_kind(cx, rules);
+            }
+        }
+
         let mut i = 0;
         while i < rules.anon.borrow().len() {
             let rule = *rules.anon.borrow().get_index(i).unwrap();
@@ -406,21 +412,24 @@ impl<Pat: Eq + Hash + MatchesEmpty + RustInputPat> GrammarGenerateMethods<Pat>
                     ty: Some(quote!(#ident<'_, '_, _>)),
                 }
             })
-            .chain(rules.anon.borrow().iter().map(|&rule| ParseNode {
-                kind: rule.parse_node_kind(cx, rules),
-                desc: rule.parse_node_desc(cx, rules),
-                shape: rules.anon_shape.borrow()[&rule].clone(),
-                ty: match cx[rule] {
-                    Rule::RepeatMany(elem, _) | Rule::RepeatMore(elem, _) => match cx[elem] {
-                        Rule::Eat(_) => Some(quote!([()])),
-                        Rule::Call(r) => {
-                            let ident = Src::ident(&cx[r]);
-                            Some(quote!([#ident<'_, '_, _>]))
-                        }
+            .chain((0..i).map(|i| {
+                let rule = *rules.anon.borrow().get_index(i).unwrap();
+                ParseNode {
+                    kind: rule.parse_node_kind(cx, rules),
+                    desc: rule.parse_node_desc(cx, rules),
+                    shape: rules.anon_shape.borrow()[&rule].clone(),
+                    ty: match cx[rule] {
+                        Rule::RepeatMany(elem, _) | Rule::RepeatMore(elem, _) => match cx[elem] {
+                            Rule::Eat(_) => Some(quote!([()])),
+                            Rule::Call(r) => {
+                                let ident = Src::ident(&cx[r]);
+                                Some(quote!([#ident<'_, '_, _>]))
+                            }
+                            _ => None,
+                        },
                         _ => None,
                     },
-                    _ => None,
-                },
+                }
             }))
             .collect();
 
