@@ -267,11 +267,14 @@ impl<Pat: Eq + Hash + RustInputPat> RuleMethods<Pat> for IRule {
                     cx.intern(Rule::Opt(tail)).parse_node_kind(cx, rules),
                 )
             }
-            Rule::RepeatMore(elem, Some((sep, SepKind::Trailing))) => ParseNodeShape::Split(
-                cx.intern(Rule::RepeatMore(elem, Some((sep, SepKind::Simple))))
-                    .parse_node_kind(cx, rules),
-                cx.intern(Rule::Opt(sep)).parse_node_kind(cx, rules),
-            ),
+            Rule::RepeatMore(elem, Some((sep, SepKind::Trailing))) => {
+                let many = cx.intern(Rule::RepeatMany(elem, Some((sep, SepKind::Trailing))));
+                let tail = cx.intern(Rule::Concat([sep, many]));
+                ParseNodeShape::Split(
+                    elem.parse_node_kind(cx, rules),
+                    cx.intern(Rule::Opt(tail)).parse_node_kind(cx, rules),
+                )
+            }
         }
     }
 }
@@ -915,11 +918,43 @@ impl<Pat: Eq + Hash + RustInputPat> RuleGenerateMethods<Pat> for IRule {
                     })
                     .apply(cont)
                 }
-                (&Rule::RepeatMore(elem, Some((sep, SepKind::Trailing))), _) => {
-                    let rule = cont
+                (&Rule::RepeatMore(elem, Some((sep, SepKind::Trailing))), None) => {
+                    fix(|label| {
+                        elem.generate_parse()
+                            + opt(sep.generate_parse() +
+                                // FIXME(eddyb) this would imply `RepeatMany` w/ `SepKind::Trailing`
+                                // could be optimized slightly.
+                    opt(call(label)))
+                    })
+                    .apply(cont)
+                }
+                (&Rule::RepeatMore(elem, Some((sep, SepKind::Trailing))), Some(rules)) => {
+                    let elem_parse_node_kind = elem.parse_node_kind(cont.cx, rules);
+                    let sep_parse_node_kind = sep.parse_node_kind(cont.cx, rules);
+                    let many = cont
                         .cx
-                        .intern(Rule::RepeatMore(elem, Some((sep, SepKind::Simple))));
-                    (rule.generate_parse() + opt(sep.generate_parse())).apply(cont)
+                        .intern(Rule::RepeatMany(elem, Some((sep, SepKind::Trailing))));
+                    let tail_parse_node_kind = cont
+                        .cx
+                        .intern(Rule::Concat([sep, many]))
+                        .parse_node_kind(cont.cx, rules);
+                    let parse_node_kind = self.parse_node_kind(cont.cx, rules);
+                    fix(|label| {
+                        concat_and_forest_add(
+                            elem_parse_node_kind,
+                            elem.generate_parse(),
+                            opt(concat_and_forest_add(
+                                sep_parse_node_kind,
+                                sep.generate_parse(),
+                                // FIXME(eddyb) this would imply `RepeatMany` w/ `SepKind::Trailing`
+                                // could be optimized slightly.
+                                opt(call(label)),
+                                tail_parse_node_kind,
+                            )),
+                            parse_node_kind,
+                        )
+                    })
+                    .apply(cont)
                 }
             },
         )
