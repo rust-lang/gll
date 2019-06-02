@@ -167,6 +167,11 @@ impl<'a, 'i, I: gll::input::Input, T> Handle<'a, 'i, I, [T]> {
     fn all_list_heads(
         mut self,
     ) -> ListHead<impl Iterator<Item = (Handle<'a, 'i, I, T>, Handle<'a, 'i, I, [T]>)>> {
+        // `Handle<[T]>` is always either a "many" (`X* ...`) or a "more" (`X+ ...`).
+        // Only `X* ...` can be empty, and to simplify the implementation of
+        // separated lists, an empty `Handle<[T]>` can be any optional node.
+
+        // A maybe empty-list is always optional, peel that off first.
         if let ParseNodeShape::Opt(_) = self.forest.grammar.parse_node_shape(self.node.kind) {
             if let Some(opt_child) = self.forest.unpack_opt(self.node) {
                 self.node = opt_child;
@@ -174,20 +179,38 @@ impl<'a, 'i, I: gll::input::Input, T> Handle<'a, 'i, I, [T]> {
                 return ListHead::Nil;
             }
         }
+
+        // At this point, `self` is a "more" (`X+ ...`) node, i.e. a "cons".
+        // In order to handle all 3 forms (`X+`, `X+ % S`, `X+ %% S`),
+        // we specifically expect to find a node with the same kind as `self`,
+        // preceded by the element and, for `X+ % S` or `X+ %% S`, a separator.
         ListHead::Cons(
             self.forest
                 .all_splits(self.node)
                 .flat_map(move |(elem, rest)| {
-                    if let ParseNodeShape::Split(..) =
-                        self.forest.grammar.parse_node_shape(rest.kind)
-                    {
-                        Some(self.forest.all_splits(rest))
-                            .into_iter()
-                            .flatten()
-                            .chain(None)
-                    } else {
-                        None.into_iter().flatten().chain(Some((elem, rest)))
-                    }
+                    // FIXME(eddyb) maybe rename `rest` to `tail`?
+                    let rests = match self.forest.unpack_opt(rest) {
+                        None => {
+                            // The tail is an empty list, and we can use the
+                            // empty optional node to signal that, even though
+                            // it's not necessarily a proper list, e.g. when
+                            // `self` is a `X+ % S`, `rest` is a `{S X+ % S}?`.
+                            None.into_iter().flatten().chain(Some(rest))
+                        }
+                        Some(rest) => {
+                            if rest.kind == self.node.kind {
+                                // The tail is that of unseparated `X+`.
+                                None.into_iter().flatten().chain(Some(rest))
+                            } else {
+                                // Skip over a (presumed) separator.
+                                Some(self.forest.all_splits(rest).map(|(_, rest)| rest))
+                                    .into_iter()
+                                    .flatten()
+                                    .chain(None)
+                            }
+                        }
+                    };
+                    rests.map(move |rest| (elem, rest))
                 })
                 .map(move |(elem, rest)| {
                     (
