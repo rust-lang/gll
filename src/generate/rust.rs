@@ -4,7 +4,7 @@ use crate::scannerless::Pat as SPat;
 use grammer::context::{Context, IRule, IStr};
 use grammer::rule::{FieldPathset, MatchesEmpty, Rule, RuleWithNamedFields, SepKind};
 
-use indexmap::{map::Entry, IndexMap, IndexSet};
+use indexmap::{IndexMap, IndexSet};
 use std::borrow::Cow;
 use std::fmt::Write as FmtWrite;
 use std::hash::Hash;
@@ -32,7 +32,6 @@ impl<S: AsRef<str>> RustInputPat for SPat<S> {
 struct RuleMap<'a> {
     named: &'a IndexMap<IStr, RuleWithNamedFields>,
     anon: IndexSet<IRule>,
-    desc: IndexMap<IRule, String>,
 }
 
 struct Variant {
@@ -99,7 +98,6 @@ trait RuleMethods<Pat>: Sized {
     fn field_type(self, cx: &Context<Pat>, path: &[usize]) -> Src;
     fn parse_node_kind(self, cx: &Context<Pat>, rules: &mut RuleMap<'_>) -> ParseNodeKind;
     fn parse_node_desc(self, cx: &Context<Pat>, rules: &mut RuleMap<'_>) -> String;
-    fn parse_node_desc_uncached(self, cx: &Context<Pat>, rules: &mut RuleMap<'_>) -> String;
     fn parse_node_shape(
         self,
         cx: &mut Context<Pat>,
@@ -160,17 +158,8 @@ impl<Pat: Eq + Hash + RustInputPat> RuleMethods<Pat> for IRule {
         rules.anon.insert(self);
         ParseNodeKind::Anon(i)
     }
+
     fn parse_node_desc(self, cx: &Context<Pat>, rules: &mut RuleMap<'_>) -> String {
-        if let Some(desc) = rules.desc.get(&self) {
-            return desc.clone();
-        }
-        let desc = self.parse_node_desc_uncached(cx, rules);
-        match rules.desc.entry(self) {
-            Entry::Vacant(entry) => entry.insert(desc).clone(),
-            Entry::Occupied(_) => unreachable!(),
-        }
-    }
-    fn parse_node_desc_uncached(self, cx: &Context<Pat>, rules: &mut RuleMap<'_>) -> String {
         match cx[self] {
             Rule::Empty => "".to_string(),
             Rule::Eat(ref pat) => pat.rust_matcher().to_pretty_string(),
@@ -344,7 +333,6 @@ impl<Pat: Eq + Hash + MatchesEmpty + RustInputPat> GrammarGenerateMethods<Pat>
         let mut rules = RuleMap {
             named: &self.rules,
             anon: IndexSet::new(),
-            desc: IndexMap::new(),
         };
 
         let mut out = concat!(
