@@ -566,17 +566,19 @@ fn pop_saved<Pat, F: ContFn<Pat>>(f: impl FnOnce(Src) -> Thunk<F>) -> Thunk<impl
         })
 }
 
-fn push_saved<Pat>(parse_node_kind: ParseNodeKind) -> Thunk<impl ContFn<Pat>> {
-    let parse_node_kind_src = parse_node_kind.to_src();
-    thunk!(rt.save(#parse_node_kind_src);)
-        + Thunk::new(move |mut cont| {
-            if let Some((ret_label, outer_fn_label)) = cont.nested_frames.pop().unwrap() {
-                let inner_fn_label = mem::replace(cont.fn_code_label, outer_fn_label);
-                cont.reify_as(inner_fn_label);
-                cont = call(mem::replace(cont.to_label(), ret_label)).apply(cont);
-            }
-            cont
-        })
+fn push_saved<Pat: Eq + Hash + RustInputPat>(rule: IRule) -> Thunk<impl ContFn<Pat>> {
+    Thunk::new(move |mut cont| {
+        let rules = cont.rules.as_mut().unwrap();
+        let parse_node_kind_src = rule.parse_node_kind(cont.cx, rules).to_src();
+        thunk!(rt.save(#parse_node_kind_src);).apply(cont)
+    }) + Thunk::new(move |mut cont| {
+        if let Some((ret_label, outer_fn_label)) = cont.nested_frames.pop().unwrap() {
+            let inner_fn_label = mem::replace(cont.fn_code_label, outer_fn_label);
+            cont.reify_as(inner_fn_label);
+            cont = call(mem::replace(cont.to_label(), ret_label)).apply(cont);
+        }
+        cont
+    })
 }
 
 fn check<Pat>(condition: Src) -> Thunk<impl ContFn<Pat>> {
@@ -733,30 +735,42 @@ fn reify_as<Pat>(label: Rc<CodeLabel>) -> Thunk<impl ContFn<Pat>> {
     })
 }
 
-fn forest_add_choice<Pat>(
-    parse_node_kind: &ParseNodeKind,
-    choice: ParseNodeKind,
+fn forest_add_choice<Pat: Eq + Hash + RustInputPat>(
+    rule: IRule,
+    choice: IRule,
 ) -> Thunk<impl ContFn<Pat>> {
-    let parse_node_kind_src = parse_node_kind.to_src();
-    let choice_src = choice.to_src();
-    thunk!(rt.forest_add_choice(#parse_node_kind_src, #choice_src);)
+    Thunk::new(move |mut cont| {
+        if let Some(rules) = &mut cont.rules.as_mut() {
+            let parse_node_kind_src = rule.parse_node_kind(cont.cx, rules).to_src();
+            let choice_src = choice.parse_node_kind(cont.cx, rules).to_src();
+            cont = thunk!(rt.forest_add_choice(#parse_node_kind_src, #choice_src);).apply(cont);
+        }
+        cont
+    })
 }
 
-fn concat_and_forest_add<Pat>(
-    left_parse_node_kind: ParseNodeKind,
-    left: Thunk<impl ContFn<Pat>>,
+fn concat_and_forest_add<Pat: Eq + Hash + RustInputPat>(
+    rule: IRule,
+    left: IRule,
     right: Thunk<impl ContFn<Pat>>,
-    parse_node_kind: ParseNodeKind,
 ) -> Thunk<impl ContFn<Pat>> {
-    let parse_node_kind_src = parse_node_kind.to_src();
-    left + push_saved(left_parse_node_kind)
-        + right
-        + pop_saved(move |saved| {
-            thunk!(rt.forest_add_split(
-                #parse_node_kind_src,
-                #saved,
-            );)
-        })
+    Thunk::new(move |mut cont| {
+        if let Some(rules) = cont.rules.as_mut() {
+            let parse_node_kind_src = rule.parse_node_kind(cont.cx, rules).to_src();
+            (left.generate_parse()
+                + push_saved(left)
+                + right
+                + pop_saved(move |saved| {
+                    thunk!(rt.forest_add_split(
+                    #parse_node_kind_src,
+                    #saved,
+                );)
+                }))
+            .apply(cont)
+        } else {
+            (left.generate_parse() + right).apply(cont)
+        }
+    })
 }
 
 trait RuleGenerateMethods<Pat> {
@@ -777,147 +791,72 @@ impl<Pat: Eq + Hash + RustInputPat> RuleGenerateMethods<Pat> for IRule {
         self,
     ) -> Thunk<Box<dyn for<'a, 'r> FnOnce(Continuation<'a, 'r, Pat>) -> Continuation<'a, 'r, Pat>>>
     {
-        Thunk::new(Box::new(move |mut cont: Continuation<'_, '_, Pat>| {
-            match (&cont.cx[self], &mut cont.rules) {
-                (Rule::Empty, _) => cont,
-                (Rule::Eat(pat), _) => {
+        Thunk::new(Box::new(
+            move |cont: Continuation<'_, '_, Pat>| match cont.cx[self] {
+                Rule::Empty => cont,
+                Rule::Eat(ref pat) => {
                     let pat = pat.rust_matcher();
                     check(quote!(let Some(mut rt) = rt.input_consume_left(&(#pat)))).apply(cont)
                 }
-                (&Rule::Call(r), _) => {
+                Rule::Call(r) => {
                     call(Rc::new(CodeLabel::NamedRule(cont.cx[r].to_string()))).apply(cont)
                 }
-                (&Rule::Concat([left, right]), None) => {
-                    (left.generate_parse() + right.generate_parse()).apply(cont)
+                Rule::Concat([left, right]) => {
+                    concat_and_forest_add(self, left, right.generate_parse()).apply(cont)
                 }
-                (&Rule::Concat([left, right]), Some(rules)) => concat_and_forest_add(
-                    left.parse_node_kind(cont.cx, rules),
-                    left.generate_parse(),
-                    right.generate_parse(),
-                    self.parse_node_kind(cont.cx, rules),
-                )
-                .apply(cont),
-                (Rule::Or(cases), _) => {
+                Rule::Or(ref cases) => {
                     // HACK(eddyb) only clones a `Vec` to avoid `cx` borrow conflicts.
                     let cases = cases.clone();
-                    parallel(ThunkIter(cases.iter().map(|rule| {
-                        Thunk::new(move |mut cont| match &mut cont.rules {
-                            Some(rules) => (rule.generate_parse()
-                                + forest_add_choice(
-                                    &self.parse_node_kind(cont.cx, rules),
-                                    rule.parse_node_kind(cont.cx, rules),
-                                ))
-                            .apply(cont),
-                            None => rule.generate_parse().apply(cont),
-                        })
+                    parallel(ThunkIter(cases.iter().map(|&rule| {
+                        rule.generate_parse() + forest_add_choice(self, rule)
                     })))
                     .apply(cont)
                 }
-                (&Rule::Opt(rule), _) => opt(rule.generate_parse()).apply(cont),
-                (&Rule::RepeatMany(elem, None), None) => {
-                    fix(|label| opt(elem.generate_parse() + call(label))).apply(cont)
-                }
-                (&Rule::RepeatMany(elem, None), Some(rules)) => {
+                Rule::Opt(rule) => opt(rule.generate_parse()).apply(cont),
+                Rule::RepeatMany(elem, None) => {
                     let more = cont.cx.intern(Rule::RepeatMore(elem, None));
-                    let elem_parse_node_kind = elem.parse_node_kind(cont.cx, rules);
-                    let more_parse_node_kind = more.parse_node_kind(cont.cx, rules);
-                    fix(|label| {
-                        opt(concat_and_forest_add(
-                            elem_parse_node_kind,
-                            elem.generate_parse(),
-                            call(label),
-                            more_parse_node_kind,
-                        ))
-                    })
-                    .apply(cont)
+                    fix(|label| opt(concat_and_forest_add(more, elem, call(label)))).apply(cont)
                 }
-                (&Rule::RepeatMany(elem, Some(sep)), _) => {
+                Rule::RepeatMany(elem, Some(sep)) => {
                     let rule = cont.cx.intern(Rule::RepeatMore(elem, Some(sep)));
                     opt(rule.generate_parse()).apply(cont)
                 }
-                (&Rule::RepeatMore(elem, None), None) => {
-                    fix(|label| elem.generate_parse() + opt(call(label))).apply(cont)
+                Rule::RepeatMore(elem, None) => {
+                    fix(|label| concat_and_forest_add(self, elem, opt(call(label)))).apply(cont)
                 }
-                (&Rule::RepeatMore(elem, Some((sep, SepKind::Simple))), None) => {
-                    fix(|label| elem.generate_parse() + opt(sep.generate_parse() + call(label)))
-                        .apply(cont)
-                }
-                (&Rule::RepeatMore(elem, None), Some(rules)) => {
-                    let elem_parse_node_kind = elem.parse_node_kind(cont.cx, rules);
-                    let parse_node_kind = self.parse_node_kind(cont.cx, rules);
+                Rule::RepeatMore(elem, Some((sep, SepKind::Simple))) => {
+                    let tail = cont.cx.intern(Rule::Concat([sep, self]));
                     fix(|label| {
                         concat_and_forest_add(
-                            elem_parse_node_kind,
-                            elem.generate_parse(),
-                            opt(call(label)),
-                            parse_node_kind,
+                            self,
+                            elem,
+                            opt(concat_and_forest_add(tail, sep, call(label))),
                         )
                     })
                     .apply(cont)
                 }
-                (&Rule::RepeatMore(elem, Some((sep, SepKind::Simple))), Some(rules)) => {
-                    let elem_parse_node_kind = elem.parse_node_kind(cont.cx, rules);
-                    let sep_parse_node_kind = sep.parse_node_kind(cont.cx, rules);
-                    let tail_parse_node_kind = cont
-                        .cx
-                        .intern(Rule::Concat([sep, self]))
-                        .parse_node_kind(cont.cx, rules);
-                    let parse_node_kind = self.parse_node_kind(cont.cx, rules);
-                    fix(|label| {
-                        concat_and_forest_add(
-                            elem_parse_node_kind,
-                            elem.generate_parse(),
-                            opt(concat_and_forest_add(
-                                sep_parse_node_kind,
-                                sep.generate_parse(),
-                                call(label),
-                                tail_parse_node_kind,
-                            )),
-                            parse_node_kind,
-                        )
-                    })
-                    .apply(cont)
-                }
-                (&Rule::RepeatMore(elem, Some((sep, SepKind::Trailing))), None) => {
-                    fix(|label| {
-                        elem.generate_parse()
-                            + opt(sep.generate_parse() +
-                                // FIXME(eddyb) this would imply `RepeatMany` w/ `SepKind::Trailing`
-                                // could be optimized slightly.
-                    opt(call(label)))
-                    })
-                    .apply(cont)
-                }
-                (&Rule::RepeatMore(elem, Some((sep, SepKind::Trailing))), Some(rules)) => {
-                    let elem_parse_node_kind = elem.parse_node_kind(cont.cx, rules);
-                    let sep_parse_node_kind = sep.parse_node_kind(cont.cx, rules);
+                Rule::RepeatMore(elem, Some((sep, SepKind::Trailing))) => {
                     let many = cont
                         .cx
                         .intern(Rule::RepeatMany(elem, Some((sep, SepKind::Trailing))));
-                    let tail_parse_node_kind = cont
-                        .cx
-                        .intern(Rule::Concat([sep, many]))
-                        .parse_node_kind(cont.cx, rules);
-                    let parse_node_kind = self.parse_node_kind(cont.cx, rules);
+                    let tail = cont.cx.intern(Rule::Concat([sep, many]));
                     fix(|label| {
                         concat_and_forest_add(
-                            elem_parse_node_kind,
-                            elem.generate_parse(),
+                            self,
+                            elem,
                             opt(concat_and_forest_add(
-                                sep_parse_node_kind,
-                                sep.generate_parse(),
+                                tail,
+                                sep,
                                 // FIXME(eddyb) this would imply `RepeatMany` w/ `SepKind::Trailing`
                                 // could be optimized slightly.
                                 opt(call(label)),
-                                tail_parse_node_kind,
                             )),
-                            parse_node_kind,
                         )
                     })
                     .apply(cont)
                 }
-            }
-        }))
+            },
+        ))
     }
 
     fn generate_traverse_shape(
