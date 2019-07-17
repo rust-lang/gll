@@ -12,12 +12,12 @@ use std::ops::Add;
 use std::rc::Rc;
 use std::{iter, mem};
 
-pub trait RustInputPat {
+pub trait RustInputPat: Eq + Hash {
     fn rust_slice_ty() -> Src;
     fn rust_matcher(&self) -> Src;
 }
 
-impl<S: AsRef<str>> RustInputPat for SPat<S> {
+impl<S: Eq + Hash + AsRef<str>> RustInputPat for SPat<S> {
     fn rust_slice_ty() -> Src {
         quote!(str)
     }
@@ -105,7 +105,7 @@ trait RuleMethods<Pat>: Sized {
     ) -> ParseNodeShape<Self>;
 }
 
-impl<Pat: Eq + Hash + RustInputPat> RuleMethods<Pat> for IRule {
+impl<Pat: RustInputPat> RuleMethods<Pat> for IRule {
     fn field_pathset_type(self, cx: &Context<Pat>, paths: &FieldPathset) -> Src {
         let ty = self.field_type(cx, paths.0.get_index(0).unwrap());
         if paths.0.len() > 1 {
@@ -264,11 +264,7 @@ impl ParseNodeKind {
 }
 
 impl ParseNodeShape<IRule> {
-    fn to_src<Pat: Eq + Hash + RustInputPat>(
-        &self,
-        cx: &mut Context<Pat>,
-        rules: &mut RuleMap<'_>,
-    ) -> Src {
+    fn to_src<Pat: RustInputPat>(&self, cx: &mut Context<Pat>, rules: &mut RuleMap<'_>) -> Src {
         let shape = self.map(|rule| rule.parse_node_kind(cx, rules).to_src());
         let variant = match shape {
             ParseNodeShape::Opaque => quote!(Opaque),
@@ -317,16 +313,14 @@ trait GrammarGenerateMethods<Pat> {
     fn generate_rust(&self, cx: &mut Context<Pat>) -> Src;
 }
 
-pub fn generate<Pat: Eq + Hash + MatchesEmpty + RustInputPat>(
+pub fn generate<Pat: MatchesEmpty + RustInputPat>(
     cx: &mut Context<Pat>,
     g: &grammer::Grammar,
 ) -> Src {
     g.generate_rust(cx)
 }
 
-impl<Pat: Eq + Hash + MatchesEmpty + RustInputPat> GrammarGenerateMethods<Pat>
-    for grammer::Grammar
-{
+impl<Pat: MatchesEmpty + RustInputPat> GrammarGenerateMethods<Pat> for grammer::Grammar {
     fn generate_rust(&self, cx: &mut Context<Pat>) -> Src {
         self.check(cx);
 
@@ -528,7 +522,7 @@ fn pop_saved<Pat, F: ContFn<Pat>>(f: impl FnOnce(Src) -> Thunk<F>) -> Thunk<impl
         })
 }
 
-fn push_saved<Pat: Eq + Hash + RustInputPat>(rule: IRule) -> Thunk<impl ContFn<Pat>> {
+fn push_saved<Pat: RustInputPat>(rule: IRule) -> Thunk<impl ContFn<Pat>> {
     Thunk::new(move |mut cont| {
         let rules = cont.rules.as_mut().unwrap();
         let parse_node_kind_src = rule.parse_node_kind(cont.cx, rules).to_src();
@@ -697,10 +691,7 @@ fn reify_as<Pat>(label: Rc<CodeLabel>) -> Thunk<impl ContFn<Pat>> {
     })
 }
 
-fn forest_add_choice<Pat: Eq + Hash + RustInputPat>(
-    rule: IRule,
-    choice: IRule,
-) -> Thunk<impl ContFn<Pat>> {
+fn forest_add_choice<Pat: RustInputPat>(rule: IRule, choice: IRule) -> Thunk<impl ContFn<Pat>> {
     Thunk::new(move |mut cont| {
         if let Some(rules) = &mut cont.rules.as_mut() {
             let parse_node_kind_src = rule.parse_node_kind(cont.cx, rules).to_src();
@@ -711,7 +702,7 @@ fn forest_add_choice<Pat: Eq + Hash + RustInputPat>(
     })
 }
 
-fn concat_and_forest_add<Pat: Eq + Hash + RustInputPat>(
+fn concat_and_forest_add<Pat: RustInputPat>(
     rule: IRule,
     left: IRule,
     right: Thunk<impl ContFn<Pat>>,
@@ -748,7 +739,7 @@ trait RuleGenerateMethods<Pat> {
     ) -> Src;
 }
 
-impl<Pat: Eq + Hash + RustInputPat> RuleGenerateMethods<Pat> for IRule {
+impl<Pat: RustInputPat> RuleGenerateMethods<Pat> for IRule {
     fn generate_parse(
         self,
     ) -> Thunk<Box<dyn for<'a, 'r> FnOnce(Continuation<'a, 'r, Pat>) -> Continuation<'a, 'r, Pat>>>
@@ -924,7 +915,7 @@ fn declare_rule<Pat>(
     rules: &mut RuleMap<'_>,
 ) -> Src
 where
-    Pat: Eq + Hash + RustInputPat,
+    Pat: RustInputPat,
 {
     let ident = Src::ident(&cx[name]);
     let variants = rule.find_variant_fields(cx);
@@ -996,7 +987,7 @@ fn impl_rule_from_forest<Pat>(
     rules: &mut RuleMap<'_>,
 ) -> Src
 where
-    Pat: Eq + Hash + RustInputPat,
+    Pat: RustInputPat,
 {
     let ident = Src::ident(&cx[name]);
     let field_handle_expr = |cx: &Context<Pat>, rule: IRule, paths: &FieldPathset| {
@@ -1102,7 +1093,7 @@ fn impl_rule_one_and_all<Pat>(
     rules: &mut RuleMap<'_>,
 ) -> Src
 where
-    Pat: Eq + Hash + RustInputPat,
+    Pat: RustInputPat,
 {
     let ident = Src::ident(&cx[name]);
     let (one, all) = if let Some(variants) = variants {
@@ -1328,7 +1319,7 @@ fn define_parse_fn<Pat>(
     code_labels: &mut IndexMap<Rc<CodeLabel>, usize>,
 ) -> Src
 where
-    Pat: Eq + Hash + RustInputPat,
+    Pat: RustInputPat,
 {
     let mut code_label_arms = vec![];
     for (&name, rule) in rules.named {
@@ -1363,7 +1354,7 @@ where
     })
 }
 
-fn declare_parse_node_kind<Pat: Eq + Hash + RustInputPat>(
+fn declare_parse_node_kind<Pat: RustInputPat>(
     cx: &mut Context<Pat>,
     rules: &mut RuleMap<'_>,
     all_rules: &[IRule],
@@ -1422,7 +1413,7 @@ fn declare_parse_node_kind<Pat: Eq + Hash + RustInputPat>(
     )
 }
 
-fn impl_debug_for_handle_any<Pat: Eq + Hash + RustInputPat>(
+fn impl_debug_for_handle_any<Pat: RustInputPat>(
     cx: &mut Context<Pat>,
     rules: &mut RuleMap<'_>,
     all_rules: &[IRule],
