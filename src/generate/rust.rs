@@ -343,6 +343,9 @@ impl<Pat: MatchesEmpty + RustInputPat> GrammarGenerateMethods<Pat> for grammer::
         let mut code_labels = IndexMap::new();
         out += define_parse_fn(cx, &mut rules, &mut code_labels);
 
+        // HACK(eddyb) these two loops use `rule.parse_node_kind(cx, &mut rules)`
+        // to fill `rules.anon` with all the non-`Rule::Call` rules being used.
+        // FIXME(eddyb) maybe just rely on the interner? would that contain trash?
         for &name in rules.named.keys() {
             cx.intern(Rule::Call(name))
                 .parse_node_shape(cx, &mut rules)
@@ -357,6 +360,7 @@ impl<Pat: MatchesEmpty + RustInputPat> GrammarGenerateMethods<Pat> for grammer::
             i += 1;
         }
 
+        // FIXME(eddyb) get rid of this? how? (see comment before the loops above)
         let all_rules: Vec<_> = rules
             .named
             .keys()
