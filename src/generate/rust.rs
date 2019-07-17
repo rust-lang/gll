@@ -1,4 +1,4 @@
-use crate::generate::src::{quotable_to_src, quote, Src, ToSrc};
+use crate::generate::src::{quote, Src};
 use crate::parse_node::ParseNodeShape;
 use crate::scannerless::Pat as SPat;
 use grammer::context::{Context, IRule, IStr};
@@ -289,27 +289,35 @@ impl ParseNodeKind {
     }
 }
 
-impl ToSrc for ParseNodeKind {
+impl ParseNodeKind {
     fn to_src(&self) -> Src {
         let ident = self.ident();
         quote!(_P::#ident)
     }
 }
-quotable_to_src!(ParseNodeKind);
 
-impl ToSrc for ParseNodeShape<ParseNodeKind> {
+impl ParseNodeShape<ParseNodeKind> {
     fn to_src(&self) -> Src {
         let variant = match self {
             ParseNodeShape::Opaque => quote!(Opaque),
-            ParseNodeShape::Alias(inner) => quote!(Alias(#inner)),
+            ParseNodeShape::Alias(inner) => {
+                let inner_src = inner.to_src();
+                quote!(Alias(#inner_src))
+            }
             ParseNodeShape::Choice => quote!(Choice),
-            ParseNodeShape::Opt(inner) => quote!(Opt(#inner)),
-            ParseNodeShape::Split(left, right) => quote!(Split(#left, #right)),
+            ParseNodeShape::Opt(inner) => {
+                let inner_src = inner.to_src();
+                quote!(Opt(#inner_src))
+            }
+            ParseNodeShape::Split(left, right) => {
+                let left_src = left.to_src();
+                let right_src = right.to_src();
+                quote!(Split(#left_src, #right_src))
+            }
         };
         quote!(ParseNodeShape::#variant)
     }
 }
-quotable_to_src!(ParseNodeShape<ParseNodeKind>);
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum CodeLabel {
@@ -335,13 +343,12 @@ impl CodeLabel {
     }
 }
 
-impl ToSrc for CodeLabel {
+impl CodeLabel {
     fn to_src(&self) -> Src {
         let ident = self.flattened_ident();
         quote!(_C::#ident)
     }
 }
-quotable_to_src!(CodeLabel);
 
 // FIXME(eddyb) this is a bit pointless, as it's exported as a free function.
 trait GrammarGenerateMethods<Pat> {
@@ -452,8 +459,9 @@ impl<'r, Pat> Continuation<'_, 'r, Pat> {
 
     fn to_inline(&mut self) -> &mut Src {
         if let Code::Label(ref label) = self.code {
+            let label_src = label.to_src();
             self.code = Code::Inline(quote!(
-                rt.spawn(#label);
+                rt.spawn(#label_src);
             ));
         }
 
@@ -476,7 +484,8 @@ impl<'r, Pat> Continuation<'_, 'r, Pat> {
 
     fn reify_as(&mut self, label: Rc<CodeLabel>) {
         let code = self.to_inline();
-        let code = quote!(#label => {#code});
+        let label_src = label.to_src();
+        let code = quote!(#label_src => {#code});
         self.code_label_arms.push(code);
         self.code = Code::Label(label);
     }
@@ -558,7 +567,8 @@ fn pop_saved<Pat, F: ContFn<Pat>>(f: impl FnOnce(Src) -> Thunk<F>) -> Thunk<impl
 }
 
 fn push_saved<Pat>(parse_node_kind: ParseNodeKind) -> Thunk<impl ContFn<Pat>> {
-    thunk!(rt.save(#parse_node_kind);)
+    let parse_node_kind_src = parse_node_kind.to_src();
+    thunk!(rt.save(#parse_node_kind_src);)
         + Thunk::new(move |mut cont| {
             if let Some((ret_label, outer_fn_label)) = cont.nested_frames.pop().unwrap() {
                 let inner_fn_label = mem::replace(cont.fn_code_label, outer_fn_label);
@@ -584,8 +594,10 @@ fn check<Pat>(condition: Src) -> Thunk<impl ContFn<Pat>> {
 fn call<Pat>(callee: Rc<CodeLabel>) -> Thunk<impl ContFn<Pat>> {
     Thunk::new(move |mut cont| {
         let label = cont.to_label().clone();
+        let callee_src = callee.to_src();
+        let label_src = label.to_src();
         cont.code = Code::Inline(quote!(
-            rt.call(#callee, #label);
+            rt.call(#callee_src, #label_src);
         ));
         cont
     })
@@ -725,7 +737,9 @@ fn forest_add_choice<Pat>(
     parse_node_kind: &ParseNodeKind,
     choice: ParseNodeKind,
 ) -> Thunk<impl ContFn<Pat>> {
-    thunk!(rt.forest_add_choice(#parse_node_kind, #choice);)
+    let parse_node_kind_src = parse_node_kind.to_src();
+    let choice_src = choice.to_src();
+    thunk!(rt.forest_add_choice(#parse_node_kind_src, #choice_src);)
 }
 
 fn concat_and_forest_add<Pat>(
@@ -734,11 +748,12 @@ fn concat_and_forest_add<Pat>(
     right: Thunk<impl ContFn<Pat>>,
     parse_node_kind: ParseNodeKind,
 ) -> Thunk<impl ContFn<Pat>> {
+    let parse_node_kind_src = parse_node_kind.to_src();
     left + push_saved(left_parse_node_kind)
         + right
         + pop_saved(move |saved| {
             thunk!(rt.forest_add_split(
-                #parse_node_kind,
+                #parse_node_kind_src,
                 #saved,
             );)
         })
@@ -943,7 +958,8 @@ impl<Pat: Eq + Hash + RustInputPat> RuleGenerateMethods<Pat> for IRule {
                     .map(|rule| rule.generate_traverse_shape(true, cx, rules))
                     .collect::<Vec<_>>();
                 let cases_node_kind = cases.iter().map(|rule| rule.parse_node_kind(cx, rules));
-                quote!({ #(#cases_idx: #cases_node_kind => #cases_shape,)* })
+                let cases_node_kind_src = cases_node_kind.map(|kind| kind.to_src());
+                quote!({ #(#cases_idx: #cases_node_kind_src => #cases_shape,)* })
             }
             Rule::Opt(rule) => {
                 let shape = rule.generate_traverse_shape(true, cx, rules);
@@ -959,7 +975,9 @@ where
 {
     let ident = Src::ident(&cx[name]);
     let code_label = Rc::new(CodeLabel::NamedRule(cx[name].to_string()));
+    let code_label_src = code_label.to_src();
     let parse_node_kind = ParseNodeKind::NamedRule(cx[name].to_string());
+    let parse_node_kind_src = parse_node_kind.to_src();
     let rust_slice_ty = Pat::rust_slice_ty();
     quote!(
         impl<I> #ident<'_, '_, I>
@@ -974,8 +992,8 @@ where
                 gll::runtime::Runtime::parse(
                     _G,
                     input,
-                    #code_label,
-                    #parse_node_kind,
+                    #code_label_src,
+                    #parse_node_kind_src,
                 ).map(|forest_and_node| OwnedHandle {
                     forest_and_node,
                     _marker: PhantomData,
@@ -1200,6 +1218,10 @@ where
             .iter()
             .map(|v| v.rule.parse_node_kind(cx, rules))
             .collect::<Vec<_>>();
+        let variants_kind_src = variants_kind
+            .iter()
+            .map(|kind| kind.to_src())
+            .collect::<Vec<_>>();
         let variants_shape = variants
             .iter()
             .map(|v| v.rule.generate_traverse_shape(false, cx, rules))
@@ -1209,7 +1231,7 @@ where
             quote!(
                 let node = forest.one_choice(node)?;
                 match node.kind {
-                    #(#variants_kind => {
+                    #(#variants_kind_src => {
                         let r = traverse!(one(forest, node) #variants_shape);
                         #ident::#variants_from_forest_ident(self.forest, node, r)
                     })*
@@ -1233,7 +1255,7 @@ where
 
                 forest.all_choices(node).flat_map(move |node| {
                     match node.kind {
-                        #(#variants_kind => Iter::#i_ident(
+                        #(#variants_kind_src => Iter::#i_ident(
                             traverse!(all(forest) #variants_shape)
                                 .apply(node)
                                 .map(move |r| #ident::#variants_from_forest_ident(self.forest, node, r))
@@ -1451,6 +1473,10 @@ fn declare_parse_node_kind<Pat: Eq + Hash + RustInputPat>(
         .iter()
         .map(|rule| rule.parse_node_kind(cx, rules))
         .collect::<Vec<_>>();
+    let nodes_kind_src = nodes_kind
+        .iter()
+        .map(|kind| kind.to_src())
+        .collect::<Vec<_>>();
     let nodes_kind_ident = nodes_kind.iter().map(|kind| kind.ident());
     // HACK(eddyb) only collected to a `Vec` to avoid `cx`/`rules` borrow conflicts.
     let nodes_doc = all_rules
@@ -1461,9 +1487,9 @@ fn declare_parse_node_kind<Pat: Eq + Hash + RustInputPat>(
         .iter()
         .map(|&rule| rule.parse_node_desc(cx, rules))
         .collect::<Vec<_>>();
-    let nodes_shape = all_rules
+    let nodes_shape_src = all_rules
         .iter()
-        .map(|&rule| rules.shape[&rule].clone())
+        .map(|&rule| rules.shape[&rule].to_src())
         .collect::<Vec<_>>();
 
     quote!(
@@ -1482,12 +1508,12 @@ fn declare_parse_node_kind<Pat: Eq + Hash + RustInputPat>(
 
             fn parse_node_shape(&self, kind: _P) -> ParseNodeShape<_P> {
                 match kind {
-                    #(#nodes_kind => #nodes_shape),*
+                    #(#nodes_kind_src => #nodes_shape_src),*
                 }
             }
             fn parse_node_desc(&self, kind: _P) -> String {
                 let s = match kind {
-                    #(#nodes_kind => #nodes_desc),*
+                    #(#nodes_kind_src => #nodes_desc),*
                 };
                 s.to_string()
             }
@@ -1517,7 +1543,8 @@ fn impl_debug_for_handle_any<Pat: Eq + Hash + RustInputPat>(
             _ => return None,
         };
         let kind = rule.parse_node_kind(cx, rules);
-        Some(quote!(#kind => write!(f, "{:?}", Handle::<_, #ty> {
+        let kind_src = kind.to_src();
+        Some(quote!(#kind_src => write!(f, "{:?}", Handle::<_, #ty> {
                 node: self.node,
                 forest: self.forest,
                 _marker: PhantomData,
@@ -1553,11 +1580,15 @@ fn code_label_decl_and_impls<Pat>(
         }))
         .map(Rc::new)
         .collect::<Vec<_>>();
+    let all_labels_src = all_labels.iter().map(|label| label.to_src());
     let all_labels_ident = all_labels.iter().map(|label| label.flattened_ident());
-    let all_labels_enclosing_fn = all_labels.iter().map(|label| match &**label {
-        CodeLabel::Nested { parent, .. } if !code_labels.contains_key(label) => parent,
-        _ => label,
-    });
+    let all_labels_enclosing_fn = all_labels
+        .iter()
+        .map(|label| match &**label {
+            CodeLabel::Nested { parent, .. } if !code_labels.contains_key(label) => parent,
+            _ => label,
+        })
+        .map(|label| label.to_src());
 
     quote!(
         #[allow(non_camel_case_types)]
@@ -1571,7 +1602,7 @@ fn code_label_decl_and_impls<Pat>(
 
             fn enclosing_fn(self) -> Self {
                 match self {
-                    #(#all_labels => #all_labels_enclosing_fn),*
+                    #(#all_labels_src => #all_labels_enclosing_fn),*
                 }
             }
         }
