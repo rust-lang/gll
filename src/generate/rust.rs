@@ -33,7 +33,6 @@ struct RuleMap<'a> {
     named: &'a IndexMap<IStr, RuleWithNamedFields>,
     anon: IndexSet<IRule>,
     desc: IndexMap<IRule, String>,
-    shape: IndexMap<IRule, ParseNodeShape<ParseNodeKind>>,
 }
 
 struct Variant {
@@ -95,18 +94,17 @@ impl<Pat> RuleWithNamedFieldsMethods<Pat> for RuleWithNamedFields {
     }
 }
 
-trait RuleMethods<Pat> {
+trait RuleMethods<Pat>: Sized {
     fn field_pathset_type(self, cx: &Context<Pat>, paths: &FieldPathset) -> Src;
     fn field_type(self, cx: &Context<Pat>, path: &[usize]) -> Src;
     fn parse_node_kind(self, cx: &Context<Pat>, rules: &mut RuleMap<'_>) -> ParseNodeKind;
     fn parse_node_desc(self, cx: &Context<Pat>, rules: &mut RuleMap<'_>) -> String;
-    fn fill_parse_node_shape(self, cx: &mut Context<Pat>, rules: &mut RuleMap<'_>);
     fn parse_node_desc_uncached(self, cx: &Context<Pat>, rules: &mut RuleMap<'_>) -> String;
-    fn parse_node_shape_uncached(
+    fn parse_node_shape(
         self,
         cx: &mut Context<Pat>,
         rules: &mut RuleMap<'_>,
-    ) -> ParseNodeShape<ParseNodeKind>;
+    ) -> ParseNodeShape<Self>;
 }
 
 impl<Pat: Eq + Hash + RustInputPat> RuleMethods<Pat> for IRule {
@@ -172,14 +170,6 @@ impl<Pat: Eq + Hash + RustInputPat> RuleMethods<Pat> for IRule {
             Entry::Occupied(_) => unreachable!(),
         }
     }
-    // FIXME(eddyb) this probably doesn't need the "fill" API anymore.
-    fn fill_parse_node_shape(self, cx: &mut Context<Pat>, rules: &mut RuleMap<'_>) {
-        if rules.shape.contains_key(&self) {
-            return;
-        }
-        let shape = self.parse_node_shape_uncached(cx, rules);
-        rules.shape.insert(self, shape);
-    }
     fn parse_node_desc_uncached(self, cx: &Context<Pat>, rules: &mut RuleMap<'_>) -> String {
         match cx[self] {
             Rule::Empty => "".to_string(),
@@ -225,11 +215,11 @@ impl<Pat: Eq + Hash + RustInputPat> RuleMethods<Pat> for IRule {
         }
     }
 
-    fn parse_node_shape_uncached(
+    fn parse_node_shape(
         self,
         cx: &mut Context<Pat>,
         rules: &mut RuleMap<'_>,
-    ) -> ParseNodeShape<ParseNodeKind> {
+    ) -> ParseNodeShape<Self> {
         match cx[self] {
             Rule::Empty | Rule::Eat(_) => ParseNodeShape::Opaque,
             Rule::Call(name) => {
@@ -237,38 +227,26 @@ impl<Pat: Eq + Hash + RustInputPat> RuleMethods<Pat> for IRule {
                 if rule.fields.is_empty() {
                     ParseNodeShape::Opaque
                 } else {
-                    ParseNodeShape::Alias(rule.rule.parse_node_kind(cx, rules))
+                    ParseNodeShape::Alias(rule.rule)
                 }
             }
-            Rule::Concat([left, right]) => ParseNodeShape::Split(
-                left.parse_node_kind(cx, rules),
-                right.parse_node_kind(cx, rules),
-            ),
+            Rule::Concat([left, right]) => ParseNodeShape::Split(left, right),
             Rule::Or(_) => ParseNodeShape::Choice,
-            Rule::Opt(rule) => ParseNodeShape::Opt(rule.parse_node_kind(cx, rules)),
-            Rule::RepeatMany(elem, sep) => ParseNodeShape::Opt(
-                cx.intern(Rule::RepeatMore(elem, sep))
-                    .parse_node_kind(cx, rules),
-            ),
-            Rule::RepeatMore(rule, None) => ParseNodeShape::Split(
-                rule.parse_node_kind(cx, rules),
-                cx.intern(Rule::RepeatMany(rule, None))
-                    .parse_node_kind(cx, rules),
-            ),
+            Rule::Opt(rule) => ParseNodeShape::Opt(rule),
+            Rule::RepeatMany(elem, sep) => {
+                ParseNodeShape::Opt(cx.intern(Rule::RepeatMore(elem, sep)))
+            }
+            Rule::RepeatMore(rule, None) => {
+                ParseNodeShape::Split(rule, cx.intern(Rule::RepeatMany(rule, None)))
+            }
             Rule::RepeatMore(elem, Some((sep, SepKind::Simple))) => {
                 let tail = cx.intern(Rule::Concat([sep, self]));
-                ParseNodeShape::Split(
-                    elem.parse_node_kind(cx, rules),
-                    cx.intern(Rule::Opt(tail)).parse_node_kind(cx, rules),
-                )
+                ParseNodeShape::Split(elem, cx.intern(Rule::Opt(tail)))
             }
             Rule::RepeatMore(elem, Some((sep, SepKind::Trailing))) => {
                 let many = cx.intern(Rule::RepeatMany(elem, Some((sep, SepKind::Trailing))));
                 let tail = cx.intern(Rule::Concat([sep, many]));
-                ParseNodeShape::Split(
-                    elem.parse_node_kind(cx, rules),
-                    cx.intern(Rule::Opt(tail)).parse_node_kind(cx, rules),
-                )
+                ParseNodeShape::Split(elem, cx.intern(Rule::Opt(tail)))
             }
         }
     }
@@ -296,24 +274,19 @@ impl ParseNodeKind {
     }
 }
 
-impl ParseNodeShape<ParseNodeKind> {
-    fn to_src(&self) -> Src {
-        let variant = match self {
+impl ParseNodeShape<IRule> {
+    fn to_src<Pat: Eq + Hash + RustInputPat>(
+        &self,
+        cx: &mut Context<Pat>,
+        rules: &mut RuleMap<'_>,
+    ) -> Src {
+        let shape = self.map(|rule| rule.parse_node_kind(cx, rules).to_src());
+        let variant = match shape {
             ParseNodeShape::Opaque => quote!(Opaque),
-            ParseNodeShape::Alias(inner) => {
-                let inner_src = inner.to_src();
-                quote!(Alias(#inner_src))
-            }
+            ParseNodeShape::Alias(inner) => quote!(Alias(#inner)),
             ParseNodeShape::Choice => quote!(Choice),
-            ParseNodeShape::Opt(inner) => {
-                let inner_src = inner.to_src();
-                quote!(Opt(#inner_src))
-            }
-            ParseNodeShape::Split(left, right) => {
-                let left_src = left.to_src();
-                let right_src = right.to_src();
-                quote!(Split(#left_src, #right_src))
-            }
+            ParseNodeShape::Opt(inner) => quote!(Opt(#inner)),
+            ParseNodeShape::Split(left, right) => quote!(Split(#left, #right)),
         };
         quote!(ParseNodeShape::#variant)
     }
@@ -372,7 +345,6 @@ impl<Pat: Eq + Hash + MatchesEmpty + RustInputPat> GrammarGenerateMethods<Pat>
             named: &self.rules,
             anon: IndexSet::new(),
             desc: IndexMap::new(),
-            shape: IndexMap::new(),
         };
 
         let mut out = concat!(
@@ -391,13 +363,15 @@ impl<Pat: Eq + Hash + MatchesEmpty + RustInputPat> GrammarGenerateMethods<Pat>
 
         for &name in rules.named.keys() {
             cx.intern(Rule::Call(name))
-                .fill_parse_node_shape(cx, &mut rules);
+                .parse_node_shape(cx, &mut rules)
+                .map(|rule| rule.parse_node_kind(cx, &mut rules));
         }
 
         let mut i = 0;
         while i < rules.anon.len() {
             let rule = *rules.anon.get_index(i).unwrap();
-            rule.fill_parse_node_shape(cx, &mut rules);
+            rule.parse_node_shape(cx, &mut rules)
+                .map(|rule| rule.parse_node_kind(cx, &mut rules));
             i += 1;
         }
 
@@ -1428,7 +1402,7 @@ fn declare_parse_node_kind<Pat: Eq + Hash + RustInputPat>(
         .collect::<Vec<_>>();
     let nodes_shape_src = all_rules
         .iter()
-        .map(|&rule| rules.shape[&rule].to_src())
+        .map(|&rule| rule.parse_node_shape(cx, rules).to_src(cx, rules))
         .collect::<Vec<_>>();
 
     quote!(
