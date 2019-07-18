@@ -519,26 +519,11 @@ impl<Pat> Continuation<'_, Pat> {
 
 trait ContFn<Pat> {
     fn apply(self, cont: Continuation<'_, Pat>) -> Continuation<'_, Pat>;
-    // HACK(eddyb) `Box<dyn FnOnce<A>>: FnOnce<A>` is not stable yet,
-    // so this is needed to implement `ContFn` for `Box<dyn ContFn>`.
-    fn apply_box(self: Box<Self>, cont: Continuation<'_, Pat>) -> Continuation<'_, Pat>;
 }
 
 impl<Pat, F: FnOnce(Continuation<'_, Pat>) -> Continuation<'_, Pat>> ContFn<Pat> for F {
     fn apply(self, cont: Continuation<'_, Pat>) -> Continuation<'_, Pat> {
         self(cont)
-    }
-    fn apply_box(self: Box<Self>, cont: Continuation<'_, Pat>) -> Continuation<'_, Pat> {
-        (*self).apply(cont)
-    }
-}
-
-impl<Pat> ContFn<Pat> for Box<dyn ContFn<Pat> + '_> {
-    fn apply(self, cont: Continuation<'_, Pat>) -> Continuation<'_, Pat> {
-        self.apply_box(cont)
-    }
-    fn apply_box(self: Box<Self>, cont: Continuation<'_, Pat>) -> Continuation<'_, Pat> {
-        (*self).apply(cont)
     }
 }
 
@@ -547,9 +532,6 @@ struct Compose<F, G>(F, G);
 impl<Pat, F: ContFn<Pat>, G: ContFn<Pat>> ContFn<Pat> for Compose<F, G> {
     fn apply(self, cont: Continuation<'_, Pat>) -> Continuation<'_, Pat> {
         self.1.apply(self.0.apply(cont))
-    }
-    fn apply_box(self: Box<Self>, cont: Continuation<'_, Pat>) -> Continuation<'_, Pat> {
-        (*self).apply(cont)
     }
 }
 
@@ -563,13 +545,6 @@ impl<F> Thunk<F> {
     {
         Thunk(f)
     }
-
-    fn boxed<'a, Pat>(self) -> Thunk<Box<dyn ContFn<Pat> + 'a>>
-    where
-        F: ContFn<Pat> + 'a,
-    {
-        Thunk(Box::new(self.0))
-    }
 }
 
 impl<F, G> Add<Thunk<G>> for Thunk<F> {
@@ -582,9 +557,6 @@ impl<F, G> Add<Thunk<G>> for Thunk<F> {
 impl<Pat, F: ContFn<Pat>> ContFn<Pat> for Thunk<F> {
     fn apply(self, cont: Continuation<'_, Pat>) -> Continuation<'_, Pat> {
         self.0.apply(cont)
-    }
-    fn apply_box(self: Box<Self>, cont: Continuation<'_, Pat>) -> Continuation<'_, Pat> {
-        (*self).apply(cont)
     }
 }
 
@@ -801,7 +773,9 @@ fn concat_and_forest_add<Pat>(
 }
 
 trait RuleGenerateMethods<Pat> {
-    fn generate_parse(self) -> Thunk<Box<dyn ContFn<Pat>>>;
+    fn generate_parse(
+        self,
+    ) -> Thunk<Box<dyn FnOnce(Continuation<'_, Pat>) -> Continuation<'_, Pat>>>;
 
     fn generate_traverse_shape(
         self,
@@ -812,9 +786,11 @@ trait RuleGenerateMethods<Pat> {
 }
 
 impl<Pat: Eq + Hash + RustInputPat> RuleGenerateMethods<Pat> for IRule {
-    fn generate_parse(self) -> Thunk<Box<dyn ContFn<Pat>>> {
-        Thunk::new(
-            move |cont: Continuation<'_, Pat>| match (&cont.cx[self], cont.rules) {
+    fn generate_parse(
+        self,
+    ) -> Thunk<Box<dyn FnOnce(Continuation<'_, Pat>) -> Continuation<'_, Pat>>> {
+        Thunk::new(Box::new(move |cont: Continuation<'_, Pat>| {
+            match (&cont.cx[self], cont.rules) {
                 (Rule::Empty, _) => cont,
                 (Rule::Eat(pat), _) => {
                     let pat = pat.rust_matcher();
@@ -956,9 +932,8 @@ impl<Pat: Eq + Hash + RustInputPat> RuleGenerateMethods<Pat> for IRule {
                     })
                     .apply(cont)
                 }
-            },
-        )
-        .boxed()
+            }
+        }))
     }
 
     fn generate_traverse_shape(
