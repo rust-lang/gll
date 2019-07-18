@@ -12,17 +12,13 @@ Easiest way to get started is through `gll-macros`:
 gll = "0.0.2"
 gll-macros = "0.0.2"
 ```
-```rust
-extern crate gll;
-extern crate gll_macros;
-```
 
 As an example, this is what you might write for a JSON-like syntax,
 that uses plain identifiers instead of string literals for field names,
 and allows values to be parenthesized Rust expressions:
 ```rust
 mod json_like {
-    ::gll_macros::proc_macro_parser! {
+    gll_macros::proc_macro_parser! {
         Value =
             | Null:"null"
             | False:"false"
@@ -40,7 +36,7 @@ You can also use a build script to generate the parser (**TODO**: document).
 
 To parse a string with that grammar:
 ```rust
-let tokens = string.parse::<gll::proc_macro::TokenStream>().unwrap();
+let tokens = string.parse::<gll::grammer::proc_macro::TokenStream>().unwrap();
 json_like::Value::parse(tokens).unwrap().with(|value| {
     // ...
 });

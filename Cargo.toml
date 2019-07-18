@@ -13,25 +13,23 @@ description = "GLL parsing framework."
 edition = "2018"
 
 [dependencies]
-indexing = "0.3.1"
 indexmap = "1"
 grammer = "0.0.1"
-proc-macro2 = "0.4.0"
-proc-quote = "0.2.0"
+proc-macro2 = "0.4.30"
+proc-quote = "0.2.2"
 
 [build-dependencies]
-indexing = "0.3.1"
 indexmap = "1"
 grammer = "0.0.1"
-proc-macro2 = "0.4.0"
-proc-quote = "0.2.0"
+proc-macro2 = "0.4.30"
+proc-quote = "0.2.2"
 
 [lib]
 doctest = false
 test = false
 
 [patch.'crates-io']
-grammer = { git = "https://github.com/lykenware/grammer", rev = "8c238885e60126b4a1c424be2ac95cb3aecd183f" }
+grammer = { git = "https://github.com/lykenware/grammer", rev = "e86adccdb75198f2e4e3c8a1bf23c4739dd27060" }
 
 [workspace]
 members = [

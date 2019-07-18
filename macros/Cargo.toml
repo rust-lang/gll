@@ -15,10 +15,7 @@ path = ".."
 version = "0.0.2"
 
 [dependencies]
-proc-quote = "0.2.0"
-
-[dev-dependencies]
-proc-quote = "0.2.0"
+proc-quote = "0.2.2"
 
 [lib]
 doctest = false

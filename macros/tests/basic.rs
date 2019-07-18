@@ -5,7 +5,7 @@ use std::fs::File;
 macro_rules! testcases {
     ($($name:ident { $($grammar:tt)* }: $($rule:ident($input:expr) => $expected:expr),* ;)*) => {
         $(mod $name {
-            ::gll_macros::scannerless_parser!($($grammar)*);
+            gll_macros::scannerless_parser!($($grammar)*);
         }
         #[test]
         fn $name() {$(
@@ -37,7 +37,7 @@ macro_rules! testcases {
 
             let result = match &result {
                 Ok(result) => format!("{:#?}", result),
-                Err(gll::parser::ParseError {
+                Err(gll::grammer::parser::ParseError {
                     at,
                     expected,
                 }) => {

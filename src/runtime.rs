@@ -1,6 +1,6 @@
-use crate::forest::{GrammarReflector, OwnedParseForestAndNode, ParseNode};
-use crate::input::{Input, InputMatch, Range};
-use crate::parser::{ParseResult, Parser};
+use grammer::forest::{GrammarReflector, OwnedParseForestAndNode, ParseNode};
+use grammer::input::{Input, InputMatch, Range};
+use grammer::parser::{ParseResult, Parser};
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BTreeSet, BinaryHeap, HashMap};
 use std::fmt;
