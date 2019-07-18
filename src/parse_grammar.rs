@@ -9,7 +9,7 @@ include!(concat!(env!("OUT_DIR"), "/parse_grammar.rs"));
 
 use grammer::context::Context;
 use grammer::parser::ParseError;
-use grammer::proc_macro::{FlatToken, FlatTokenPat, Span, TokenStream};
+use grammer::proc_macro::{FlatToken, FlatTokenPat, Pat as PMPat, Span, TokenStream};
 use grammer::rule;
 use grammer::scannerless::Pat as SPat;
 use std::hash::Hash;
@@ -19,7 +19,7 @@ use std::str::FromStr;
 pub fn parse_grammar<Pat: Eq + Hash + From<SPat>>(
     cx: &mut Context<Pat>,
     stream: TokenStream,
-) -> Result<grammer::Grammar, ParseError<Span, &'static [FlatTokenPat<&'static str>]>> {
+) -> Result<grammer::Grammar, ParseError<Span, PMPat<&'static [FlatTokenPat<&'static str>]>>> {
     let mut grammar = grammer::Grammar::new();
     Grammar::parse(stream)?.with(|g| {
         for rule_def in g.one().unwrap().rules {

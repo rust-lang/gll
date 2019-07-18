@@ -35,7 +35,11 @@ impl<S: Eq + Hash + fmt::Debug + AsRef<str>> RustInputPat for scannerless::Pat<S
 
 impl RustInputPat for proc_macro::Pat {
     fn rust_pat_ty() -> Src {
-        quote!(&'static [gll::grammer::proc_macro::FlatTokenPat<&'static str>])
+        quote!(
+            gll::grammer::proc_macro::Pat<
+                &'static [gll::grammer::proc_macro::FlatTokenPat<&'static str>],
+            >
+        )
     }
     fn rust_slice_ty() -> Src {
         quote!([gll::grammer::proc_macro::FlatToken])
