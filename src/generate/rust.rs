@@ -6,19 +6,19 @@ use grammer::{proc_macro, scannerless};
 
 use indexmap::{IndexMap, IndexSet};
 use std::borrow::Cow;
-use std::fmt::Write as FmtWrite;
+use std::fmt::{self, Write as _};
 use std::hash::Hash;
 use std::ops::Add;
 use std::rc::Rc;
 use std::{iter, mem};
 
-pub trait RustInputPat: Eq + Hash {
+pub trait RustInputPat: Eq + Hash + fmt::Debug {
     fn rust_pat_ty() -> Src;
     fn rust_slice_ty() -> Src;
     fn rust_matcher(&self) -> Src;
 }
 
-impl<S: Eq + Hash + AsRef<str>> RustInputPat for scannerless::Pat<S> {
+impl<S: Eq + Hash + fmt::Debug + AsRef<str>> RustInputPat for scannerless::Pat<S> {
     fn rust_pat_ty() -> Src {
         quote!(gll::grammer::scannerless::Pat<&'static str>)
     }
@@ -197,7 +197,7 @@ impl<Pat: RustInputPat> RuleMethods<Pat> for IRule {
     fn parse_node_desc(self, cx: &Context<Pat>, rules: &mut RuleMap<'_>) -> String {
         match cx[self] {
             Rule::Empty => "".to_string(),
-            Rule::Eat(ref pat) => pat.rust_matcher().to_pretty_string(),
+            Rule::Eat(ref pat) => format!("{:?}", pat),
             Rule::Call(r) => cx[r].to_string(),
             Rule::Concat([left, right]) => format!(
                 "({} {})",
