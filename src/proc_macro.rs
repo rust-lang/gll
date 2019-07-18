@@ -1,5 +1,5 @@
 use crate::generate::rust::RustInputPat;
-use crate::generate::src::{quotable_to_src, quote, Src, ToSrc};
+use crate::generate::src::{quote, Src};
 use crate::scannerless::Pat as SPat;
 use grammer::rule::{call, eat, MatchesEmpty, MaybeKnown};
 pub use proc_macro2::{
@@ -100,8 +100,8 @@ impl RustInputPat for Pat {
         quote!([gll::proc_macro::FlatToken])
     }
     fn rust_matcher(&self) -> Src {
-        let pats = self.0.iter();
-        quote!(&[#(#pats),*] as &[_])
+        let pats_src = self.0.iter().map(|pat| pat.to_src());
+        quote!(&[#(#pats_src),*] as &[_])
     }
 }
 
@@ -123,7 +123,7 @@ pub enum FlatTokenPat<S: AsRef<str>> {
     Literal,
 }
 
-impl ToSrc for FlatTokenPat<String> {
+impl FlatTokenPat<String> {
     fn to_src(&self) -> Src {
         let variant = match self {
             FlatTokenPat::Delim(c) => quote!(Delim(#c)),
@@ -143,7 +143,6 @@ impl ToSrc for FlatTokenPat<String> {
         quote!(gll::proc_macro::FlatTokenPat::#variant)
     }
 }
-quotable_to_src!(FlatTokenPat<String>);
 
 impl FlatToken {
     pub fn span(&self) -> Span {

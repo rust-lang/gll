@@ -120,25 +120,6 @@ impl ToTokens for Src {
     }
 }
 
-pub trait ToSrc {
-    fn to_src(&self) -> Src;
-}
-
-pub use crate::__generate_src_quotable_to_src as quotable_to_src;
-#[macro_export]
-macro_rules! __generate_src_quotable_to_src {
-    ($ty:ty) => {
-        impl ::proc_quote::ToTokens for $ty {
-            fn to_tokens(&self, tokens: &mut ::proc_macro2::TokenStream) {
-                self.to_src().to_tokens(tokens);
-            }
-            fn into_token_stream(self) -> ::proc_macro2::TokenStream {
-                self.to_src().into_token_stream()
-            }
-        }
-    };
-}
-
 pub use crate::__generate_src_quote as quote;
 #[macro_export]
 macro_rules! __generate_src_quote {

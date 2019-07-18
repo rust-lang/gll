@@ -1,24 +1,23 @@
-use crate::generate::src::{quotable_to_src, quote, Src, ToSrc};
+use crate::generate::src::{quote, Src};
 use crate::parse_node::ParseNodeShape;
 use crate::scannerless::Pat as SPat;
 use grammer::context::{Context, IRule, IStr};
 use grammer::rule::{FieldPathset, MatchesEmpty, Rule, RuleWithNamedFields, SepKind};
 
-use indexmap::{map::Entry, IndexMap, IndexSet};
+use indexmap::{IndexMap, IndexSet};
 use std::borrow::Cow;
-use std::cell::RefCell;
 use std::fmt::Write as FmtWrite;
 use std::hash::Hash;
 use std::ops::Add;
 use std::rc::Rc;
 use std::{iter, mem};
 
-pub trait RustInputPat {
+pub trait RustInputPat: Eq + Hash {
     fn rust_slice_ty() -> Src;
     fn rust_matcher(&self) -> Src;
 }
 
-impl<S: AsRef<str>> RustInputPat for SPat<S> {
+impl<S: Eq + Hash + AsRef<str>> RustInputPat for SPat<S> {
     fn rust_slice_ty() -> Src {
         quote!(str)
     }
@@ -32,16 +31,7 @@ impl<S: AsRef<str>> RustInputPat for SPat<S> {
 
 struct RuleMap<'a> {
     named: &'a IndexMap<IStr, RuleWithNamedFields>,
-    anon: RefCell<IndexSet<IRule>>,
-    desc: RefCell<IndexMap<IRule, String>>,
-    anon_shape: RefCell<IndexMap<IRule, ParseNodeShape<ParseNodeKind>>>,
-}
-
-struct ParseNode {
-    kind: ParseNodeKind,
-    desc: String,
-    shape: ParseNodeShape<ParseNodeKind>,
-    ty: Option<Src>,
+    anon: IndexSet<IRule>,
 }
 
 struct Variant {
@@ -103,21 +93,19 @@ impl<Pat> RuleWithNamedFieldsMethods<Pat> for RuleWithNamedFields {
     }
 }
 
-trait RuleMethods<Pat> {
+trait RuleMethods<Pat>: Sized {
     fn field_pathset_type(self, cx: &Context<Pat>, paths: &FieldPathset) -> Src;
     fn field_type(self, cx: &Context<Pat>, path: &[usize]) -> Src;
-    fn parse_node_kind(self, cx: &Context<Pat>, rules: &RuleMap<'_>) -> ParseNodeKind;
-    fn parse_node_desc(self, cx: &Context<Pat>, rules: &RuleMap<'_>) -> String;
-    fn fill_parse_node_shape(self, cx: &mut Context<Pat>, rules: &RuleMap<'_>);
-    fn parse_node_desc_uncached(self, cx: &Context<Pat>, rules: &RuleMap<'_>) -> String;
-    fn parse_node_shape_uncached(
+    fn parse_node_kind(self, cx: &Context<Pat>, rules: &mut RuleMap<'_>) -> ParseNodeKind;
+    fn parse_node_desc(self, cx: &Context<Pat>, rules: &mut RuleMap<'_>) -> String;
+    fn parse_node_shape(
         self,
         cx: &mut Context<Pat>,
-        rules: &RuleMap<'_>,
-    ) -> ParseNodeShape<ParseNodeKind>;
+        rules: &mut RuleMap<'_>,
+    ) -> ParseNodeShape<Self>;
 }
 
-impl<Pat: Eq + Hash + RustInputPat> RuleMethods<Pat> for IRule {
+impl<Pat: RustInputPat> RuleMethods<Pat> for IRule {
     fn field_pathset_type(self, cx: &Context<Pat>, paths: &FieldPathset) -> Src {
         let ty = self.field_type(cx, paths.0.get_index(0).unwrap());
         if paths.0.len() > 1 {
@@ -158,41 +146,20 @@ impl<Pat: Eq + Hash + RustInputPat> RuleMethods<Pat> for IRule {
         }
     }
 
-    fn parse_node_kind(self, cx: &Context<Pat>, rules: &RuleMap<'_>) -> ParseNodeKind {
+    fn parse_node_kind(self, cx: &Context<Pat>, rules: &mut RuleMap<'_>) -> ParseNodeKind {
         if let Rule::Call(r) = cx[self] {
             return ParseNodeKind::NamedRule(cx[r].to_string());
         }
 
-        if let Some((i, _)) = rules.anon.borrow().get_full(&self) {
+        if let Some((i, _)) = rules.anon.get_full(&self) {
             return ParseNodeKind::Anon(i);
         }
-        let i = rules.anon.borrow().len();
-        rules.anon.borrow_mut().insert(self);
+        let i = rules.anon.len();
+        rules.anon.insert(self);
         ParseNodeKind::Anon(i)
     }
-    fn parse_node_desc(self, cx: &Context<Pat>, rules: &RuleMap<'_>) -> String {
-        if let Some(desc) = rules.desc.borrow().get(&self) {
-            return desc.clone();
-        }
-        let desc = self.parse_node_desc_uncached(cx, rules);
-        match rules.desc.borrow_mut().entry(self) {
-            Entry::Vacant(entry) => entry.insert(desc).clone(),
-            Entry::Occupied(_) => unreachable!(),
-        }
-    }
-    // FIXME(eddyb) this probably doesn't need the "fill" API anymore.
-    fn fill_parse_node_shape(self, cx: &mut Context<Pat>, rules: &RuleMap<'_>) {
-        if let Rule::Call(_) = cx[self] {
-            return;
-        }
 
-        if rules.anon_shape.borrow().contains_key(&self) {
-            return;
-        }
-        let shape = self.parse_node_shape_uncached(cx, rules);
-        rules.anon_shape.borrow_mut().insert(self, shape);
-    }
-    fn parse_node_desc_uncached(self, cx: &Context<Pat>, rules: &RuleMap<'_>) -> String {
+    fn parse_node_desc(self, cx: &Context<Pat>, rules: &mut RuleMap<'_>) -> String {
         match cx[self] {
             Rule::Empty => "".to_string(),
             Rule::Eat(ref pat) => pat.rust_matcher().to_pretty_string(),
@@ -237,43 +204,38 @@ impl<Pat: Eq + Hash + RustInputPat> RuleMethods<Pat> for IRule {
         }
     }
 
-    fn parse_node_shape_uncached(
+    fn parse_node_shape(
         self,
         cx: &mut Context<Pat>,
-        rules: &RuleMap<'_>,
-    ) -> ParseNodeShape<ParseNodeKind> {
+        rules: &mut RuleMap<'_>,
+    ) -> ParseNodeShape<Self> {
         match cx[self] {
             Rule::Empty | Rule::Eat(_) => ParseNodeShape::Opaque,
-            Rule::Call(_) => unreachable!(),
-            Rule::Concat([left, right]) => ParseNodeShape::Split(
-                left.parse_node_kind(cx, rules),
-                right.parse_node_kind(cx, rules),
-            ),
+            Rule::Call(name) => {
+                let rule = &rules.named[&name];
+                if rule.fields.is_empty() {
+                    ParseNodeShape::Opaque
+                } else {
+                    ParseNodeShape::Alias(rule.rule)
+                }
+            }
+            Rule::Concat([left, right]) => ParseNodeShape::Split(left, right),
             Rule::Or(_) => ParseNodeShape::Choice,
-            Rule::Opt(rule) => ParseNodeShape::Opt(rule.parse_node_kind(cx, rules)),
-            Rule::RepeatMany(elem, sep) => ParseNodeShape::Opt(
-                cx.intern(Rule::RepeatMore(elem, sep))
-                    .parse_node_kind(cx, rules),
-            ),
-            Rule::RepeatMore(rule, None) => ParseNodeShape::Split(
-                rule.parse_node_kind(cx, rules),
-                cx.intern(Rule::RepeatMany(rule, None))
-                    .parse_node_kind(cx, rules),
-            ),
+            Rule::Opt(rule) => ParseNodeShape::Opt(rule),
+            Rule::RepeatMany(elem, sep) => {
+                ParseNodeShape::Opt(cx.intern(Rule::RepeatMore(elem, sep)))
+            }
+            Rule::RepeatMore(rule, None) => {
+                ParseNodeShape::Split(rule, cx.intern(Rule::RepeatMany(rule, None)))
+            }
             Rule::RepeatMore(elem, Some((sep, SepKind::Simple))) => {
                 let tail = cx.intern(Rule::Concat([sep, self]));
-                ParseNodeShape::Split(
-                    elem.parse_node_kind(cx, rules),
-                    cx.intern(Rule::Opt(tail)).parse_node_kind(cx, rules),
-                )
+                ParseNodeShape::Split(elem, cx.intern(Rule::Opt(tail)))
             }
             Rule::RepeatMore(elem, Some((sep, SepKind::Trailing))) => {
                 let many = cx.intern(Rule::RepeatMany(elem, Some((sep, SepKind::Trailing))));
                 let tail = cx.intern(Rule::Concat([sep, many]));
-                ParseNodeShape::Split(
-                    elem.parse_node_kind(cx, rules),
-                    cx.intern(Rule::Opt(tail)).parse_node_kind(cx, rules),
-                )
+                ParseNodeShape::Split(elem, cx.intern(Rule::Opt(tail)))
             }
         }
     }
@@ -294,17 +256,17 @@ impl ParseNodeKind {
     }
 }
 
-impl ToSrc for ParseNodeKind {
+impl ParseNodeKind {
     fn to_src(&self) -> Src {
         let ident = self.ident();
         quote!(_P::#ident)
     }
 }
-quotable_to_src!(ParseNodeKind);
 
-impl ToSrc for ParseNodeShape<ParseNodeKind> {
-    fn to_src(&self) -> Src {
-        let variant = match self {
+impl ParseNodeShape<IRule> {
+    fn to_src<Pat: RustInputPat>(&self, cx: &mut Context<Pat>, rules: &mut RuleMap<'_>) -> Src {
+        let shape = self.map(|rule| rule.parse_node_kind(cx, rules).to_src());
+        let variant = match shape {
             ParseNodeShape::Opaque => quote!(Opaque),
             ParseNodeShape::Alias(inner) => quote!(Alias(#inner)),
             ParseNodeShape::Choice => quote!(Choice),
@@ -314,7 +276,6 @@ impl ToSrc for ParseNodeShape<ParseNodeKind> {
         quote!(ParseNodeShape::#variant)
     }
 }
-quotable_to_src!(ParseNodeShape<ParseNodeKind>);
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum CodeLabel {
@@ -340,37 +301,32 @@ impl CodeLabel {
     }
 }
 
-impl ToSrc for CodeLabel {
+impl CodeLabel {
     fn to_src(&self) -> Src {
         let ident = self.flattened_ident();
         quote!(_C::#ident)
     }
 }
-quotable_to_src!(CodeLabel);
 
 // FIXME(eddyb) this is a bit pointless, as it's exported as a free function.
 trait GrammarGenerateMethods<Pat> {
     fn generate_rust(&self, cx: &mut Context<Pat>) -> Src;
 }
 
-pub fn generate<Pat: Eq + Hash + MatchesEmpty + RustInputPat>(
+pub fn generate<Pat: MatchesEmpty + RustInputPat>(
     cx: &mut Context<Pat>,
     g: &grammer::Grammar,
 ) -> Src {
     g.generate_rust(cx)
 }
 
-impl<Pat: Eq + Hash + MatchesEmpty + RustInputPat> GrammarGenerateMethods<Pat>
-    for grammer::Grammar
-{
+impl<Pat: MatchesEmpty + RustInputPat> GrammarGenerateMethods<Pat> for grammer::Grammar {
     fn generate_rust(&self, cx: &mut Context<Pat>) -> Src {
         self.check(cx);
 
-        let rules = &RuleMap {
+        let mut rules = RuleMap {
             named: &self.rules,
-            anon: RefCell::new(IndexSet::new()),
-            desc: RefCell::new(IndexMap::new()),
-            anon_shape: RefCell::new(IndexMap::new()),
+            anon: IndexSet::new(),
         };
 
         let mut out = concat!(
@@ -381,71 +337,47 @@ impl<Pat: Eq + Hash + MatchesEmpty + RustInputPat> GrammarGenerateMethods<Pat>
         .unwrap();
 
         for (&name, rule) in rules.named {
-            out += declare_rule(name, rule, cx, rules) + impl_parse_with(cx, name);
+            out += declare_rule(name, rule, cx, &mut rules) + impl_parse_with(cx, name);
         }
 
         let mut code_labels = IndexMap::new();
-        out += define_parse_fn(cx, rules, &mut code_labels);
+        out += define_parse_fn(cx, &mut rules, &mut code_labels);
 
-        for rule in rules.named.values() {
-            if !rule.fields.is_empty() {
-                rule.rule.parse_node_kind(cx, rules);
-            }
+        // HACK(eddyb) these two loops use `rule.parse_node_kind(cx, &mut rules)`
+        // to fill `rules.anon` with all the non-`Rule::Call` rules being used.
+        // FIXME(eddyb) maybe just rely on the interner? would that contain trash?
+        for &name in rules.named.keys() {
+            cx.intern(Rule::Call(name))
+                .parse_node_shape(cx, &mut rules)
+                .map(|rule| rule.parse_node_kind(cx, &mut rules));
         }
 
         let mut i = 0;
-        while i < rules.anon.borrow().len() {
-            let rule = *rules.anon.borrow().get_index(i).unwrap();
-            rule.fill_parse_node_shape(cx, rules);
+        while i < rules.anon.len() {
+            let rule = *rules.anon.get_index(i).unwrap();
+            rule.parse_node_shape(cx, &mut rules)
+                .map(|rule| rule.parse_node_kind(cx, &mut rules));
             i += 1;
         }
-        let all_parse_nodes: Vec<ParseNode> = rules
+
+        // FIXME(eddyb) get rid of this? how? (see comment before the loops above)
+        let all_rules: Vec<_> = rules
             .named
-            .iter()
-            .map(|(&name, rule)| {
-                let ident = Src::ident(&cx[name]);
-                ParseNode {
-                    kind: ParseNodeKind::NamedRule(cx[name].to_string()),
-                    desc: cx[name].to_string(),
-                    shape: if rule.fields.is_empty() {
-                        ParseNodeShape::Opaque
-                    } else {
-                        ParseNodeShape::Alias(rule.rule.parse_node_kind(cx, rules))
-                    },
-                    ty: Some(quote!(#ident<'_, '_, _>)),
-                }
-            })
-            .chain((0..i).map(|i| {
-                let rule = *rules.anon.borrow().get_index(i).unwrap();
-                ParseNode {
-                    kind: rule.parse_node_kind(cx, rules),
-                    desc: rule.parse_node_desc(cx, rules),
-                    shape: rules.anon_shape.borrow()[&rule].clone(),
-                    ty: match cx[rule] {
-                        Rule::RepeatMany(elem, _) | Rule::RepeatMore(elem, _) => match cx[elem] {
-                            Rule::Eat(_) => Some(quote!([()])),
-                            Rule::Call(r) => {
-                                let ident = Src::ident(&cx[r]);
-                                Some(quote!([#ident<'_, '_, _>]))
-                            }
-                            _ => None,
-                        },
-                        _ => None,
-                    },
-                }
-            }))
+            .keys()
+            .map(|&name| cx.intern(Rule::Call(name)))
+            .chain(rules.anon.iter().cloned())
             .collect();
 
-        out + declare_parse_node_kind(&all_parse_nodes)
-            + impl_debug_for_handle_any(&all_parse_nodes)
-            + code_label_decl_and_impls(cx, rules, &code_labels)
+        out + declare_parse_node_kind(cx, &mut rules, &all_rules)
+            + impl_debug_for_handle_any(cx, &mut rules, &all_rules)
+            + code_label_decl_and_impls(cx, &mut rules, &code_labels)
     }
 }
 
 #[must_use]
-struct Continuation<'a, Pat> {
+struct Continuation<'a, 'r, Pat> {
     cx: &'a mut Context<Pat>,
-    rules: Option<&'a RuleMap<'a>>,
+    rules: Option<&'a mut RuleMap<'r>>,
     code_labels: &'a mut IndexMap<Rc<CodeLabel>, usize>,
     fn_code_label: &'a mut Rc<CodeLabel>,
     code_label_arms: &'a mut Vec<Src>,
@@ -459,7 +391,7 @@ enum Code {
     Label(Rc<CodeLabel>),
 }
 
-impl<Pat> Continuation<'_, Pat> {
+impl<'r, Pat> Continuation<'_, 'r, Pat> {
     fn next_code_label(&mut self) -> Rc<CodeLabel> {
         let counter = self
             .code_labels
@@ -473,10 +405,10 @@ impl<Pat> Continuation<'_, Pat> {
         label
     }
 
-    fn clone(&mut self) -> Continuation<'_, Pat> {
+    fn clone(&mut self) -> Continuation<'_, 'r, Pat> {
         Continuation {
             cx: self.cx,
-            rules: self.rules,
+            rules: self.rules.as_mut().map(|rules| &mut **rules),
             code_labels: self.code_labels,
             fn_code_label: self.fn_code_label,
             code_label_arms: self.code_label_arms,
@@ -487,8 +419,9 @@ impl<Pat> Continuation<'_, Pat> {
 
     fn to_inline(&mut self) -> &mut Src {
         if let Code::Label(ref label) = self.code {
+            let label_src = label.to_src();
             self.code = Code::Inline(quote!(
-                rt.spawn(#label);
+                rt.spawn(#label_src);
             ));
         }
 
@@ -511,45 +444,31 @@ impl<Pat> Continuation<'_, Pat> {
 
     fn reify_as(&mut self, label: Rc<CodeLabel>) {
         let code = self.to_inline();
-        let code = quote!(#label => {#code});
+        let label_src = label.to_src();
+        let code = quote!(#label_src => {#code});
         self.code_label_arms.push(code);
         self.code = Code::Label(label);
     }
 }
 
 trait ContFn<Pat> {
-    fn apply(self, cont: Continuation<'_, Pat>) -> Continuation<'_, Pat>;
-    // HACK(eddyb) `Box<dyn FnOnce<A>>: FnOnce<A>` is not stable yet,
-    // so this is needed to implement `ContFn` for `Box<dyn ContFn>`.
-    fn apply_box(self: Box<Self>, cont: Continuation<'_, Pat>) -> Continuation<'_, Pat>;
+    fn apply<'a, 'r>(self, cont: Continuation<'a, 'r, Pat>) -> Continuation<'a, 'r, Pat>;
 }
 
-impl<Pat, F: FnOnce(Continuation<'_, Pat>) -> Continuation<'_, Pat>> ContFn<Pat> for F {
-    fn apply(self, cont: Continuation<'_, Pat>) -> Continuation<'_, Pat> {
+impl<Pat, F> ContFn<Pat> for F
+where
+    F: for<'a, 'r> FnOnce(Continuation<'a, 'r, Pat>) -> Continuation<'a, 'r, Pat>,
+{
+    fn apply<'a, 'r>(self, cont: Continuation<'a, 'r, Pat>) -> Continuation<'a, 'r, Pat> {
         self(cont)
-    }
-    fn apply_box(self: Box<Self>, cont: Continuation<'_, Pat>) -> Continuation<'_, Pat> {
-        (*self).apply(cont)
-    }
-}
-
-impl<Pat> ContFn<Pat> for Box<dyn ContFn<Pat> + '_> {
-    fn apply(self, cont: Continuation<'_, Pat>) -> Continuation<'_, Pat> {
-        self.apply_box(cont)
-    }
-    fn apply_box(self: Box<Self>, cont: Continuation<'_, Pat>) -> Continuation<'_, Pat> {
-        (*self).apply(cont)
     }
 }
 
 struct Compose<F, G>(F, G);
 
 impl<Pat, F: ContFn<Pat>, G: ContFn<Pat>> ContFn<Pat> for Compose<F, G> {
-    fn apply(self, cont: Continuation<'_, Pat>) -> Continuation<'_, Pat> {
+    fn apply<'a, 'r>(self, cont: Continuation<'a, 'r, Pat>) -> Continuation<'a, 'r, Pat> {
         self.1.apply(self.0.apply(cont))
-    }
-    fn apply_box(self: Box<Self>, cont: Continuation<'_, Pat>) -> Continuation<'_, Pat> {
-        (*self).apply(cont)
     }
 }
 
@@ -559,16 +478,9 @@ struct Thunk<F>(F);
 impl<F> Thunk<F> {
     fn new<Pat>(f: F) -> Self
     where
-        F: FnOnce(Continuation<'_, Pat>) -> Continuation<'_, Pat>,
+        F: for<'a, 'r> FnOnce(Continuation<'a, 'r, Pat>) -> Continuation<'a, 'r, Pat>,
     {
         Thunk(f)
-    }
-
-    fn boxed<'a, Pat>(self) -> Thunk<Box<dyn ContFn<Pat> + 'a>>
-    where
-        F: ContFn<Pat> + 'a,
-    {
-        Thunk(Box::new(self.0))
     }
 }
 
@@ -580,11 +492,8 @@ impl<F, G> Add<Thunk<G>> for Thunk<F> {
 }
 
 impl<Pat, F: ContFn<Pat>> ContFn<Pat> for Thunk<F> {
-    fn apply(self, cont: Continuation<'_, Pat>) -> Continuation<'_, Pat> {
+    fn apply<'a, 'r>(self, cont: Continuation<'a, 'r, Pat>) -> Continuation<'a, 'r, Pat> {
         self.0.apply(cont)
-    }
-    fn apply_box(self: Box<Self>, cont: Continuation<'_, Pat>) -> Continuation<'_, Pat> {
-        (*self).apply(cont)
     }
 }
 
@@ -617,16 +526,19 @@ fn pop_saved<Pat, F: ContFn<Pat>>(f: impl FnOnce(Src) -> Thunk<F>) -> Thunk<impl
         })
 }
 
-fn push_saved<Pat>(parse_node_kind: ParseNodeKind) -> Thunk<impl ContFn<Pat>> {
-    thunk!(rt.save(#parse_node_kind);)
-        + Thunk::new(move |mut cont| {
-            if let Some((ret_label, outer_fn_label)) = cont.nested_frames.pop().unwrap() {
-                let inner_fn_label = mem::replace(cont.fn_code_label, outer_fn_label);
-                cont.reify_as(inner_fn_label);
-                cont = call(mem::replace(cont.to_label(), ret_label)).apply(cont);
-            }
-            cont
-        })
+fn push_saved<Pat: RustInputPat>(rule: IRule) -> Thunk<impl ContFn<Pat>> {
+    Thunk::new(move |mut cont| {
+        let rules = cont.rules.as_mut().unwrap();
+        let parse_node_kind_src = rule.parse_node_kind(cont.cx, rules).to_src();
+        thunk!(rt.save(#parse_node_kind_src);).apply(cont)
+    }) + Thunk::new(move |mut cont| {
+        if let Some((ret_label, outer_fn_label)) = cont.nested_frames.pop().unwrap() {
+            let inner_fn_label = mem::replace(cont.fn_code_label, outer_fn_label);
+            cont.reify_as(inner_fn_label);
+            cont = call(mem::replace(cont.to_label(), ret_label)).apply(cont);
+        }
+        cont
+    })
 }
 
 fn check<Pat>(condition: Src) -> Thunk<impl ContFn<Pat>> {
@@ -644,8 +556,10 @@ fn check<Pat>(condition: Src) -> Thunk<impl ContFn<Pat>> {
 fn call<Pat>(callee: Rc<CodeLabel>) -> Thunk<impl ContFn<Pat>> {
     Thunk::new(move |mut cont| {
         let label = cont.to_label().clone();
+        let callee_src = callee.to_src();
+        let label_src = label.to_src();
         cont.code = Code::Inline(quote!(
-            rt.call(#callee, #label);
+            rt.call(#callee_src, #label_src);
         ));
         cont
     })
@@ -660,7 +574,11 @@ fn ret<Pat>() -> Thunk<impl ContFn<Pat>> {
 }
 
 trait ForEachThunk<Pat> {
-    fn for_each_thunk(self, cont: &mut Continuation<'_, Pat>, f: impl FnMut(Continuation<'_, Pat>));
+    fn for_each_thunk(
+        self,
+        cont: &mut Continuation<'_, '_, Pat>,
+        f: impl FnMut(Continuation<'_, '_, Pat>),
+    );
 }
 
 impl<Pat, F> ForEachThunk<Pat> for Thunk<F>
@@ -669,8 +587,8 @@ where
 {
     fn for_each_thunk(
         self,
-        cont: &mut Continuation<'_, Pat>,
-        mut f: impl FnMut(Continuation<'_, Pat>),
+        cont: &mut Continuation<'_, '_, Pat>,
+        mut f: impl FnMut(Continuation<'_, '_, Pat>),
     ) {
         f(self.apply(cont.clone()));
     }
@@ -683,8 +601,8 @@ where
 {
     fn for_each_thunk(
         self,
-        cont: &mut Continuation<'_, Pat>,
-        mut f: impl FnMut(Continuation<'_, Pat>),
+        cont: &mut Continuation<'_, '_, Pat>,
+        mut f: impl FnMut(Continuation<'_, '_, Pat>),
     ) {
         self.0.for_each_thunk(cont, &mut f);
         self.1.for_each_thunk(cont, &mut f);
@@ -700,8 +618,8 @@ where
 {
     fn for_each_thunk(
         self,
-        cont: &mut Continuation<'_, Pat>,
-        mut f: impl FnMut(Continuation<'_, Pat>),
+        cont: &mut Continuation<'_, '_, Pat>,
+        mut f: impl FnMut(Continuation<'_, '_, Pat>),
     ) {
         self.0.for_each(|x| {
             x.for_each_thunk(cont, &mut f);
@@ -777,195 +695,132 @@ fn reify_as<Pat>(label: Rc<CodeLabel>) -> Thunk<impl ContFn<Pat>> {
     })
 }
 
-fn forest_add_choice<Pat>(
-    parse_node_kind: &ParseNodeKind,
-    choice: ParseNodeKind,
-) -> Thunk<impl ContFn<Pat>> {
-    thunk!(rt.forest_add_choice(#parse_node_kind, #choice);)
+fn forest_add_choice<Pat: RustInputPat>(rule: IRule, choice: IRule) -> Thunk<impl ContFn<Pat>> {
+    Thunk::new(move |mut cont| {
+        if let Some(rules) = &mut cont.rules.as_mut() {
+            let parse_node_kind_src = rule.parse_node_kind(cont.cx, rules).to_src();
+            let choice_src = choice.parse_node_kind(cont.cx, rules).to_src();
+            cont = thunk!(rt.forest_add_choice(#parse_node_kind_src, #choice_src);).apply(cont);
+        }
+        cont
+    })
 }
 
-fn concat_and_forest_add<Pat>(
-    left_parse_node_kind: ParseNodeKind,
-    left: Thunk<impl ContFn<Pat>>,
+fn concat_and_forest_add<Pat: RustInputPat>(
+    rule: IRule,
+    left: IRule,
     right: Thunk<impl ContFn<Pat>>,
-    parse_node_kind: ParseNodeKind,
 ) -> Thunk<impl ContFn<Pat>> {
-    left + push_saved(left_parse_node_kind)
-        + right
-        + pop_saved(move |saved| {
-            thunk!(rt.forest_add_split(
-                #parse_node_kind,
-                #saved,
-            );)
-        })
+    Thunk::new(move |mut cont| {
+        if let Some(rules) = cont.rules.as_mut() {
+            let parse_node_kind_src = rule.parse_node_kind(cont.cx, rules).to_src();
+            (left.generate_parse()
+                + push_saved(left)
+                + right
+                + pop_saved(move |saved| {
+                    thunk!(rt.forest_add_split(
+                    #parse_node_kind_src,
+                    #saved,
+                );)
+                }))
+            .apply(cont)
+        } else {
+            (left.generate_parse() + right).apply(cont)
+        }
+    })
 }
 
 trait RuleGenerateMethods<Pat> {
-    fn generate_parse(self) -> Thunk<Box<dyn ContFn<Pat>>>;
+    fn generate_parse(
+        self,
+    ) -> Thunk<Box<dyn for<'a, 'r> FnOnce(Continuation<'a, 'r, Pat>) -> Continuation<'a, 'r, Pat>>>;
 
     fn generate_traverse_shape(
         self,
         refutable: bool,
         cx: &mut Context<Pat>,
-        rules: &RuleMap<'_>,
+        rules: &mut RuleMap<'_>,
     ) -> Src;
 }
 
-impl<Pat: Eq + Hash + RustInputPat> RuleGenerateMethods<Pat> for IRule {
-    fn generate_parse(self) -> Thunk<Box<dyn ContFn<Pat>>> {
-        Thunk::new(
-            move |cont: Continuation<'_, Pat>| match (&cont.cx[self], cont.rules) {
-                (Rule::Empty, _) => cont,
-                (Rule::Eat(pat), _) => {
+impl<Pat: RustInputPat> RuleGenerateMethods<Pat> for IRule {
+    fn generate_parse(
+        self,
+    ) -> Thunk<Box<dyn for<'a, 'r> FnOnce(Continuation<'a, 'r, Pat>) -> Continuation<'a, 'r, Pat>>>
+    {
+        Thunk::new(Box::new(
+            move |cont: Continuation<'_, '_, Pat>| match cont.cx[self] {
+                Rule::Empty => cont,
+                Rule::Eat(ref pat) => {
                     let pat = pat.rust_matcher();
                     check(quote!(let Some(mut rt) = rt.input_consume_left(&(#pat)))).apply(cont)
                 }
-                (&Rule::Call(r), _) => {
+                Rule::Call(r) => {
                     call(Rc::new(CodeLabel::NamedRule(cont.cx[r].to_string()))).apply(cont)
                 }
-                (&Rule::Concat([left, right]), None) => {
-                    (left.generate_parse() + right.generate_parse()).apply(cont)
+                Rule::Concat([left, right]) => {
+                    concat_and_forest_add(self, left, right.generate_parse()).apply(cont)
                 }
-                (&Rule::Concat([left, right]), Some(rules)) => concat_and_forest_add(
-                    left.parse_node_kind(cont.cx, rules),
-                    left.generate_parse(),
-                    right.generate_parse(),
-                    self.parse_node_kind(cont.cx, rules),
-                )
-                .apply(cont),
-                (Rule::Or(cases), None) => {
+                Rule::Or(ref cases) => {
                     // HACK(eddyb) only clones a `Vec` to avoid `cx` borrow conflicts.
                     let cases = cases.clone();
-                    parallel(ThunkIter(cases.iter().map(|rule| rule.generate_parse()))).apply(cont)
-                }
-                (Rule::Or(cases), Some(rules)) => {
-                    // HACK(eddyb) only clones a `Vec` to avoid `cx` borrow conflicts.
-                    let cases = cases.clone();
-                    parallel(ThunkIter(cases.iter().map(|rule| {
-                        Thunk::new(move |cont| {
-                            (rule.generate_parse()
-                                + forest_add_choice(
-                                    &self.parse_node_kind(cont.cx, rules),
-                                    rule.parse_node_kind(cont.cx, rules),
-                                ))
-                            .apply(cont)
-                        })
+                    parallel(ThunkIter(cases.iter().map(|&rule| {
+                        rule.generate_parse() + forest_add_choice(self, rule)
                     })))
                     .apply(cont)
                 }
-                (&Rule::Opt(rule), _) => opt(rule.generate_parse()).apply(cont),
-                (&Rule::RepeatMany(elem, None), None) => {
-                    fix(|label| opt(elem.generate_parse() + call(label))).apply(cont)
-                }
-                (&Rule::RepeatMany(elem, None), Some(rules)) => {
+                Rule::Opt(rule) => opt(rule.generate_parse()).apply(cont),
+                Rule::RepeatMany(elem, None) => {
                     let more = cont.cx.intern(Rule::RepeatMore(elem, None));
-                    let elem_parse_node_kind = elem.parse_node_kind(cont.cx, rules);
-                    let more_parse_node_kind = more.parse_node_kind(cont.cx, rules);
-                    fix(|label| {
-                        opt(concat_and_forest_add(
-                            elem_parse_node_kind,
-                            elem.generate_parse(),
-                            call(label),
-                            more_parse_node_kind,
-                        ))
-                    })
-                    .apply(cont)
+                    fix(|label| opt(concat_and_forest_add(more, elem, call(label)))).apply(cont)
                 }
-                (&Rule::RepeatMany(elem, Some(sep)), _) => {
+                Rule::RepeatMany(elem, Some(sep)) => {
                     let rule = cont.cx.intern(Rule::RepeatMore(elem, Some(sep)));
                     opt(rule.generate_parse()).apply(cont)
                 }
-                (&Rule::RepeatMore(elem, None), None) => {
-                    fix(|label| elem.generate_parse() + opt(call(label))).apply(cont)
+                Rule::RepeatMore(elem, None) => {
+                    fix(|label| concat_and_forest_add(self, elem, opt(call(label)))).apply(cont)
                 }
-                (&Rule::RepeatMore(elem, Some((sep, SepKind::Simple))), None) => {
-                    fix(|label| elem.generate_parse() + opt(sep.generate_parse() + call(label)))
-                        .apply(cont)
-                }
-                (&Rule::RepeatMore(elem, None), Some(rules)) => {
-                    let elem_parse_node_kind = elem.parse_node_kind(cont.cx, rules);
-                    let parse_node_kind = self.parse_node_kind(cont.cx, rules);
+                Rule::RepeatMore(elem, Some((sep, SepKind::Simple))) => {
+                    let tail = cont.cx.intern(Rule::Concat([sep, self]));
                     fix(|label| {
                         concat_and_forest_add(
-                            elem_parse_node_kind,
-                            elem.generate_parse(),
-                            opt(call(label)),
-                            parse_node_kind,
+                            self,
+                            elem,
+                            opt(concat_and_forest_add(tail, sep, call(label))),
                         )
                     })
                     .apply(cont)
                 }
-                (&Rule::RepeatMore(elem, Some((sep, SepKind::Simple))), Some(rules)) => {
-                    let elem_parse_node_kind = elem.parse_node_kind(cont.cx, rules);
-                    let sep_parse_node_kind = sep.parse_node_kind(cont.cx, rules);
-                    let tail_parse_node_kind = cont
-                        .cx
-                        .intern(Rule::Concat([sep, self]))
-                        .parse_node_kind(cont.cx, rules);
-                    let parse_node_kind = self.parse_node_kind(cont.cx, rules);
-                    fix(|label| {
-                        concat_and_forest_add(
-                            elem_parse_node_kind,
-                            elem.generate_parse(),
-                            opt(concat_and_forest_add(
-                                sep_parse_node_kind,
-                                sep.generate_parse(),
-                                call(label),
-                                tail_parse_node_kind,
-                            )),
-                            parse_node_kind,
-                        )
-                    })
-                    .apply(cont)
-                }
-                (&Rule::RepeatMore(elem, Some((sep, SepKind::Trailing))), None) => {
-                    fix(|label| {
-                        elem.generate_parse()
-                            + opt(sep.generate_parse() +
-                                // FIXME(eddyb) this would imply `RepeatMany` w/ `SepKind::Trailing`
-                                // could be optimized slightly.
-                    opt(call(label)))
-                    })
-                    .apply(cont)
-                }
-                (&Rule::RepeatMore(elem, Some((sep, SepKind::Trailing))), Some(rules)) => {
-                    let elem_parse_node_kind = elem.parse_node_kind(cont.cx, rules);
-                    let sep_parse_node_kind = sep.parse_node_kind(cont.cx, rules);
+                Rule::RepeatMore(elem, Some((sep, SepKind::Trailing))) => {
                     let many = cont
                         .cx
                         .intern(Rule::RepeatMany(elem, Some((sep, SepKind::Trailing))));
-                    let tail_parse_node_kind = cont
-                        .cx
-                        .intern(Rule::Concat([sep, many]))
-                        .parse_node_kind(cont.cx, rules);
-                    let parse_node_kind = self.parse_node_kind(cont.cx, rules);
+                    let tail = cont.cx.intern(Rule::Concat([sep, many]));
                     fix(|label| {
                         concat_and_forest_add(
-                            elem_parse_node_kind,
-                            elem.generate_parse(),
+                            self,
+                            elem,
                             opt(concat_and_forest_add(
-                                sep_parse_node_kind,
-                                sep.generate_parse(),
+                                tail,
+                                sep,
                                 // FIXME(eddyb) this would imply `RepeatMany` w/ `SepKind::Trailing`
                                 // could be optimized slightly.
                                 opt(call(label)),
-                                tail_parse_node_kind,
                             )),
-                            parse_node_kind,
                         )
                     })
                     .apply(cont)
                 }
             },
-        )
-        .boxed()
+        ))
     }
 
     fn generate_traverse_shape(
         self,
         refutable: bool,
         cx: &mut Context<Pat>,
-        rules: &RuleMap<'_>,
+        rules: &mut RuleMap<'_>,
     ) -> Src {
         match cx[self] {
             Rule::Empty
@@ -999,7 +854,8 @@ impl<Pat: Eq + Hash + RustInputPat> RuleGenerateMethods<Pat> for IRule {
                     .map(|rule| rule.generate_traverse_shape(true, cx, rules))
                     .collect::<Vec<_>>();
                 let cases_node_kind = cases.iter().map(|rule| rule.parse_node_kind(cx, rules));
-                quote!({ #(#cases_idx: #cases_node_kind => #cases_shape,)* })
+                let cases_node_kind_src = cases_node_kind.map(|kind| kind.to_src());
+                quote!({ #(#cases_idx: #cases_node_kind_src => #cases_shape,)* })
             }
             Rule::Opt(rule) => {
                 let shape = rule.generate_traverse_shape(true, cx, rules);
@@ -1015,7 +871,9 @@ where
 {
     let ident = Src::ident(&cx[name]);
     let code_label = Rc::new(CodeLabel::NamedRule(cx[name].to_string()));
+    let code_label_src = code_label.to_src();
     let parse_node_kind = ParseNodeKind::NamedRule(cx[name].to_string());
+    let parse_node_kind_src = parse_node_kind.to_src();
     let rust_slice_ty = Pat::rust_slice_ty();
     quote!(
         impl<I> #ident<'_, '_, I>
@@ -1030,8 +888,8 @@ where
                 gll::runtime::Runtime::parse(
                     _G,
                     input,
-                    #code_label,
-                    #parse_node_kind,
+                    #code_label_src,
+                    #parse_node_kind_src,
                 ).map(|forest_and_node| OwnedHandle {
                     forest_and_node,
                     _marker: PhantomData,
@@ -1058,10 +916,10 @@ fn declare_rule<Pat>(
     name: IStr,
     rule: &RuleWithNamedFields,
     cx: &mut Context<Pat>,
-    rules: &RuleMap<'_>,
+    rules: &mut RuleMap<'_>,
 ) -> Src
 where
-    Pat: Eq + Hash + RustInputPat,
+    Pat: RustInputPat,
 {
     let ident = Src::ident(&cx[name]);
     let variants = rule.find_variant_fields(cx);
@@ -1130,10 +988,10 @@ fn impl_rule_from_forest<Pat>(
     rule: &RuleWithNamedFields,
     variants: Option<&[Variant]>,
     cx: &mut Context<Pat>,
-    rules: &RuleMap<'_>,
+    rules: &mut RuleMap<'_>,
 ) -> Src
 where
-    Pat: Eq + Hash + RustInputPat,
+    Pat: RustInputPat,
 {
     let ident = Src::ident(&cx[name]);
     let field_handle_expr = |cx: &Context<Pat>, rule: IRule, paths: &FieldPathset| {
@@ -1236,10 +1094,10 @@ fn impl_rule_one_and_all<Pat>(
     rule: &RuleWithNamedFields,
     variants: Option<&[Variant]>,
     cx: &mut Context<Pat>,
-    rules: &RuleMap<'_>,
+    rules: &mut RuleMap<'_>,
 ) -> Src
 where
-    Pat: Eq + Hash + RustInputPat,
+    Pat: RustInputPat,
 {
     let ident = Src::ident(&cx[name]);
     let (one, all) = if let Some(variants) = variants {
@@ -1256,6 +1114,10 @@ where
             .iter()
             .map(|v| v.rule.parse_node_kind(cx, rules))
             .collect::<Vec<_>>();
+        let variants_kind_src = variants_kind
+            .iter()
+            .map(|kind| kind.to_src())
+            .collect::<Vec<_>>();
         let variants_shape = variants
             .iter()
             .map(|v| v.rule.generate_traverse_shape(false, cx, rules))
@@ -1265,7 +1127,7 @@ where
             quote!(
                 let node = forest.one_choice(node)?;
                 match node.kind {
-                    #(#variants_kind => {
+                    #(#variants_kind_src => {
                         let r = traverse!(one(forest, node) #variants_shape);
                         #ident::#variants_from_forest_ident(self.forest, node, r)
                     })*
@@ -1289,7 +1151,7 @@ where
 
                 forest.all_choices(node).flat_map(move |node| {
                     match node.kind {
-                        #(#variants_kind => Iter::#i_ident(
+                        #(#variants_kind_src => Iter::#i_ident(
                             traverse!(all(forest) #variants_shape)
                                 .apply(node)
                                 .map(move |r| #ident::#variants_from_forest_ident(self.forest, node, r))
@@ -1457,11 +1319,11 @@ fn rule_handle_debug_impl<Pat>(cx: &mut Context<Pat>, name: IStr, has_fields: bo
 
 fn define_parse_fn<Pat>(
     cx: &mut Context<Pat>,
-    rules: &RuleMap<'_>,
+    rules: &mut RuleMap<'_>,
     code_labels: &mut IndexMap<Rc<CodeLabel>, usize>,
 ) -> Src
 where
-    Pat: Eq + Hash + RustInputPat,
+    Pat: RustInputPat,
 {
     let mut code_label_arms = vec![];
     for (&name, rule) in rules.named {
@@ -1469,7 +1331,7 @@ where
         let rules = if rule.fields.is_empty() {
             None
         } else {
-            Some(rules)
+            Some(&mut *rules)
         };
         (rule.rule.generate_parse() + ret())
             .apply(Continuation {
@@ -1496,19 +1358,35 @@ where
     })
 }
 
-fn declare_parse_node_kind(all_parse_nodes: &[ParseNode]) -> Src {
+fn declare_parse_node_kind<Pat: RustInputPat>(
+    cx: &mut Context<Pat>,
+    rules: &mut RuleMap<'_>,
+    all_rules: &[IRule],
+) -> Src {
     // FIXME(eddyb) figure out a more efficient way to reuse
     // iterators with `quote!(...)` than `.collect::<Vec<_>>()`.
-    let nodes_kind = all_parse_nodes
+    let nodes_kind = all_rules
         .iter()
-        .map(|node| &node.kind)
+        .map(|rule| rule.parse_node_kind(cx, rules))
+        .collect::<Vec<_>>();
+    let nodes_kind_src = nodes_kind
+        .iter()
+        .map(|kind| kind.to_src())
         .collect::<Vec<_>>();
     let nodes_kind_ident = nodes_kind.iter().map(|kind| kind.ident());
-    let nodes_doc = all_parse_nodes
+    // HACK(eddyb) only collected to a `Vec` to avoid `cx`/`rules` borrow conflicts.
+    let nodes_doc = all_rules
         .iter()
-        .map(|node| format!("`{}`", node.desc.replace('`', "\\`")));
-    let nodes_desc = all_parse_nodes.iter().map(|node| &node.desc);
-    let nodes_shape = all_parse_nodes.iter().map(|node| &node.shape);
+        .map(|&rule| format!("`{}`", rule.parse_node_desc(cx, rules).replace('`', "\\`")))
+        .collect::<Vec<_>>();
+    let nodes_desc = all_rules
+        .iter()
+        .map(|&rule| rule.parse_node_desc(cx, rules))
+        .collect::<Vec<_>>();
+    let nodes_shape_src = all_rules
+        .iter()
+        .map(|&rule| rule.parse_node_shape(cx, rules).to_src(cx, rules))
+        .collect::<Vec<_>>();
 
     quote!(
         pub struct _G;
@@ -1526,12 +1404,12 @@ fn declare_parse_node_kind(all_parse_nodes: &[ParseNode]) -> Src {
 
             fn parse_node_shape(&self, kind: _P) -> ParseNodeShape<_P> {
                 match kind {
-                    #(#nodes_kind => #nodes_shape),*
+                    #(#nodes_kind_src => #nodes_shape_src),*
                 }
             }
             fn parse_node_desc(&self, kind: _P) -> String {
                 let s = match kind {
-                    #(#nodes_kind => #nodes_desc),*
+                    #(#nodes_kind_src => #nodes_desc),*
                 };
                 s.to_string()
             }
@@ -1539,18 +1417,35 @@ fn declare_parse_node_kind(all_parse_nodes: &[ParseNode]) -> Src {
     )
 }
 
-fn impl_debug_for_handle_any(all_parse_nodes: &[ParseNode]) -> Src {
-    let arms = all_parse_nodes
-        .iter()
-        .filter_map(|ParseNode { kind, ty, .. }| {
-            ty.as_ref().map(|ty| {
-                quote!(#kind => write!(f, "{:?}", Handle::<_, #ty> {
+fn impl_debug_for_handle_any<Pat: RustInputPat>(
+    cx: &mut Context<Pat>,
+    rules: &mut RuleMap<'_>,
+    all_rules: &[IRule],
+) -> Src {
+    let arms = all_rules.iter().filter_map(|&rule| {
+        let ty = match cx[rule] {
+            Rule::Call(r) => {
+                let ident = Src::ident(&cx[r]);
+                quote!(#ident<'_, '_, _>)
+            }
+            Rule::RepeatMany(elem, _) | Rule::RepeatMore(elem, _) => match cx[elem] {
+                Rule::Eat(_) => quote!([()]),
+                Rule::Call(r) => {
+                    let ident = Src::ident(&cx[r]);
+                    quote!([#ident<'_, '_, _>])
+                }
+                _ => return None,
+            },
+            _ => return None,
+        };
+        let kind = rule.parse_node_kind(cx, rules);
+        let kind_src = kind.to_src();
+        Some(quote!(#kind_src => write!(f, "{:?}", Handle::<_, #ty> {
                 node: self.node,
                 forest: self.forest,
                 _marker: PhantomData,
-            }),)
-            })
-        });
+            }),))
+    });
     quote!(impl<I: gll::input::Input> fmt::Debug for Handle<'_, '_, I, Any> {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             match self.node.kind {
@@ -1581,11 +1476,15 @@ fn code_label_decl_and_impls<Pat>(
         }))
         .map(Rc::new)
         .collect::<Vec<_>>();
+    let all_labels_src = all_labels.iter().map(|label| label.to_src());
     let all_labels_ident = all_labels.iter().map(|label| label.flattened_ident());
-    let all_labels_enclosing_fn = all_labels.iter().map(|label| match &**label {
-        CodeLabel::Nested { parent, .. } if !code_labels.contains_key(label) => parent,
-        _ => label,
-    });
+    let all_labels_enclosing_fn = all_labels
+        .iter()
+        .map(|label| match &**label {
+            CodeLabel::Nested { parent, .. } if !code_labels.contains_key(label) => parent,
+            _ => label,
+        })
+        .map(|label| label.to_src());
 
     quote!(
         #[allow(non_camel_case_types)]
@@ -1599,7 +1498,7 @@ fn code_label_decl_and_impls<Pat>(
 
             fn enclosing_fn(self) -> Self {
                 match self {
-                    #(#all_labels => #all_labels_enclosing_fn),*
+                    #(#all_labels_src => #all_labels_enclosing_fn),*
                 }
             }
         }
