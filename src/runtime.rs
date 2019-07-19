@@ -1,4 +1,4 @@
-use grammer::forest::{GrammarReflector, OwnedParseForestAndNode, ParseNode};
+use grammer::forest::{GrammarReflector, Node, OwnedParseForestAndNode};
 use grammer::input::{Input, InputMatch, Range};
 use grammer::parser::{ParseResult, Parser};
 use std::cmp::{Ordering, Reverse};
@@ -11,7 +11,7 @@ pub struct Runtime<'a, 'i, C: CodeLabel, I: Input, Pat> {
     parser: Parser<'a, 'i, C::GrammarReflector, I, Pat>,
     state: &'a mut RuntimeState<'i, C>,
     current: C,
-    saved: Option<ParseNode<'i, C::ParseNodeKind>>,
+    saved: Option<Node<'i, C::NodeKind>>,
 }
 
 struct RuntimeState<'i, C: CodeLabel> {
@@ -23,10 +23,10 @@ struct RuntimeState<'i, C: CodeLabel> {
 impl<'i, P, G, C, I: Input, Pat> Runtime<'_, 'i, C, I, Pat>
 where
     // FIXME(eddyb) these shouldn't be needed, as they are bounds on
-    // `GrammarReflector::ParseNodeKind`, but that's ignored currently.
+    // `GrammarReflector::NodeKind`, but that's ignored currently.
     P: fmt::Debug + Ord + Hash + Copy,
-    G: GrammarReflector<ParseNodeKind = P>,
-    C: CodeStep<I, Pat, GrammarReflector = G, ParseNodeKind = P>,
+    G: GrammarReflector<NodeKind = P>,
+    C: CodeStep<I, Pat, GrammarReflector = G, NodeKind = P>,
 {
     pub fn parse(
         grammar: G,
@@ -87,7 +87,7 @@ where
             state
                 .memoizer
                 .longest_result(call)
-                .map(|range| ParseNode { kind, range })
+                .map(|range| Node { kind, range })
         })
     }
 
@@ -129,14 +129,14 @@ where
 
     // FIXME(eddyb) maybe specialize this further, for `forest_add_split`?
     pub fn save(&mut self, kind: P) {
-        let old_saved = self.saved.replace(ParseNode {
+        let old_saved = self.saved.replace(Node {
             kind,
             range: self.parser.take_result(),
         });
         assert_eq!(old_saved, None);
     }
 
-    pub fn take_saved(&mut self) -> ParseNode<'i, P> {
+    pub fn take_saved(&mut self) -> Node<'i, P> {
         self.saved.take().unwrap()
     }
 
@@ -145,7 +145,7 @@ where
     }
 
     // FIXME(eddyb) safeguard this against misuse.
-    pub fn forest_add_split(&mut self, kind: P, left: ParseNode<'i, P>) {
+    pub fn forest_add_split(&mut self, kind: P, left: Node<'i, P>) {
         self.parser.forest_add_split(kind, left);
     }
 
@@ -268,10 +268,10 @@ impl<'i, C: CodeLabel> Threads<'i, C> {
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct Continuation<'i, C: CodeLabel> {
     code: C,
-    saved: Option<ParseNode<'i, C::ParseNodeKind>>,
-    // FIXME(eddyb) for GC purposes, this would also need to be a `ParseNode`,
-    // except that's not always the case? But `ParseNode | Range` seems likely
-    // to be a deoptimization, especially if `ParseNode` stops containing a
+    saved: Option<Node<'i, C::NodeKind>>,
+    // FIXME(eddyb) for GC purposes, this would also need to be a `Node`,
+    // except that's not always the case? But `Node | Range` seems likely
+    // to be a deoptimization, especially if `Node` stops containing a
     // `Range` (e.g. if it's an index in a node array).
     result: Range<'i>,
 }
@@ -359,10 +359,10 @@ impl<'i, C: CodeLabel> Memoizer<'i, C> {
 }
 
 pub trait CodeLabel: fmt::Debug + Ord + Hash + Copy + 'static {
-    // HACK(eddyb) this allows using `C::ParseNodeKind` in structs without
+    // HACK(eddyb) this allows using `C::NodeKind` in structs without
     // autoderiving adding spurious bounds on `C::GrammarReflector`.
-    type GrammarReflector: GrammarReflector<ParseNodeKind = Self::ParseNodeKind>;
-    type ParseNodeKind: fmt::Debug + Ord + Hash + Copy;
+    type GrammarReflector: GrammarReflector<NodeKind = Self::NodeKind>;
+    type NodeKind: fmt::Debug + Ord + Hash + Copy;
 
     fn enclosing_fn(self) -> Self;
 }

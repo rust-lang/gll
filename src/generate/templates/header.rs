@@ -18,7 +18,7 @@ impl<I: gll::grammer::input::Input, T: ?Sized> OwnedHandle<I, T> {
 }
 
 pub struct Handle<'a, 'i, I: gll::grammer::input::Input, T: ?Sized> {
-    pub node: ParseNode<'i, _P>,
+    pub node: Node<'i, _P>,
     pub forest: &'a gll::grammer::forest::ParseForest<'i, _G, I>,
     _marker: PhantomData<T>,
 }
@@ -127,8 +127,8 @@ impl<'a, 'i, I: gll::grammer::input::Input, T> Iterator for Handle<'a, 'i, I, [T
                 if iter.next().is_none() {
                     Some(Ok(elem))
                 } else {
-                    match self.forest.grammar.parse_node_shape(self.node.kind) {
-                        ParseNodeShape::Opt(_) => {
+                    match self.forest.grammar.node_shape(self.node.kind) {
+                        NodeShape::Opt(_) => {
                             self.node.range.0 = original.node.range.frontiers().0;
                         }
                         _ => unreachable!(),
@@ -172,7 +172,7 @@ impl<'a, 'i, I: gll::grammer::input::Input, T> Handle<'a, 'i, I, [T]> {
         // separated lists, an empty `Handle<[T]>` can be any optional node.
 
         // A maybe empty-list is always optional, peel that off first.
-        if let ParseNodeShape::Opt(_) = self.forest.grammar.parse_node_shape(self.node.kind) {
+        if let NodeShape::Opt(_) = self.forest.grammar.node_shape(self.node.kind) {
             if let Some(opt_child) = self.forest.unpack_opt(self.node) {
                 self.node = opt_child;
             } else {
