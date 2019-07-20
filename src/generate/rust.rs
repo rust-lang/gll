@@ -2,7 +2,7 @@ use crate::generate::src::{quote, Src};
 use crate::parse_node::ParseNodeShape;
 use crate::scannerless::Pat as SPat;
 use grammer::context::{Context, IRule, IStr};
-use grammer::rule::{FieldPathset, MatchesEmpty, Rule, RuleWithNamedFields, SepKind};
+use grammer::rule::{Field, Fields, MatchesEmpty, Rule, RuleWithNamedFields, SepKind};
 
 use indexmap::{IndexMap, IndexSet};
 use std::borrow::Cow;
@@ -34,57 +34,43 @@ struct RuleMap<'a> {
     anon: IndexSet<IRule>,
 }
 
-struct Variant {
+struct Variant<'a> {
     rule: IRule,
     name: IStr,
-    fields: IndexMap<IStr, FieldPathset>,
+    fields: &'a Fields,
 }
 
 trait RuleWithNamedFieldsMethods<Pat> {
-    fn find_variant_fields(&self, cx: &mut Context<Pat>) -> Option<Vec<Variant>>;
+    fn find_variant_fields(&self, cx: &mut Context<Pat>) -> Option<Vec<Variant<'_>>>;
 }
 
 impl<Pat> RuleWithNamedFieldsMethods<Pat> for RuleWithNamedFields {
-    fn find_variant_fields(&self, cx: &mut Context<Pat>) -> Option<Vec<Variant>> {
+    fn find_variant_fields(&self, cx: &mut Context<Pat>) -> Option<Vec<Variant<'_>>> {
         if let Rule::Or(cases) = &cx[self.rule] {
             if self.fields.is_empty() {
                 return None;
             }
 
-            let mut variant_names = vec![None; cases.len()];
-            let mut variant_fields = vec![IndexMap::new(); cases.len()];
-            for (&field, paths) in &self.fields {
-                for path in &paths.0 {
-                    match path[..] {
-                        [] => return None,
-                        [variant] => {
-                            let old_name = variant_names[variant].replace(field);
-                            if old_name.is_some() {
-                                return None;
-                            }
+            let mut variants = vec![None; cases.len()];
+            for (&name, field) in &self.fields {
+                for (path, subfields) in &field.paths {
+                    if let [variant] = path[..] {
+                        let old = variants[variant].replace((name, subfields));
+                        if old.is_some() {
+                            return None;
                         }
-                        // FIXME: use [variant, rest @ ..] when possible.
-                        _ => {
-                            variant_fields[path[0]]
-                                .entry(field)
-                                .or_insert_with(FieldPathset::default)
-                                .0
-                                .insert(path[1..].to_vec());
-                        }
+                    } else {
+                        return None;
                     }
                 }
             }
             cases
                 .iter()
                 .cloned()
-                .zip(variant_names)
-                .zip(variant_fields)
-                .map(|((rule, name), fields)| {
-                    Some(Variant {
-                        rule,
-                        name: name?,
-                        fields,
-                    })
+                .zip(variants)
+                .map(|(rule, name_and_fields)| {
+                    let (name, fields) = name_and_fields?;
+                    Some(Variant { rule, name, fields })
                 })
                 .collect()
         } else {
@@ -94,8 +80,8 @@ impl<Pat> RuleWithNamedFieldsMethods<Pat> for RuleWithNamedFields {
 }
 
 trait RuleMethods<Pat>: Sized {
-    fn field_pathset_type(self, cx: &Context<Pat>, paths: &FieldPathset) -> Src;
-    fn field_type(self, cx: &Context<Pat>, path: &[usize]) -> Src;
+    fn field_type(self, cx: &Context<Pat>, field: &Field) -> Src;
+    fn field_path_type(self, cx: &Context<Pat>, path: &[usize]) -> Src;
     fn parse_node_kind(self, cx: &Context<Pat>, rules: &mut RuleMap<'_>) -> ParseNodeKind;
     fn parse_node_desc(self, cx: &Context<Pat>, rules: &mut RuleMap<'_>) -> String;
     fn parse_node_shape(
@@ -106,13 +92,18 @@ trait RuleMethods<Pat>: Sized {
 }
 
 impl<Pat: RustInputPat> RuleMethods<Pat> for IRule {
-    fn field_pathset_type(self, cx: &Context<Pat>, paths: &FieldPathset) -> Src {
-        let ty = self.field_type(cx, paths.0.get_index(0).unwrap());
-        if paths.0.len() > 1 {
+    fn field_type(self, cx: &Context<Pat>, field: &Field) -> Src {
+        let (first_path, first_subfields) = field.paths.get_index(0).unwrap();
+        // FIXME(eddyb) support this properly.
+        assert!(first_subfields.is_empty());
+        let ty = self.field_path_type(cx, first_path);
+        if field.paths.len() > 1 {
             // HACK(eddyb) find a way to compare `Src` w/o printing (`to_ugly_string`).
             let ty_string = ty.to_ugly_string();
-            for path in paths.0.iter().skip(1) {
-                if self.field_type(cx, path).to_ugly_string() != ty_string {
+            for (path, subfields) in field.paths.iter().skip(1) {
+                // FIXME(eddyb) support this properly.
+                assert!(subfields.is_empty());
+                if self.field_path_type(cx, path).to_ugly_string() != ty_string {
                     return quote!(());
                 }
             }
@@ -120,7 +111,7 @@ impl<Pat: RustInputPat> RuleMethods<Pat> for IRule {
         ty
     }
 
-    fn field_type(self, cx: &Context<Pat>, path: &[usize]) -> Src {
+    fn field_path_type(self, cx: &Context<Pat>, path: &[usize]) -> Src {
         match cx[self] {
             Rule::Empty | Rule::Eat(_) => {
                 assert_eq!(path, []);
@@ -134,13 +125,13 @@ impl<Pat: RustInputPat> RuleMethods<Pat> for IRule {
                 if path.is_empty() {
                     return quote!(());
                 }
-                rules[path[0]].field_type(cx, &path[1..])
+                rules[path[0]].field_path_type(cx, &path[1..])
             }
-            Rule::Or(ref cases) => cases[path[0]].field_type(cx, &path[1..]),
-            Rule::Opt(rule) => [rule][path[0]].field_type(cx, &path[1..]),
+            Rule::Or(ref cases) => cases[path[0]].field_path_type(cx, &path[1..]),
+            Rule::Opt(rule) => [rule][path[0]].field_path_type(cx, &path[1..]),
             Rule::RepeatMany(elem, _) | Rule::RepeatMore(elem, _) => {
                 assert_eq!(path, []);
-                let elem = elem.field_type(cx, &[]);
+                let elem = elem.field_path_type(cx, &[]);
                 quote!([#elem])
             }
         }
@@ -923,12 +914,12 @@ where
 {
     let ident = Src::ident(&cx[name]);
     let variants = rule.find_variant_fields(cx);
-    let variants: Option<&[Variant]> = variants.as_ref().map(|x| &**x);
+    let variants: Option<&[Variant<'_>]> = variants.as_ref().map(|x| &**x);
 
-    let field_handle_ty = |cx: &Context<Pat>, rule: IRule, paths| {
-        let ty = rule.field_pathset_type(cx, paths);
+    let field_handle_ty = |cx: &Context<Pat>, rule: IRule, field| {
+        let ty = rule.field_type(cx, field);
         let handle_ty = quote!(Handle<'a, 'i, I, #ty>);
-        if rule.field_pathset_is_refutable(cx, paths) {
+        if rule.field_is_refutable(cx, field) {
             quote!(Option<#handle_ty>)
         } else {
             handle_ty
@@ -939,14 +930,14 @@ where
         let variants = variants.iter().map(|v| {
             let variant_ident = Src::ident(&cx[v.name]);
             if v.fields.is_empty() {
-                let field_ty = v.rule.field_type(cx, &[]);
+                let field_ty = v.rule.field_path_type(cx, &[]);
                 quote!(#variant_ident(Handle<'a, 'i, I, #field_ty>))
             } else {
                 let fields_ident = v.fields.keys().map(|&name| Src::ident(&cx[name]));
                 let fields_ty = v
                     .fields
                     .values()
-                    .map(|paths| field_handle_ty(cx, v.rule, paths));
+                    .map(|field| field_handle_ty(cx, v.rule, field));
                 quote!(#variant_ident {
                     #(#fields_ident: #fields_ty),*
                 })
@@ -963,7 +954,7 @@ where
         let fields_ty = rule
             .fields
             .values()
-            .map(|paths| field_handle_ty(cx, rule.rule, paths));
+            .map(|field| field_handle_ty(cx, rule.rule, field));
         let marker_field = if rule.fields.is_empty() {
             Some(quote!(_marker: PhantomData<(&'a (), &'i (), I)>,))
         } else {
@@ -986,7 +977,7 @@ where
 fn impl_rule_from_forest<Pat>(
     name: IStr,
     rule: &RuleWithNamedFields,
-    variants: Option<&[Variant]>,
+    variants: Option<&[Variant<'_>]>,
     cx: &mut Context<Pat>,
     rules: &mut RuleMap<'_>,
 ) -> Src
@@ -994,8 +985,8 @@ where
     Pat: RustInputPat,
 {
     let ident = Src::ident(&cx[name]);
-    let field_handle_expr = |cx: &Context<Pat>, rule: IRule, paths: &FieldPathset| {
-        let paths_expr = paths.0.iter().map(|path| {
+    let field_handle_expr = |cx: &Context<Pat>, rule: IRule, field: &Field| {
+        let paths_expr = field.paths.keys().map(|path| {
             // HACK(eddyb) workaround `quote!(#i)` producing `0usize`.
             let path = path
                 .iter()
@@ -1003,14 +994,14 @@ where
                 .map(::proc_macro2::Literal::usize_unsuffixed);
             quote!(_r #(.#path)*)
         });
-        if rule.field_pathset_is_refutable(cx, paths) {
+        if rule.field_is_refutable(cx, field) {
             quote!(None #(.or(#paths_expr))* .map(|node| Handle {
                 node,
                 forest,
                 _marker: PhantomData,
             }))
         } else {
-            assert_eq!(paths.0.len(), 1);
+            assert_eq!(field.paths.len(), 1);
             quote!(Handle {
                 node: #(#paths_expr)*,
                 forest,
@@ -1041,7 +1032,7 @@ where
                 let fields_expr = v
                     .fields
                     .values()
-                    .map(|paths| field_handle_expr(cx, v.rule, paths));
+                    .map(|field| field_handle_expr(cx, v.rule, field));
                 quote!(#ident::#variant_ident {
                     #(#fields_ident: #fields_expr),*
                 })
@@ -1064,7 +1055,7 @@ where
         let fields_expr = rule
             .fields
             .values()
-            .map(|paths| field_handle_expr(cx, rule.rule, paths));
+            .map(|field| field_handle_expr(cx, rule.rule, field));
         let marker_field = if rule.fields.is_empty() {
             Some(quote!(_marker: { let _ = forest; PhantomData },))
         } else {
@@ -1092,7 +1083,7 @@ where
 fn impl_rule_one_and_all<Pat>(
     name: IStr,
     rule: &RuleWithNamedFields,
-    variants: Option<&[Variant]>,
+    variants: Option<&[Variant<'_>]>,
     cx: &mut Context<Pat>,
     rules: &mut RuleMap<'_>,
 ) -> Src
@@ -1200,7 +1191,7 @@ fn rule_debug_impls<Pat>(
     cx: &mut Context<Pat>,
     name: IStr,
     rule: &RuleWithNamedFields,
-    variants: Option<&[Variant]>,
+    variants: Option<&[Variant<'_>]>,
 ) -> Src {
     rule_debug_impl(cx, name, rule, variants)
         + rule_handle_debug_impl(cx, name, !rule.fields.is_empty())
@@ -1210,7 +1201,7 @@ fn rule_debug_impl<Pat>(
     cx: &mut Context<Pat>,
     name: IStr,
     rule: &RuleWithNamedFields,
-    variants: Option<&[Variant]>,
+    variants: Option<&[Variant<'_>]>,
 ) -> Src {
     let name = &cx[name];
     let ident = Src::ident(name);
@@ -1235,10 +1226,10 @@ fn rule_debug_impl<Pat>(
             if v.fields.is_empty() {
                 quote!(f.debug_tuple(#variant_path_str).field(x).finish(),)
             } else {
-                let fields_debug = v.fields.iter().map(|(field_name, paths)| {
+                let fields_debug = v.fields.iter().map(|(field_name, field)| {
                     let field_name = &cx[*field_name];
                     let field_var_ident = Src::ident(format!("f_{}", field_name));
-                    if v.rule.field_pathset_is_refutable(cx, paths) {
+                    if v.rule.field_is_refutable(cx, field) {
                         quote!(if let Some(field) = #field_var_ident {
                             d.field(#field_name, field);
                         })
@@ -1259,10 +1250,10 @@ fn rule_debug_impl<Pat>(
             #(#variants_pat => #variants_body)*
         })
     } else {
-        let fields_debug = rule.fields.iter().map(|(field_name, paths)| {
+        let fields_debug = rule.fields.iter().map(|(field_name, field)| {
             let field_name = &cx[*field_name];
             let field_ident = Src::ident(field_name);
-            if rule.rule.field_pathset_is_refutable(cx, paths) {
+            if rule.rule.field_is_refutable(cx, field) {
                 quote!(if let Some(ref field) = self.#field_ident {
                    d.field(#field_name, field);
                 })
