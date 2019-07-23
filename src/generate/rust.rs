@@ -131,7 +131,7 @@ trait RuleMethods<Pat>: Sized {
     fn field_type(self, cx: &Context<Pat>, field: &Field) -> Src;
     fn field_path_type(self, cx: &Context<Pat>, path: &[usize]) -> Src;
     fn parse_node_kind(self, cx: &Context<Pat>, rules: &mut RuleMap<'_>) -> ParseNodeKind;
-    fn parse_node_desc(self, cx: &Context<Pat>, rules: &mut RuleMap<'_>) -> String;
+    fn parse_node_desc(self, cx: &Context<Pat>) -> String;
     fn parse_node_shape(
         self,
         cx: &mut Context<Pat>,
@@ -198,47 +198,47 @@ impl<Pat: RustInputPat> RuleMethods<Pat> for IRule {
         ParseNodeKind::Anon(i)
     }
 
-    fn parse_node_desc(self, cx: &Context<Pat>, rules: &mut RuleMap<'_>) -> String {
+    fn parse_node_desc(self, cx: &Context<Pat>) -> String {
         match cx[self] {
             Rule::Empty => "".to_string(),
             Rule::Eat(ref pat) => format!("{:?}", pat),
             Rule::Call(r) => cx[r].to_string(),
             Rule::Concat([left, right]) => format!(
                 "({} {})",
-                left.parse_node_desc(cx, rules),
-                right.parse_node_desc(cx, rules)
+                left.parse_node_desc(cx),
+                right.parse_node_desc(cx)
             ),
             Rule::Or(ref cases) => {
                 assert!(cases.len() > 1);
-                let mut desc = format!("({}", cases[0].parse_node_desc(cx, rules));
+                let mut desc = format!("({}", cases[0].parse_node_desc(cx));
                 for rule in &cases[1..] {
                     desc += " | ";
-                    desc += &rule.parse_node_desc(cx, rules);
+                    desc += &rule.parse_node_desc(cx);
                 }
                 desc + ")"
             }
-            Rule::Opt(rule) => format!("{}?", rule.parse_node_desc(cx, rules)),
-            Rule::RepeatMany(elem, None) => format!("{}*", elem.parse_node_desc(cx, rules)),
+            Rule::Opt(rule) => format!("{}?", rule.parse_node_desc(cx)),
+            Rule::RepeatMany(elem, None) => format!("{}*", elem.parse_node_desc(cx)),
             Rule::RepeatMany(elem, Some((sep, SepKind::Simple))) => format!(
                 "{}* % {}",
-                elem.parse_node_desc(cx, rules),
-                sep.parse_node_desc(cx, rules)
+                elem.parse_node_desc(cx),
+                sep.parse_node_desc(cx)
             ),
             Rule::RepeatMany(elem, Some((sep, SepKind::Trailing))) => format!(
                 "{}* %% {}",
-                elem.parse_node_desc(cx, rules),
-                sep.parse_node_desc(cx, rules)
+                elem.parse_node_desc(cx),
+                sep.parse_node_desc(cx)
             ),
-            Rule::RepeatMore(elem, None) => format!("{}+", elem.parse_node_desc(cx, rules)),
+            Rule::RepeatMore(elem, None) => format!("{}+", elem.parse_node_desc(cx)),
             Rule::RepeatMore(elem, Some((sep, SepKind::Simple))) => format!(
                 "{}+ % {}",
-                elem.parse_node_desc(cx, rules),
-                sep.parse_node_desc(cx, rules)
+                elem.parse_node_desc(cx),
+                sep.parse_node_desc(cx)
             ),
             Rule::RepeatMore(elem, Some((sep, SepKind::Trailing))) => format!(
                 "{}+ %% {}",
-                elem.parse_node_desc(cx, rules),
-                sep.parse_node_desc(cx, rules)
+                elem.parse_node_desc(cx),
+                sep.parse_node_desc(cx)
             ),
         }
     }
@@ -1420,13 +1420,13 @@ fn declare_parse_node_kind<Pat: RustInputPat>(
         .collect::<Vec<_>>();
     let nodes_kind_ident = nodes_kind.iter().map(|kind| kind.ident());
     // HACK(eddyb) only collected to a `Vec` to avoid `cx`/`rules` borrow conflicts.
-    let nodes_doc = all_rules
-        .iter()
-        .map(|&rule| format!("`{}`", rule.parse_node_desc(cx, rules).replace('`', "\\`")))
-        .collect::<Vec<_>>();
     let nodes_desc = all_rules
         .iter()
-        .map(|&rule| rule.parse_node_desc(cx, rules))
+        .map(|&rule| rule.parse_node_desc(cx))
+        .collect::<Vec<_>>();
+    let nodes_doc = nodes_desc
+        .iter()
+        .map(|desc| format!("`{}`", desc.replace('`', "\\`")))
         .collect::<Vec<_>>();
     let nodes_shape_src = all_rules
         .iter()
