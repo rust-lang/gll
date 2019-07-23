@@ -34,11 +34,8 @@ fn json_like_testcase(input: &str, expected: &str) {
         .replace("?..? => ", "")
         .replace("?..?", "?");
 
-    // FIXME(eddyb) Remove this trailing-comma-ignoring hack
-    // once rust-lang/rust#59076 reaches the stable channel.
-    let normalize = |s: &str| s.replace(",\n", "\n");
     assert!(
-        normalize(&result) == normalize(expected),
+        result == expected,
         "mismatched output, expected:\n{}\n\nfound:\n{}",
         expected,
         result
@@ -71,14 +68,14 @@ Value::Object {
         Field {
             name: ?,
             value: Value::Literal(
-                ?
-            )
+                ?,
+            ),
         },
         Field {
             name: ?,
             value: Value::Literal(
-                ?
-            )
+                ?,
+            ),
         },
         Field {
             name: ?,
@@ -87,51 +84,51 @@ Value::Object {
                     Field {
                         name: ?,
                         value: Value::Literal(
-                            ?
-                        )
+                            ?,
+                        ),
                     },
                     Field {
                         name: ?,
                         value: Value::Literal(
-                            ?
-                        )
-                    }
-                ]
-            }
+                            ?,
+                        ),
+                    },
+                ],
+            },
         },
         Field {
             name: ?,
             value: Value::Array {
                 elems: [
                     Value::Literal(
-                        ?
+                        ?,
                     ),
                     Value::Literal(
-                        ?
-                    )
-                ]
-            }
+                        ?,
+                    ),
+                ],
+            },
         },
         Field {
             name: ?,
             value: Value::Array {
                 elems: [
                     Value::Null(
-                        ?
+                        ?,
                     ),
                     Value::False(
-                        ?
+                        ?,
                     ),
                     Value::True(
-                        ?
+                        ?,
                     ),
                     Value::InterpolateRust(
-                        ?
-                    )
-                ]
-            }
-        }
-    ]
+                        ?,
+                    ),
+                ],
+            },
+        },
+    ],
 }";
 
     json_like_testcase(input, expected);

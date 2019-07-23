@@ -44,13 +44,9 @@ macro_rules! testcases {
                     format!("{:?}: error: expected {:?}", at, expected)
                 }
             };
-            // FIXME(eddyb) Remove this trailing-comma-ignoring hack
-            // once rust-lang/rust#59076 reaches the stable channel.
-            let normalize = |s: &str| {
-                s.replace(",\n", "\n")
-            };
+
             assert!(
-                normalize(&result) == normalize($expected),
+                result == $expected,
                 "mismatched output, expected:\n{}\n\nfound:\n{}",
                 $expected,
                 result
@@ -114,14 +110,14 @@ testcases![
     a: 1:1-1:2,
     s: 1:2-1:3 => S {
         s: 1:3-1:3 => S,
-        b: 1:2-1:3
-    }
+        b: 1:2-1:3,
+    },
 } | S {
     s: 1:2-1:4 => S {
         a: 1:2-1:3,
-        s: 1:3-1:3 => S
+        s: 1:3-1:3 => S,
     },
-    b: 1:1-1:2
+    b: 1:1-1:2,
 }";
 
     gll13_g1 {
@@ -151,9 +147,9 @@ testcases![
 1:1-1:4 => A::Y {
     a: 1:1-1:2,
     x: 1:2-1:3 => A::Z(
-        1:2-1:3
+        1:2-1:3,
     ),
-    c: 1:3-1:4
+    c: 1:3-1:4,
 }";
 
     gll15_g0_nested {
@@ -165,9 +161,9 @@ testcases![
 1:1-1:4 => A::X {
     a: 1:1-1:2,
     x: 1:2-1:3 => A::Z(
-        1:2-1:3
+        1:2-1:3,
     ),
-    b: 1:3-1:4
+    b: 1:3-1:4,
 }";
 
     repeat_many_trailing {
