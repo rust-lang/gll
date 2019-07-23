@@ -15,9 +15,36 @@ mod json_like {
     }
 }
 
+fn json_like_testcase(input: &str, expected: &str) {
+    let tokens = input
+        .parse::<gll::grammer::proc_macro::TokenStream>()
+        .unwrap();
+
+    let result = json_like::Value::parse(tokens);
+    let result = match &result {
+        Ok(result) => format!("{:#?}", result),
+        Err(gll::grammer::parser::ParseError { at, expected }) => {
+            format!("{:?}: error: expected {:?}", at, expected)
+        }
+    };
+
+    // HACK(eddyb) clean up the result, as we have no span info.
+    let result = result
+        .replace("Span", "?")
+        .replace("?..? => ", "")
+        .replace("?..?", "?");
+
+    assert!(
+        result == expected,
+        "mismatched output, expected:\n{}\n\nfound:\n{}",
+        expected,
+        result
+    );
+}
+
 #[test]
-fn json_like_proc_macro() {
-    let tokens = stringify! {
+fn json_like_success() {
+    let input = stringify! {
         // Example from `serde_json`.
         {
             name: "John Doe",
@@ -33,29 +60,22 @@ fn json_like_proc_macro() {
 
             test: [null, false, true, (format!("{:?}", Some(1 + 2)))]
         }
-    }
-    .parse::<gll::grammer::proc_macro::TokenStream>()
-    .unwrap();
+    };
 
-    let result = format!("{:#?}", json_like::Value::parse(tokens).unwrap());
-    // HACK(eddyb) clean up the result, as we have no span info.
-    let result = result
-        .replace("Span..Span => ", "")
-        .replace("Span..Span", "?");
     let expected = "\
 Value::Object {
     fields: [
         Field {
             name: ?,
             value: Value::Literal(
-                ?
-            )
+                ?,
+            ),
         },
         Field {
             name: ?,
             value: Value::Literal(
-                ?
-            )
+                ?,
+            ),
         },
         Field {
             name: ?,
@@ -64,59 +84,63 @@ Value::Object {
                     Field {
                         name: ?,
                         value: Value::Literal(
-                            ?
-                        )
+                            ?,
+                        ),
                     },
                     Field {
                         name: ?,
                         value: Value::Literal(
-                            ?
-                        )
-                    }
-                ]
-            }
+                            ?,
+                        ),
+                    },
+                ],
+            },
         },
         Field {
             name: ?,
             value: Value::Array {
                 elems: [
                     Value::Literal(
-                        ?
+                        ?,
                     ),
                     Value::Literal(
-                        ?
-                    )
-                ]
-            }
+                        ?,
+                    ),
+                ],
+            },
         },
         Field {
             name: ?,
             value: Value::Array {
                 elems: [
                     Value::Null(
-                        ?
+                        ?,
                     ),
                     Value::False(
-                        ?
+                        ?,
                     ),
                     Value::True(
-                        ?
+                        ?,
                     ),
                     Value::InterpolateRust(
-                        ?
-                    )
-                ]
-            }
-        }
-    ]
+                        ?,
+                    ),
+                ],
+            },
+        },
+    ],
 }";
-    // FIXME(eddyb) Remove this trailing-comma-ignoring hack
-    // once rust-lang/rust#59076 reaches the stable channel.
-    let normalize = |s: &str| s.replace(",\n", "\n");
-    assert!(
-        normalize(&result) == normalize(expected),
-        "mismatched output, expected:\n{}\n\nfound:\n{}",
-        expected,
-        result
-    );
+
+    json_like_testcase(input, expected);
+}
+
+#[test]
+fn json_like_error() {
+    let input = stringify! {
+        stray_identifier
+    };
+
+    let expected = r#"?: error: expected ["null", "false", "true", "[", "{", "(", LITERAL]"#;
+
+    json_like_testcase(input, expected);
 }

@@ -6,18 +6,22 @@ use grammer::{proc_macro, scannerless};
 
 use indexmap::{IndexMap, IndexSet};
 use std::borrow::Cow;
-use std::fmt::Write as FmtWrite;
+use std::fmt::{self, Write as _};
 use std::hash::Hash;
 use std::ops::Add;
 use std::rc::Rc;
 use std::{iter, mem};
 
-pub trait RustInputPat: Eq + Hash {
+pub trait RustInputPat: Eq + Hash + fmt::Debug {
+    fn rust_pat_ty() -> Src;
     fn rust_slice_ty() -> Src;
     fn rust_matcher(&self) -> Src;
 }
 
-impl<S: Eq + Hash + AsRef<str>> RustInputPat for scannerless::Pat<S> {
+impl<S: Eq + Hash + fmt::Debug + AsRef<str>> RustInputPat for scannerless::Pat<S> {
+    fn rust_pat_ty() -> Src {
+        quote!(gll::grammer::scannerless::Pat<&'static str>)
+    }
     fn rust_slice_ty() -> Src {
         quote!(str)
     }
@@ -30,6 +34,13 @@ impl<S: Eq + Hash + AsRef<str>> RustInputPat for scannerless::Pat<S> {
 }
 
 impl RustInputPat for proc_macro::Pat {
+    fn rust_pat_ty() -> Src {
+        quote!(
+            gll::grammer::proc_macro::Pat<
+                &'static [gll::grammer::proc_macro::FlatTokenPat<&'static str>],
+            >
+        )
+    }
     fn rust_slice_ty() -> Src {
         quote!([gll::grammer::proc_macro::FlatToken])
     }
@@ -40,6 +51,9 @@ impl RustInputPat for proc_macro::Pat {
 }
 
 impl RustInputPat for proc_macro::FlatTokenPat<String> {
+    fn rust_pat_ty() -> Src {
+        quote!(gll::grammer::proc_macro::FlatTokenPat<&'static str>)
+    }
     fn rust_slice_ty() -> Src {
         quote!([gll::grammer::proc_macro::FlatToken])
     }
@@ -187,7 +201,7 @@ impl<Pat: RustInputPat> RuleMethods<Pat> for IRule {
     fn parse_node_desc(self, cx: &Context<Pat>, rules: &mut RuleMap<'_>) -> String {
         match cx[self] {
             Rule::Empty => "".to_string(),
-            Rule::Eat(ref pat) => pat.rust_matcher().to_pretty_string(),
+            Rule::Eat(ref pat) => format!("{:?}", pat),
             Rule::Call(r) => cx[r].to_string(),
             Rule::Concat([left, right]) => format!(
                 "({} {})",
@@ -782,7 +796,7 @@ impl<Pat: RustInputPat> RuleGenerateMethods<Pat> for IRule {
                 Rule::Empty => cont,
                 Rule::Eat(ref pat) => {
                     let pat = pat.rust_matcher();
-                    check(quote!(let Some(mut rt) = rt.input_consume_left(&(#pat)))).apply(cont)
+                    check(quote!(let Some(mut rt) = rt.input_consume_left(#pat))).apply(cont)
                 }
                 Rule::Call(r) => {
                     call(Rc::new(CodeLabel::NamedRule(cont.cx[r].to_string()))).apply(cont)
@@ -903,6 +917,7 @@ where
     let code_label_src = code_label.to_src();
     let parse_node_kind = ParseNodeKind::NamedRule(cx[name].to_string());
     let parse_node_kind_src = parse_node_kind.to_src();
+    let rust_pat_ty = Pat::rust_pat_ty();
     let rust_slice_ty = Pat::rust_slice_ty();
     quote!(
         impl<I> #ident<'_, '_, I>
@@ -911,7 +926,7 @@ where
             pub fn parse(input: I)
                 -> Result<
                     OwnedHandle<I, Self>,
-                    gll::grammer::parser::ParseError<I::SourceInfoPoint>,
+                    gll::grammer::parser::ParseError<I::SourceInfoPoint, #rust_pat_ty>,
                 >
             {
                 gll::runtime::Runtime::parse(
@@ -1375,11 +1390,12 @@ where
             .reify_as(code_label);
     }
 
+    let rust_pat_ty = Pat::rust_pat_ty();
     let rust_slice_ty = Pat::rust_slice_ty();
-    quote!(impl<I> gll::runtime::CodeStep<I> for _C
+    quote!(impl<I> gll::runtime::CodeStep<I, #rust_pat_ty> for _C
         where I: gll::grammer::input::Input<Slice = #rust_slice_ty>,
     {
-        fn step<'i>(self, mut rt: gll::runtime::Runtime<'_, 'i, _C, I>) {
+        fn step<'i>(self, mut rt: gll::runtime::Runtime<'_, 'i, _C, I, #rust_pat_ty>) {
             match self {
                 #(#code_label_arms)*
             }

@@ -7,8 +7,8 @@ use std::fmt;
 use std::hash::Hash;
 use std::io::{self, Write};
 
-pub struct Runtime<'a, 'i, C: CodeLabel, I: Input> {
-    parser: Parser<'a, 'i, C::GrammarReflector, I>,
+pub struct Runtime<'a, 'i, C: CodeLabel, I: Input, Pat> {
+    parser: Parser<'a, 'i, C::GrammarReflector, I, Pat>,
     state: &'a mut RuntimeState<'i, C>,
     current: C,
     saved: Option<ParseNode<'i, C::ParseNodeKind>>,
@@ -20,20 +20,20 @@ struct RuntimeState<'i, C: CodeLabel> {
     memoizer: Memoizer<'i, C>,
 }
 
-impl<'i, P, G, C, I: Input> Runtime<'_, 'i, C, I>
+impl<'i, P, G, C, I: Input, Pat> Runtime<'_, 'i, C, I, Pat>
 where
     // FIXME(eddyb) these shouldn't be needed, as they are bounds on
     // `GrammarReflector::ParseNodeKind`, but that's ignored currently.
     P: fmt::Debug + Ord + Hash + Copy,
     G: GrammarReflector<ParseNodeKind = P>,
-    C: CodeStep<I, GrammarReflector = G, ParseNodeKind = P>,
+    C: CodeStep<I, Pat, GrammarReflector = G, ParseNodeKind = P>,
 {
     pub fn parse(
         grammar: G,
         input: I,
         callee: C,
         kind: P,
-    ) -> ParseResult<I::SourceInfoPoint, OwnedParseForestAndNode<G, P, I>> {
+    ) -> ParseResult<I::SourceInfoPoint, Pat, OwnedParseForestAndNode<G, P, I>> {
         Parser::parse_with(grammar, input, |mut parser| {
             let call = Call {
                 callee,
@@ -91,12 +91,12 @@ where
         })
     }
 
-    pub fn input_consume_left<'a, Pat: fmt::Debug>(
+    pub fn input_consume_left<'a, SpecificPat: Into<Pat>>(
         &'a mut self,
-        pat: &'static Pat,
-    ) -> Option<Runtime<'a, 'i, C, I>>
+        pat: SpecificPat,
+    ) -> Option<Runtime<'a, 'i, C, I, Pat>>
     where
-        I::Slice: InputMatch<Pat>,
+        I::Slice: InputMatch<SpecificPat>,
     {
         match self.parser.input_consume_left(pat) {
             Some(parser) => Some(Runtime {
@@ -109,12 +109,12 @@ where
         }
     }
 
-    pub fn input_consume_right<'a, Pat>(
+    pub fn input_consume_right<'a, SpecificPat: Into<Pat>>(
         &'a mut self,
-        pat: &'static Pat,
-    ) -> Option<Runtime<'a, 'i, C, I>>
+        pat: SpecificPat,
+    ) -> Option<Runtime<'a, 'i, C, I, Pat>>
     where
-        I::Slice: InputMatch<Pat>,
+        I::Slice: InputMatch<SpecificPat>,
     {
         match self.parser.input_consume_right(pat) {
             Some(parser) => Some(Runtime {
@@ -367,6 +367,6 @@ pub trait CodeLabel: fmt::Debug + Ord + Hash + Copy + 'static {
     fn enclosing_fn(self) -> Self;
 }
 
-pub trait CodeStep<I: Input>: CodeLabel {
-    fn step<'i>(self, rt: Runtime<'_, 'i, Self, I>);
+pub trait CodeStep<I: Input, Pat>: CodeLabel {
+    fn step<'i>(self, rt: Runtime<'_, 'i, Self, I, Pat>);
 }
