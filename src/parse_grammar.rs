@@ -7,11 +7,11 @@ use crate as gll;
 
 include!(concat!(env!("OUT_DIR"), "/parse_grammar.rs"));
 
-use crate::parser::ParseError;
-use crate::proc_macro::{FlatToken, Span, TokenStream};
-use crate::scannerless::Pat as SPat;
 use grammer::context::Context;
+use grammer::parser::ParseError;
+use grammer::proc_macro::{FlatToken, Span, TokenStream};
 use grammer::rule;
+use grammer::scannerless::Pat as SPat;
 use std::hash::Hash;
 use std::ops::Bound;
 use std::str::FromStr;

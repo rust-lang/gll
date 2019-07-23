@@ -1,7 +1,7 @@
 #![deny(rust_2018_idioms)]
 
 mod json_like {
-    ::gll_macros::proc_macro_parser! {
+    gll_macros::proc_macro_parser! {
         Value =
             | Null:"null"
             | False:"false"
@@ -17,7 +17,7 @@ mod json_like {
 
 #[test]
 fn json_like_proc_macro() {
-    let tokens: gll::proc_macro::TokenStream = proc_quote::quote! {
+    let tokens = stringify! {
         // Example from `serde_json`.
         {
             name: "John Doe",
@@ -33,7 +33,9 @@ fn json_like_proc_macro() {
 
             test: [null, false, true, (format!("{:?}", Some(1 + 2)))]
         }
-    };
+    }
+    .parse::<gll::grammer::proc_macro::TokenStream>()
+    .unwrap();
 
     let result = format!("{:#?}", json_like::Value::parse(tokens).unwrap());
     // HACK(eddyb) clean up the result, as we have no span info.

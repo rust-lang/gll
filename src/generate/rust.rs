@@ -1,8 +1,8 @@
 use crate::generate::src::{quote, Src};
-use crate::parse_node::ParseNodeShape;
-use crate::scannerless::Pat as SPat;
 use grammer::context::{Context, IRule, IStr};
+use grammer::parse_node::ParseNodeShape;
 use grammer::rule::{Field, Fields, MatchesEmpty, Rule, RuleWithNamedFields, SepKind};
+use grammer::{proc_macro, scannerless};
 
 use indexmap::{IndexMap, IndexSet};
 use std::borrow::Cow;
@@ -17,15 +17,49 @@ pub trait RustInputPat: Eq + Hash {
     fn rust_matcher(&self) -> Src;
 }
 
-impl<S: Eq + Hash + AsRef<str>> RustInputPat for SPat<S> {
+impl<S: Eq + Hash + AsRef<str>> RustInputPat for scannerless::Pat<S> {
     fn rust_slice_ty() -> Src {
         quote!(str)
     }
     fn rust_matcher(&self) -> Src {
         match self {
-            SPat::String(s) => Src::new(s.as_ref()),
-            SPat::Range(start, end) => quote!(#start..=#end),
+            scannerless::Pat::String(s) => Src::new(s.as_ref()),
+            scannerless::Pat::Range(start, end) => quote!(#start..=#end),
         }
+    }
+}
+
+impl RustInputPat for proc_macro::Pat {
+    fn rust_slice_ty() -> Src {
+        quote!([gll::grammer::proc_macro::FlatToken])
+    }
+    fn rust_matcher(&self) -> Src {
+        let pats_src = self.0.iter().map(|pat| pat.rust_matcher());
+        quote!(&[#(#pats_src),*] as &[_])
+    }
+}
+
+impl RustInputPat for proc_macro::FlatTokenPat<String> {
+    fn rust_slice_ty() -> Src {
+        quote!([gll::grammer::proc_macro::FlatToken])
+    }
+    fn rust_matcher(&self) -> Src {
+        let variant = match self {
+            proc_macro::FlatTokenPat::Delim(c) => quote!(Delim(#c)),
+            proc_macro::FlatTokenPat::Ident(s) => {
+                let s = s
+                    .as_ref()
+                    .map_or_else(|| quote!(None), |x| quote!(Some(#x)));
+                quote!(Ident(#s))
+            }
+            proc_macro::FlatTokenPat::Punct { ch, joint } => {
+                let ch = ch.map_or_else(|| quote!(None), |x| quote!(Some(#x)));
+                let joint = joint.map_or_else(|| quote!(None), |x| quote!(Some(#x)));
+                quote!(Punct { ch: #ch, joint: #joint })
+            }
+            proc_macro::FlatTokenPat::Literal => quote!(Literal),
+        };
+        quote!(gll::grammer::proc_macro::FlatTokenPat::#variant)
     }
 }
 
@@ -254,8 +288,12 @@ impl ParseNodeKind {
     }
 }
 
-impl ParseNodeShape<IRule> {
-    fn to_src<Pat: RustInputPat>(&self, cx: &mut Context<Pat>, rules: &mut RuleMap<'_>) -> Src {
+trait ParseNodeShapeMethods<Pat>: Sized {
+    fn to_src(&self, cx: &mut Context<Pat>, rules: &mut RuleMap<'_>) -> Src;
+}
+
+impl<Pat: RustInputPat> ParseNodeShapeMethods<Pat> for ParseNodeShape<IRule> {
+    fn to_src(&self, cx: &mut Context<Pat>, rules: &mut RuleMap<'_>) -> Src {
         let shape = self.map(|rule| rule.parse_node_kind(cx, rules).to_src());
         let variant = match shape {
             ParseNodeShape::Opaque => quote!(Opaque),
@@ -868,12 +906,12 @@ where
     let rust_slice_ty = Pat::rust_slice_ty();
     quote!(
         impl<I> #ident<'_, '_, I>
-            where I: gll::input::Input<Slice = #rust_slice_ty>,
+            where I: gll::grammer::input::Input<Slice = #rust_slice_ty>,
         {
             pub fn parse(input: I)
                 -> Result<
                     OwnedHandle<I, Self>,
-                    gll::parser::ParseError<I::SourceInfoPoint>,
+                    gll::grammer::parser::ParseError<I::SourceInfoPoint>,
                 >
             {
                 gll::runtime::Runtime::parse(
@@ -888,7 +926,7 @@ where
             }
         }
 
-        impl<I: gll::input::Input> OwnedHandle<I, #ident<'_, '_, I>> {
+        impl<I: gll::grammer::input::Input> OwnedHandle<I, #ident<'_, '_, I>> {
             pub fn with<R>(&self, f: impl for<'a, 'i> FnOnce(Handle<'a, 'i, I, #ident<'a, 'i, I>>) -> R) -> R {
                 self.forest_and_node.unpack_ref(|_, forest_and_node| {
                     let (ref forest, node) = *forest_and_node;
@@ -945,7 +983,7 @@ where
         });
         quote!(
             #[allow(non_camel_case_types)]
-            pub enum #ident<'a, 'i, I: gll::input::Input> {
+            pub enum #ident<'a, 'i, I: gll::grammer::input::Input> {
                 #(#variants),*
             }
         )
@@ -962,7 +1000,7 @@ where
         };
         quote!(
             #[allow(non_camel_case_types)]
-            pub struct #ident<'a, 'i, I: gll::input::Input> {
+            pub struct #ident<'a, 'i, I: gll::grammer::input::Input> {
                 #(pub #fields_ident: #fields_ty),*
                 #marker_field
             }
@@ -1042,7 +1080,7 @@ where
         quote!(#(
             #[allow(non_snake_case)]
             fn #variants_from_forest_ident(
-                forest: &'a gll::forest::ParseForest<'i, _G, I>,
+                forest: &'a gll::grammer::forest::ParseForest<'i, _G, I>,
                 _node: ParseNode<'i, _P>,
                 _r: traverse!(typeof(ParseNode<'i, _P>) #variants_shape),
             ) -> Self {
@@ -1063,7 +1101,7 @@ where
         };
         quote!(
             fn from_forest(
-                forest: &'a gll::forest::ParseForest<'i, _G, I>,
+                forest: &'a gll::grammer::forest::ParseForest<'i, _G, I>,
                 _node: ParseNode<'i, _P>,
                 _r: traverse!(typeof(ParseNode<'i, _P>) #shape),
             ) -> Self {
@@ -1075,7 +1113,7 @@ where
         )
     };
 
-    quote!(impl<'a, 'i, I: gll::input::Input> #ident<'a, 'i, I> {
+    quote!(impl<'a, 'i, I: gll::grammer::input::Input> #ident<'a, 'i, I> {
         #methods
     })
 }
@@ -1168,7 +1206,7 @@ where
     };
 
     quote!(impl<'a, 'i, I> Handle<'a, 'i, I, #ident<'a, 'i, I>>
-        where I: gll::input::Input,
+        where I: gll::grammer::input::Input,
     {
         pub fn one(self) -> Result<#ident<'a, 'i, I>, Ambiguity<Self>> {
             // HACK(eddyb) using a closure to catch `Err`s from `?`
@@ -1176,7 +1214,7 @@ where
                 let forest = self.forest;
                 let node = forest.unpack_alias(self.node);
                 #one
-            }))().map_err(|gll::forest::MoreThanOne| Ambiguity(self))
+            }))().map_err(|gll::grammer::forest::MoreThanOne| Ambiguity(self))
         }
 
         pub fn all(self) -> impl Iterator<Item = #ident<'a, 'i, I>> {
@@ -1267,7 +1305,7 @@ fn rule_debug_impl<Pat>(
             d.finish()
         )
     };
-    quote!(impl<I: gll::input::Input> fmt::Debug for #ident<'_, '_, I> {
+    quote!(impl<I: gll::grammer::input::Input> fmt::Debug for #ident<'_, '_, I> {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             #body
         }
@@ -1292,7 +1330,7 @@ fn rule_handle_debug_impl<Pat>(cx: &mut Context<Pat>, name: IStr, has_fields: bo
         )
     };
     quote!(
-        impl<'a, 'i, I: gll::input::Input> fmt::Debug for Handle<'a, 'i, I, #ident<'a, 'i, I>> {
+        impl<'a, 'i, I: gll::grammer::input::Input> fmt::Debug for Handle<'a, 'i, I, #ident<'a, 'i, I>> {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 write!(f, "{:?}", self.source_info())?;
                 #body
@@ -1300,7 +1338,7 @@ fn rule_handle_debug_impl<Pat>(cx: &mut Context<Pat>, name: IStr, has_fields: bo
             }
         }
 
-        impl<I: gll::input::Input> fmt::Debug for OwnedHandle<I, #ident<'_, '_, I>> {
+        impl<I: gll::grammer::input::Input> fmt::Debug for OwnedHandle<I, #ident<'_, '_, I>> {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 self.with(|handle| handle.fmt(f))
             }
@@ -1339,7 +1377,7 @@ where
 
     let rust_slice_ty = Pat::rust_slice_ty();
     quote!(impl<I> gll::runtime::CodeStep<I> for _C
-        where I: gll::input::Input<Slice = #rust_slice_ty>,
+        where I: gll::grammer::input::Input<Slice = #rust_slice_ty>,
     {
         fn step<'i>(self, mut rt: gll::runtime::Runtime<'_, 'i, _C, I>) {
             match self {
@@ -1390,7 +1428,7 @@ fn declare_parse_node_kind<Pat: RustInputPat>(
             )*
         }
 
-        impl gll::forest::GrammarReflector for _G {
+        impl gll::grammer::forest::GrammarReflector for _G {
             type ParseNodeKind = _P;
 
             fn parse_node_shape(&self, kind: _P) -> ParseNodeShape<_P> {
@@ -1437,7 +1475,7 @@ fn impl_debug_for_handle_any<Pat: RustInputPat>(
                 _marker: PhantomData,
             }),))
     });
-    quote!(impl<I: gll::input::Input> fmt::Debug for Handle<'_, '_, I, Any> {
+    quote!(impl<I: gll::grammer::input::Input> fmt::Debug for Handle<'_, '_, I, Any> {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             match self.node.kind {
                 #(#arms)*
