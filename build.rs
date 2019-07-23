@@ -13,13 +13,13 @@ fn main() {
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
 
-    let mut cx = grammer::proc_macro::Context::new();
-    let mut grammar = grammer::proc_macro::builtin(&mut cx);
-    grammar.extend(grammer::grammar_grammar(&mut cx));
+    let cx = grammer::proc_macro::Context::new();
+    let mut grammar = grammer::proc_macro::builtin(&cx);
+    grammar.extend(grammer::grammar_grammar(&cx));
 
     fs::write(
         &out_dir.join("parse_grammar.rs"),
-        generate::rust::generate(&mut cx, &grammar).to_rustfmt_or_pretty_string(),
+        generate::rust::generate(&cx, &grammar).to_rustfmt_or_pretty_string(),
     )
     .unwrap();
 }

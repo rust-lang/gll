@@ -17,7 +17,7 @@ use std::ops::Bound;
 use std::str::FromStr;
 
 pub fn parse_grammar<Pat: Eq + Hash + From<SPat>>(
-    cx: &mut Context<Pat>,
+    cx: &Context<Pat>,
     stream: TokenStream,
 ) -> Result<grammer::Grammar, ParseError<Span, PMPat<&'static [FlatTokenPat<&'static str>]>>> {
     let mut grammar = grammer::Grammar::new();
@@ -28,17 +28,14 @@ pub fn parse_grammar<Pat: Eq + Hash + From<SPat>>(
                 [FlatToken::Ident(ident)] => ident.to_string(),
                 _ => unreachable!(),
             };
-            grammar.define(cx.intern(name), rule_def.rule.one().unwrap().lower(cx));
+            grammar.define(cx.intern(&name[..]), rule_def.rule.one().unwrap().lower(cx));
         }
     });
     Ok(grammar)
 }
 
 impl Or<'_, '_, TokenStream> {
-    fn lower<Pat: Eq + Hash + From<SPat>>(
-        self,
-        cx: &mut Context<Pat>,
-    ) -> rule::RuleWithNamedFields {
+    fn lower<Pat: Eq + Hash + From<SPat>>(self, cx: &Context<Pat>) -> rule::RuleWithNamedFields {
         let mut rules = self.rules.map(|rule| rule.unwrap().one().unwrap());
         let first = rules.next().unwrap().lower(cx);
         rules.fold(first, |a, b| (a | b.lower(cx)).finish(cx))
@@ -46,10 +43,7 @@ impl Or<'_, '_, TokenStream> {
 }
 
 impl Concat<'_, '_, TokenStream> {
-    fn lower<Pat: Eq + Hash + From<SPat>>(
-        self,
-        cx: &mut Context<Pat>,
-    ) -> rule::RuleWithNamedFields {
+    fn lower<Pat: Eq + Hash + From<SPat>>(self, cx: &Context<Pat>) -> rule::RuleWithNamedFields {
         self.rules
             .map(|rule| rule.unwrap().one().unwrap())
             .fold(rule::empty().finish(cx), |a, b| {
@@ -59,10 +53,7 @@ impl Concat<'_, '_, TokenStream> {
 }
 
 impl Rule<'_, '_, TokenStream> {
-    fn lower<Pat: Eq + Hash + From<SPat>>(
-        self,
-        cx: &mut Context<Pat>,
-    ) -> rule::RuleWithNamedFields {
+    fn lower<Pat: Eq + Hash + From<SPat>>(self, cx: &Context<Pat>) -> rule::RuleWithNamedFields {
         let mut rule = self.rule.one().unwrap().lower(cx);
         if let Some(modifier) = self.modifier {
             rule = modifier.one().unwrap().lower(cx, rule);
@@ -79,10 +70,7 @@ impl Rule<'_, '_, TokenStream> {
 }
 
 impl Primary<'_, '_, TokenStream> {
-    fn lower<Pat: Eq + Hash + From<SPat>>(
-        self,
-        cx: &mut Context<Pat>,
-    ) -> rule::RuleWithNamedFields {
+    fn lower<Pat: Eq + Hash + From<SPat>>(self, cx: &Context<Pat>) -> rule::RuleWithNamedFields {
         match self {
             Primary::Eat(pat) => rule::eat(pat.one().unwrap().lower(cx)).finish(cx),
             Primary::Call(name) => {
@@ -102,7 +90,7 @@ impl Primary<'_, '_, TokenStream> {
 impl Modifier<'_, '_, TokenStream> {
     fn lower<Pat: Eq + Hash + From<SPat>>(
         self,
-        cx: &mut Context<Pat>,
+        cx: &Context<Pat>,
         rule: rule::RuleWithNamedFields,
     ) -> rule::RuleWithNamedFields {
         match self {
@@ -128,7 +116,7 @@ impl Modifier<'_, '_, TokenStream> {
 }
 
 impl SepKind<'_, '_, TokenStream> {
-    fn lower<Pat: Eq + Hash>(&self, cx: &mut Context<Pat>) -> rule::SepKind {
+    fn lower<Pat: Eq + Hash>(&self, cx: &Context<Pat>) -> rule::SepKind {
         match self {
             SepKind::Simple(_) => rule::SepKind::Simple,
             SepKind::Trailing(_) => rule::SepKind::Trailing,
@@ -137,7 +125,7 @@ impl SepKind<'_, '_, TokenStream> {
 }
 
 impl Pattern<'_, '_, TokenStream> {
-    fn lower<Pat: Eq + Hash>(self, cx: &mut Context<Pat>) -> SPat {
+    fn lower<Pat: Eq + Hash>(self, cx: &Context<Pat>) -> SPat {
         fn unescape<T>(handle: Handle<'_, '_, TokenStream, T>) -> String {
             let mut out = String::new();
             let s = match handle.source() {
