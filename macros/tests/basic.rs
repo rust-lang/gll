@@ -96,7 +96,7 @@ testcases![
     },
 }",
 // FIXME(eddyb) get replace quotes with backticks and pretify the `expected` list.
-    S("aax") => r#"1:3: error: expected ["d", "d", "a", "b", "a", "c"]"#;
+    S("aax") => r#"1:3: error: expected ["a", "b", "c", "d"]"#;
 
     gll10_g0_opaque {
         S = { a:A s:S "d" } |

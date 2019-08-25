@@ -20,7 +20,7 @@ struct RuntimeState<'i, C: CodeLabel> {
     memoizer: Memoizer<'i, C>,
 }
 
-impl<'i, P, G, C, I: Input, Pat> Runtime<'_, 'i, C, I, Pat>
+impl<'i, P, G, C, I: Input, Pat: Ord> Runtime<'_, 'i, C, I, Pat>
 where
     // FIXME(eddyb) these shouldn't be needed, as they are bounds on
     // `GrammarReflector::NodeKind`, but that's ignored currently.

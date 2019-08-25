@@ -140,7 +140,7 @@ fn json_like_error() {
         stray_identifier
     };
 
-    let expected = r#"?: error: expected ["null", "false", "true", "[", "{", "(", LITERAL]"#;
+    let expected = r#"?: error: expected ["(", "[", "{", "false", "null", "true", LITERAL]"#;
 
     json_like_testcase(input, expected);
 }
