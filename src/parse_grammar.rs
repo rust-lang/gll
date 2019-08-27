@@ -35,7 +35,7 @@ pub fn parse_grammar<Pat: Eq + Hash + From<SPat>>(
 }
 
 impl Or<'_, '_, TokenStream> {
-    fn lower<Pat: Eq + Hash + From<SPat>>(self, cx: &Context<Pat>) -> rule::RuleWithNamedFields {
+    fn lower<Pat: Eq + Hash + From<SPat>>(self, cx: &Context<Pat>) -> rule::RuleWithFields {
         let mut rules = self.rules.map(|rule| rule.unwrap().one().unwrap());
         let first = rules.next().unwrap().lower(cx);
         rules.fold(first, |a, b| (a | b.lower(cx)).finish(cx))
@@ -43,7 +43,7 @@ impl Or<'_, '_, TokenStream> {
 }
 
 impl Concat<'_, '_, TokenStream> {
-    fn lower<Pat: Eq + Hash + From<SPat>>(self, cx: &Context<Pat>) -> rule::RuleWithNamedFields {
+    fn lower<Pat: Eq + Hash + From<SPat>>(self, cx: &Context<Pat>) -> rule::RuleWithFields {
         self.rules
             .map(|rule| rule.unwrap().one().unwrap())
             .fold(rule::empty().finish(cx), |a, b| {
@@ -53,7 +53,7 @@ impl Concat<'_, '_, TokenStream> {
 }
 
 impl Rule<'_, '_, TokenStream> {
-    fn lower<Pat: Eq + Hash + From<SPat>>(self, cx: &Context<Pat>) -> rule::RuleWithNamedFields {
+    fn lower<Pat: Eq + Hash + From<SPat>>(self, cx: &Context<Pat>) -> rule::RuleWithFields {
         let mut rule = self.rule.one().unwrap().lower(cx);
         if let Some(modifier) = self.modifier {
             rule = modifier.one().unwrap().lower(cx, rule);
@@ -70,7 +70,7 @@ impl Rule<'_, '_, TokenStream> {
 }
 
 impl Primary<'_, '_, TokenStream> {
-    fn lower<Pat: Eq + Hash + From<SPat>>(self, cx: &Context<Pat>) -> rule::RuleWithNamedFields {
+    fn lower<Pat: Eq + Hash + From<SPat>>(self, cx: &Context<Pat>) -> rule::RuleWithFields {
         match self {
             Primary::Eat(pat) => rule::eat(pat.one().unwrap().lower(cx)).finish(cx),
             Primary::Call(name) => {
@@ -91,8 +91,8 @@ impl Modifier<'_, '_, TokenStream> {
     fn lower<Pat: Eq + Hash + From<SPat>>(
         self,
         cx: &Context<Pat>,
-        rule: rule::RuleWithNamedFields,
-    ) -> rule::RuleWithNamedFields {
+        rule: rule::RuleWithFields,
+    ) -> rule::RuleWithFields {
         match self {
             Modifier::Opt(_) => rule.opt().finish(cx),
             Modifier::Repeat { repeat, sep, kind } => {
