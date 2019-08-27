@@ -877,7 +877,7 @@ where
     let variants = rule.find_variant_fields(cx);
     let variants: Option<&[Variant<'_>]> = variants.as_ref().map(|x| &**x);
 
-    let field_handle_ty = |cx: &Context<Pat>, rule: IRule, field| {
+    let field_handle_ty = |rule: IRule, field| {
         let ty = rule.field_type(cx, field);
         let handle_ty = quote!(Handle<'a, 'i, I, #ty>);
         if rule.field_is_refutable(cx, field) {
@@ -898,7 +898,7 @@ where
                 let fields_ty = v
                     .fields
                     .values()
-                    .map(|field| field_handle_ty(cx, v.rule, field));
+                    .map(|field| field_handle_ty(v.rule, field));
                 quote!(#variant_ident {
                     #(#fields_ident: #fields_ty),*
                 })
@@ -915,7 +915,7 @@ where
         let fields_ty = rule
             .fields
             .values()
-            .map(|field| field_handle_ty(cx, rule.rule, field));
+            .map(|field| field_handle_ty(rule.rule, field));
         let marker_field = if rule.fields.is_empty() {
             Some(quote!(_marker: PhantomData<(&'a (), &'i (), I)>,))
         } else {
@@ -946,7 +946,7 @@ where
     Pat: RustInputPat,
 {
     let ident = Src::ident(&cx[name]);
-    let field_handle_expr = |cx: &Context<Pat>, rule: IRule, field: &Field| {
+    let field_handle_expr = |rule: IRule, field: &Field| {
         let paths_expr = field.paths.keys().map(|path| {
             // HACK(eddyb) workaround `quote!(#i)` producing `0usize`.
             let path = path
@@ -993,7 +993,7 @@ where
                 let fields_expr = v
                     .fields
                     .values()
-                    .map(|field| field_handle_expr(cx, v.rule, field));
+                    .map(|field| field_handle_expr(v.rule, field));
                 quote!(#ident::#variant_ident {
                     #(#fields_ident: #fields_expr),*
                 })
@@ -1016,7 +1016,7 @@ where
         let fields_expr = rule
             .fields
             .values()
-            .map(|field| field_handle_expr(cx, rule.rule, field));
+            .map(|field| field_handle_expr(rule.rule, field));
         let marker_field = if rule.fields.is_empty() {
             Some(quote!(_marker: { let _ = forest; PhantomData },))
         } else {
