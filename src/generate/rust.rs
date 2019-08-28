@@ -892,10 +892,6 @@ impl<Pat: RustInputPat> RuleWithFieldsGenerateMethods<Pat> for RuleWithFields {
                 quote!((#left, #right))
             }
             Rule::Or(ref cases) => {
-                let cases_idx = cases
-                    .iter()
-                    .enumerate()
-                    .map(|(i, _)| Src::ident(format!("_{}", i)));
                 // HACK(eddyb) only collected to a `Vec` to avoid `rules` borrow conflicts.
                 let cases_shape = cases
                     .iter()
@@ -906,7 +902,7 @@ impl<Pat: RustInputPat> RuleWithFieldsGenerateMethods<Pat> for RuleWithFields {
                     .collect::<Vec<_>>();
                 let cases_node_kind = cases.iter().map(|rule| rule.node_kind(cx, rules));
                 let cases_node_kind_src = cases_node_kind.map(|kind| kind.to_src());
-                quote!({ #(#cases_idx: #cases_node_kind_src => #cases_shape,)* })
+                quote!({ _P; #(#cases_node_kind_src => #cases_shape,)* })
             }
             Rule::Opt(rule) => {
                 let shape = child(rule, 0).generate_traverse_shape(cx, rules, rust_fields);
@@ -1133,7 +1129,7 @@ where
     Pat: RustInputPat,
 {
     let ident = Src::ident(&cx[name]);
-    let (one, all) = match rust_adt {
+    let (consts, one, all) = match rust_adt {
         RustAdt::Enum(variants) => {
             let variants_fields_len = variants.values().map(|(_, variant)| match variant {
                 RustVariant::Newtype(_) => 0,
@@ -1156,6 +1152,10 @@ where
                 .iter()
                 .map(|kind| kind.to_src())
                 .collect::<Vec<_>>();
+            let variants_shape_ident = variants
+                .keys()
+                .map(|&v_name| Src::ident(format!("{}_SHAPE", &cx[v_name])))
+                .collect::<Vec<_>>();
             let variants_shape = variants
                 .values()
                 .map(|(v_rule, variant)| match variant {
@@ -1167,16 +1167,22 @@ where
                 .collect::<Vec<_>>();
 
             (
+                quote!(#(
+                    #[allow(non_upper_case_globals)]
+                    const #variants_shape_ident: traverse::ty!(#variants_shape) = traverse::new!(#variants_shape);
+                )*),
                 quote!(
-                    let node = forest.one_choice(node)?;
-                    match node.kind {
+                    forest.one_choice(node).and_then(|node| match node.kind {
                         #(#variants_kind_src => {
                             let mut r = [None; #variants_fields_len];
-                            traverse!(one(forest, node, r) #variants_shape);
-                            #ident::#variants_from_forest_ident(self.forest, node, r)
+                            #ident::<I>::#variants_shape_ident
+                                .one(forest, node, &mut r)
+                                .map(|()| {
+                                    #ident::#variants_from_forest_ident(self.forest, node, r)
+                                })
                         })*
                         _ => unreachable!()
-                    }
+                    })
                 ),
                 quote!(
                     #[derive(Clone)]
@@ -1195,13 +1201,14 @@ where
 
                     forest.all_choices(node).flat_map(move |node| {
                         match node.kind {
-                            #(#variants_kind_src => Iter::#i_ident(
-                                traverse!(all(forest, node) #variants_shape)
+                            #(#variants_kind_src => Iter::#i_ident({
+                                #ident::<I>::#variants_shape_ident
+                                    .all(forest, node)
                                     .into_iter()
                                     .map(move |r| {
                                         #ident::#variants_from_forest_ident(self.forest, node, r)
                                     })
-                            ),)*
+                            }),)*
                             _ => unreachable!(),
                         }
                     })
@@ -1213,12 +1220,18 @@ where
             let shape = rule.generate_traverse_shape(cx, rules, fields);
             (
                 quote!(
-                    let mut r = [None; #fields_len];
-                    traverse!(one(forest, node, r) #shape);
-                    #ident::from_forest(self.forest, node, r)
+                    #[allow(non_upper_case_globals)]
+                    const SHAPE: traverse::ty!(#shape) = traverse::new!(#shape);
                 ),
                 quote!(
-                    traverse!(all(forest, node) #shape)
+                    let mut r = [None; #fields_len];
+                    #ident::<I>::SHAPE
+                        .one(forest, node, &mut r)
+                        .map(|()| #ident::from_forest(self.forest, node, r))
+                ),
+                quote!(
+                    #ident::<I>::SHAPE
+                        .all(forest, node)
                         .into_iter()
                         .map(move |r| {
                             #ident::from_forest(self.forest, node, r)
@@ -1228,16 +1241,20 @@ where
         }
     };
 
-    quote!(impl<'a, 'i, I> Handle<'a, 'i, I, #ident<'a, 'i, I>>
+    quote!(
+    impl<'a, 'i, I: gll::grammer::input::Input> #ident<'a, 'i, I> {
+        #consts
+    }
+
+    impl<'a, 'i, I> Handle<'a, 'i, I, #ident<'a, 'i, I>>
         where I: gll::grammer::input::Input,
     {
+        #consts
+
         pub fn one(self) -> Result<#ident<'a, 'i, I>, Ambiguity<Self>> {
-            // HACK(eddyb) using a closure to catch `Err`s from `?`
-            (|| Ok({
-                let forest = self.forest;
-                let node = forest.unpack_alias(self.node);
-                #one
-            }))().map_err(|gll::grammer::forest::MoreThanOne| Ambiguity(self))
+            let forest = self.forest;
+            let node = forest.unpack_alias(self.node);
+            #one.map_err(|gll::grammer::forest::MoreThanOne| Ambiguity(self))
         }
 
         pub fn all(self) -> impl Iterator<Item = #ident<'a, 'i, I>> {
@@ -1245,7 +1262,8 @@ where
             let node = forest.unpack_alias(self.node);
             #all
         }
-    })
+    }
+    )
 }
 
 fn rule_debug_impls<Pat>(cx: &Context<Pat>, name: IStr, rust_adt: &RustAdt) -> Src {

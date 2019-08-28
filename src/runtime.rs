@@ -552,92 +552,301 @@ pub mod cursor {
     }
 }
 
-// HACK(eddyb) work around `macro_rules` not being `use`-able.
-pub use crate::__runtime_traverse as traverse;
+pub mod traverse {
+    use grammer::forest::{GrammarReflector, MoreThanOne, Node, ParseForest};
+    use grammer::input::Input;
 
-#[macro_export]
-macro_rules! __runtime_traverse {
-    (one($forest:ident, $node:ident, $r:ident) _) => {};
-    (one($forest:ident, $node:ident, $r:ident) $i:literal) => {
-        $r[$i] = Some($node);
-    };
-    (one($forest:ident, $node:ident, $r:ident) ($l_shape:tt, $r_shape:tt)) => {
-        let (left, right) = $forest.one_split($node)?;
-        traverse!(one($forest, left, $r) $l_shape);
-        traverse!(one($forest, right, $r) $r_shape);
-    };
-    (one($forest:ident, $node:ident, $r:ident) { $($_i:ident: $kind:pat => $shape:tt,)* }) => {
-        let node = $forest.one_choice($node)?;
-        match node.kind {
-            $($kind => {
-                traverse!(one($forest, node, $r) $shape);
-            })*
-            _ => unreachable!(),
-        }
-    };
-    (one($forest:ident, $node:ident, $r:ident) [$shape:tt]) => {
-        if let Some(node) = $forest.unpack_opt($node) {
-            traverse!(one($forest, node, $r) $shape);
-        }
-    };
+    use super::cursor::*;
 
-    (all($forest:ident, $node:ident) _) => {
-        $crate::runtime::cursor::Once::new(|_: &mut _| {})
-    };
-    (all($forest:ident, $node:ident) $i:literal) => {
-        $crate::runtime::cursor::Once::new(move |r: &mut [_]| r[$i] = Some($node))
-    };
-    (all($forest:ident, $node:ident) ($l_shape:tt, $r_shape:tt)) => {
-        $crate::runtime::cursor::FlattenIter::new(
-            $forest.all_splits($node).map(move |(left, right)| {
-                $crate::runtime::cursor::Product::new(
-                    traverse!(all($forest, left) $l_shape),
-                    traverse!(all($forest, right) $r_shape),
-                )
-            })
-        )
-    };
-    (all($forest:ident, $node:ident) { $($_i:ident: $kind:pat => $shape:tt,)* }) => {
-        {
-            // FIXME(eddyb) use `Either` for this.
-            use $crate::runtime::cursor::Cursor;
+    pub trait Shape<'a, 'i, G: GrammarReflector>: Copy {
+        fn one<I: Input>(
+            self,
+            forest: &'a ParseForest<'i, G, I>,
+            node: Node<'i, G>,
+            out: &mut [Option<Node<'i, G>>],
+        ) -> Result<(), MoreThanOne>;
 
-            #[derive(Clone)]
-            enum OneOf<$($_i),*> {
-                $($_i($_i)),*
+        type All: Cursor<[Option<Node<'i, G>>]>;
+        fn all<I: Input>(self, forest: &'a ParseForest<'i, G, I>, node: Node<'i, G>) -> Self::All;
+    }
+
+    #[derive(Copy, Clone)]
+    pub struct Leaf(pub Option<usize>);
+
+    impl<'i, G: GrammarReflector> Shape<'_, 'i, G> for Leaf {
+        fn one<I: Input>(
+            self,
+            _: &ParseForest<'i, G, I>,
+            node: Node<'i, G>,
+            out: &mut [Option<Node<'i, G>>],
+        ) -> Result<(), MoreThanOne> {
+            if let Some(i) = self.0 {
+                out[i] = Some(node);
             }
+            Ok(())
+        }
 
-            impl<T: ?Sized, $($_i: Cursor<T>),*> Cursor<T> for OneOf<$($_i),*> {
-                fn read(&self, out: &mut T) {
-                    match self {
-                        $(OneOf::$_i(cur) => cur.read(out)),*
-                    }
-                }
-                fn advance(&mut self) -> bool {
-                    match self {
-                        $(OneOf::$_i(cur) => cur.advance()),*
-                    }
-                }
+        type All = LeafCursor<Node<'i, G>>;
+        fn all<I: Input>(self, _: &ParseForest<'i, G, I>, node: Node<'i, G>) -> Self::All {
+            LeafCursor(self.0, node)
+        }
+    }
+
+    #[derive(Clone)]
+    pub struct LeafCursor<T>(Option<usize>, T);
+
+    impl<T: Copy> Cursor<[Option<T>]> for LeafCursor<T> {
+        fn read(&self, out: &mut [Option<T>]) {
+            if let Some(i) = self.0 {
+                out[i] = Some(self.1);
             }
+        }
+        fn advance(&mut self) -> bool {
+            false
+        }
+    }
 
-            $crate::runtime::cursor::FlattenIter::new(
-                $forest.all_choices($node).map(move |node| {
-                    match node.kind {
-                        $($kind => OneOf::$_i(traverse!(all($forest, node) $shape)),)*
-                        _ => unreachable!(),
-                    }
-                }),
+    // HACK(eddyb) this is only because of dynamic dispatch / boxing:
+    pub trait IteratorCloneHack<'a>: 'a + Iterator {
+        fn clone_to_box(&self) -> Box<dyn IteratorCloneHack<'a, Item = Self::Item>>;
+    }
+
+    impl<'a, I: 'a + Iterator + Clone> IteratorCloneHack<'a> for I {
+        fn clone_to_box(&self) -> Box<dyn IteratorCloneHack<'a, Item = Self::Item>> {
+            Box::new(self.clone())
+        }
+    }
+
+    impl<'a, T: 'a> Clone for Box<dyn IteratorCloneHack<'a, Item = T>> {
+        fn clone(&self) -> Self {
+            (**self).clone_to_box()
+        }
+    }
+
+    #[derive(Copy, Clone)]
+    pub struct Split<A, B>(pub A, pub B);
+
+    impl<'a, 'i, G: GrammarReflector, A, B> Shape<'a, 'i, G> for Split<A, B>
+    where
+        A: Shape<'a, 'i, G>,
+        B: Shape<'a, 'i, G>,
+        B::All: Clone,
+
+        // HACK(eddyb) these are only because of dynamic dispatch / boxing:
+        A: 'a,
+        B: 'a,
+        G: 'a,
+    {
+        fn one<I: Input>(
+            self,
+            forest: &'a ParseForest<'i, G, I>,
+            node: Node<'i, G>,
+            out: &mut [Option<Node<'i, G>>],
+        ) -> Result<(), MoreThanOne> {
+            let (left, right) = forest.one_split(node)?;
+            self.0.one(forest, left, out)?;
+            self.1.one(forest, right, out)
+        }
+
+        type All = FlattenIter<Box<dyn IteratorCloneHack<'a, Item = Product<A::All, B::All>>>>;
+        fn all<I: Input>(self, forest: &'a ParseForest<'i, G, I>, node: Node<'i, G>) -> Self::All {
+            FlattenIter::new(Box::new(forest.all_splits(node).map(move |(left, right)| {
+                Product::new(self.0.all(forest, left), self.1.all(forest, right))
+            }))
+                as Box<dyn IteratorCloneHack<'_, Item = Product<A::All, B::All>>>)
+        }
+    }
+
+    #[derive(Copy, Clone)]
+    pub struct Choice<M>(pub M);
+
+    impl<'a, 'i, G: GrammarReflector, M> Shape<'a, 'i, G> for Choice<M>
+    where
+        M: Shape<'a, 'i, G>,
+
+        // HACK(eddyb) these are only because of dynamic dispatch / boxing:
+        M: 'a,
+        G: 'a,
+    {
+        fn one<I: Input>(
+            self,
+            forest: &'a ParseForest<'i, G, I>,
+            node: Node<'i, G>,
+            out: &mut [Option<Node<'i, G>>],
+        ) -> Result<(), MoreThanOne> {
+            let node = forest.one_choice(node)?;
+            self.0.one(forest, node, out)
+        }
+
+        type All = FlattenIter<Box<dyn IteratorCloneHack<'a, Item = M::All>>>;
+        fn all<I: Input>(self, forest: &'a ParseForest<'i, G, I>, node: Node<'i, G>) -> Self::All {
+            FlattenIter::new(Box::new(
+                forest
+                    .all_choices(node)
+                    .map(move |node| self.0.all(forest, node)),
             )
+                as Box<dyn IteratorCloneHack<'_, Item = M::All>>)
         }
-    };
-    (all($forest:ident, $node:ident) [$shape:tt]) => {
-        match $forest.unpack_opt($node) {
-            Some(node) => $crate::runtime::cursor::Either::Left(
-                traverse!(all($forest, node) $shape),
-            ),
-            None => $crate::runtime::cursor::Either::Right(
-                $crate::runtime::cursor::Once::new(|_: &mut _| {}),
-            ),
+    }
+
+    #[derive(Copy, Clone)]
+    pub struct MatchCons<P, A, Tail>(pub P, pub A, pub Tail);
+
+    impl<'a, 'i, G: GrammarReflector, A, Tail> Shape<'a, 'i, G> for MatchCons<G::NodeKind, A, Tail>
+    where
+        A: Shape<'a, 'i, G>,
+        Tail: Shape<'a, 'i, G>,
+    {
+        fn one<I: Input>(
+            self,
+            forest: &'a ParseForest<'i, G, I>,
+            node: Node<'i, G>,
+            out: &mut [Option<Node<'i, G>>],
+        ) -> Result<(), MoreThanOne> {
+            if node.kind == self.0 {
+                self.1.one(forest, node, out)
+            } else {
+                self.2.one(forest, node, out)
+            }
+        }
+
+        type All = Either<A::All, Tail::All>;
+        fn all<I: Input>(self, forest: &'a ParseForest<'i, G, I>, node: Node<'i, G>) -> Self::All {
+            if node.kind == self.0 {
+                Either::Left(self.1.all(forest, node))
+            } else {
+                Either::Right(self.2.all(forest, node))
+            }
+        }
+    }
+
+    #[derive(Copy, Clone)]
+    pub struct MatchNil;
+
+    impl<'i, G: GrammarReflector> Shape<'_, 'i, G> for MatchNil {
+        fn one<I: Input>(
+            self,
+            _: &ParseForest<'i, G, I>,
+            _: Node<'i, G>,
+            _: &mut [Option<Node<'i, G>>],
+        ) -> Result<(), MoreThanOne> {
+            unreachable!()
+        }
+
+        type All = MatchNil;
+        fn all<I: Input>(self, _: &ParseForest<'i, G, I>, _: Node<'i, G>) -> Self::All {
+            unreachable!()
+        }
+    }
+
+    impl<T: ?Sized> Cursor<T> for MatchNil {
+        fn read(&self, _: &mut T) {
+            unreachable!()
+        }
+        fn advance(&mut self) -> bool {
+            unreachable!()
+        }
+    }
+
+    #[derive(Copy, Clone)]
+    pub struct Opt<A>(pub A);
+
+    impl<'a, 'i, G: GrammarReflector, A> Shape<'a, 'i, G> for Opt<A>
+    where
+        A: Shape<'a, 'i, G>,
+    {
+        fn one<I: Input>(
+            self,
+            forest: &'a ParseForest<'i, G, I>,
+            node: Node<'i, G>,
+            out: &mut [Option<Node<'i, G>>],
+        ) -> Result<(), MoreThanOne> {
+            if let Some(node) = forest.unpack_opt(node) {
+                self.0.one(forest, node, out)?;
+            }
+            Ok(())
+        }
+
+        type All = Either<A::All, LeafCursor<Node<'i, G>>>;
+        fn all<I: Input>(self, forest: &'a ParseForest<'i, G, I>, node: Node<'i, G>) -> Self::All {
+            match forest.unpack_opt(node) {
+                Some(node) => Either::Left(self.0.all(forest, node)),
+                None => Either::Right(LeafCursor(None, node)),
+            }
+        }
+    }
+
+    // HACK(eddyb) work around `macro_rules` not being `use`-able.
+    pub use crate::__runtime_traverse_ty as ty;
+
+    #[macro_export]
+    macro_rules! __runtime_traverse_ty {
+        (_) => {
+            $crate::runtime::traverse::Leaf
+        };
+        ($i:literal) => {
+            $crate::runtime::traverse::Leaf
+        };
+        (($l_shape:tt, $r_shape:tt)) => {
+            $crate::runtime::traverse::Split<
+                $crate::runtime::traverse::ty!($l_shape),
+                $crate::runtime::traverse::ty!($r_shape),
+            >
+        };
+        ({ $kind_ty:ty; $($kind:expr => $shape:tt,)* }) => {
+            $crate::runtime::traverse::Choice<
+                $crate::runtime::traverse::ty!(match($kind_ty) { $($shape,)* }),
+            >
+        };
+        (match($kind_ty:ty) { $shape0:tt, $($shape:tt,)* }) => {
+            $crate::runtime::traverse::MatchCons<
+                $kind_ty,
+                $crate::runtime::traverse::ty!($shape0),
+                $crate::runtime::traverse::ty!(match($kind_ty) { $($shape,)* }),
+            >
+        };
+        (match($kind_ty:ty) {}) => { $crate::runtime::traverse::MatchNil };
+        ([$shape:tt]) => {
+            $crate::runtime::traverse::Opt<
+                $crate::runtime::traverse::ty!($shape),
+            >
+        }
+    }
+
+    // HACK(eddyb) work around `macro_rules` not being `use`-able.
+    pub use crate::__runtime_traverse_new as new;
+
+    #[macro_export]
+    macro_rules! __runtime_traverse_new {
+        (_) => {
+            $crate::runtime::traverse::Leaf(None)
+        };
+        ($i:literal) => {
+            $crate::runtime::traverse::Leaf(Some($i))
+        };
+        (($l_shape:tt, $r_shape:tt)) => {
+            $crate::runtime::traverse::Split(
+                $crate::runtime::traverse::new!($l_shape),
+                $crate::runtime::traverse::new!($r_shape),
+            )
+        };
+        ({ $kind_ty:ty; $($kind:expr => $shape:tt,)* }) => {
+            $crate::runtime::traverse::Choice(
+                $crate::runtime::traverse::new!(match { $($kind => $shape,)* }),
+            )
+        };
+        (match { $kind0:expr => $shape0:tt, $($kind:expr => $shape:tt,)* }) => {
+            $crate::runtime::traverse::MatchCons(
+                $kind0,
+                $crate::runtime::traverse::new!($shape0),
+                $crate::runtime::traverse::new!(match { $($kind => $shape,)* }),
+            )
+        };
+        (match {}) => { $crate::runtime::traverse::MatchNil };
+        ([$shape:tt]) => {
+            $crate::runtime::traverse::Opt(
+                $crate::runtime::traverse::new!($shape),
+            )
         }
     }
 }
