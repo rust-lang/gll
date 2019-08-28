@@ -1161,7 +1161,8 @@ where
                     let node = forest.one_choice(node)?;
                     match node.kind {
                         #(#variants_kind_src => {
-                            let r = traverse!(one(forest, node) #variants_shape);
+                            let mut r = <traverse!(typeof(_) #variants_shape)>::default();
+                            traverse!(one(forest, node, r) #variants_shape);
                             #ident::#variants_from_forest_ident(self.forest, node, r)
                         })*
                         _ => unreachable!()
@@ -1186,7 +1187,11 @@ where
                         match node.kind {
                             #(#variants_kind_src => Iter::#i_ident(
                                 traverse!(all(forest, node) #variants_shape)
-                                    .map(move |r| #ident::#variants_from_forest_ident(self.forest, node, r))
+                                    .map(move |f| {
+                                        let mut r = <traverse!(typeof(_) #variants_shape)>::default();
+                                        f(&mut r);
+                                        #ident::#variants_from_forest_ident(self.forest, node, r)
+                                    })
                             ),)*
                             _ => unreachable!(),
                         }
@@ -1198,12 +1203,17 @@ where
             let shape = rule.generate_traverse_shape(cx, rules);
             (
                 quote!(
-                    let r = traverse!(one(forest, node) #shape);
+                    let mut r = <traverse!(typeof(_) #shape)>::default();
+                    traverse!(one(forest, node, r) #shape);
                     #ident::from_forest(self.forest, node, r)
                 ),
                 quote!(
                     traverse!(all(forest, node) #shape)
-                        .map(move |r| #ident::from_forest(self.forest, node, r))
+                        .map(move |f| {
+                            let mut r = <traverse!(typeof(_) #shape)>::default();
+                            f(&mut r);
+                            #ident::from_forest(self.forest, node, r)
+                        })
                 ),
             )
         }

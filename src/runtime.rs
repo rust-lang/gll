@@ -416,46 +416,38 @@ macro_rules! __runtime_traverse {
     (typeof($leaf:ty) { $($i:tt $_i:ident: $kind:pat => $shape:tt,)* }) => { ($(traverse!(typeof($leaf) $shape),)*) };
     (typeof($leaf:ty) [$shape:tt]) => { (traverse!(typeof($leaf) $shape),) };
 
-    (one($forest:ident, $node:ident) _) => {
-        Some($node)
+    (one($forest:ident, $node:ident, $r:expr) _) => {
+        $r = Some($node);
     };
-    (one($forest:ident, $node:ident) ($l_shape:tt, $r_shape:tt)) => {
-        {
-            let (left, right) = $forest.one_split($node)?;
-            (
-                traverse!(one($forest, left) $l_shape),
-                traverse!(one($forest, right) $r_shape),
-            )
+    (one($forest:ident, $node:ident, $r:expr) ($l_shape:tt, $r_shape:tt)) => {
+        let (left, right) = $forest.one_split($node)?;
+        traverse!(one($forest, left, $r.0) $l_shape);
+        traverse!(one($forest, right, $r.1) $r_shape);
+    };
+    (one($forest:ident, $node:ident, $r:expr) { $($i:tt $_i:ident: $kind:pat => $shape:tt,)* }) => {
+        let node = $forest.one_choice($node)?;
+        match node.kind {
+            $($kind => {
+                traverse!(one($forest, node, $r.$i) $shape);
+            })*
+            _ => unreachable!(),
         }
     };
-    (one($forest:ident, $node:ident) { $($i:tt $_i:ident: $kind:pat => $shape:tt,)* }) => {
-        {
-            let node = $forest.one_choice($node)?;
-            let mut r = <($(traverse!(typeof(_) $shape),)*)>::default();
-            match node.kind {
-                $($kind => r.$i = traverse!(one($forest, node) $shape),)*
-                _ => unreachable!(),
-            }
-            r
-        }
-    };
-    (one($forest:ident, $node:ident) [$shape:tt]) => {
-        {
-            let mut r = <(traverse!(typeof(_) $shape),)>::default();
-            if let Some(node) = $forest.unpack_opt($node) {
-                r.0 = traverse!(one($forest, node) $shape);
-            }
-            r
+    (one($forest:ident, $node:ident, $r:expr) [$shape:tt]) => {
+        if let Some(node) = $forest.unpack_opt($node) {
+            traverse!(one($forest, node, $r.0) $shape);
         }
     };
 
     (all($forest:ident, $node:ident) _) => {
-        ::std::iter::once(Some($node))
+        ::std::iter::once(move |r: &mut _| *r = Some($node))
     };
     (all($forest:ident, $node:ident) ($l_shape:tt, $r_shape:tt)) => {
         $forest.all_splits($node).flat_map(move |(left, right)| {
             traverse!(all($forest, left) $l_shape).flat_map(move |left| {
-                traverse!(all($forest, right) $r_shape).map(move |right| (left, right))
+                traverse!(all($forest, right) $r_shape).map(move |right| {
+                    move |r: &mut (_, _)| (left(&mut r.0), right(&mut r.1))
+                })
             })
         })
     };
@@ -479,23 +471,32 @@ macro_rules! __runtime_traverse {
             }
             $forest.all_choices($node).flat_map(move |node| {
                 match node.kind {
-                    $($kind => Iter::$_i(traverse!(all($forest, node) $shape)),)*
+                    $($kind => Iter::$_i(traverse!(all($forest, node) $shape).map(|f| {
+                        // FIXME(eddyb) propagate the destination properly.
+                        let mut r = Default::default();
+                        f(&mut r);
+                        r
+                    })),)*
                     _ => unreachable!(),
                 }
-            })
+            }).map(|r| move |r2: &mut _| *r2 = r)
         }
     };
     (all($forest:ident, $node:ident) [$shape:tt]) => {
         {
-            match $forest.unpack_opt($node) {
+            (match $forest.unpack_opt($node) {
                 Some(node) => {
-                    Some(traverse!(all($forest, node) $shape).map(|x| (x,)))
-                        .into_iter().flatten().chain(None)
+                    Some(traverse!(all($forest, node) $shape).map(|f| {
+                        // FIXME(eddyb) propagate the destination properly.
+                        let mut r = Default::default();
+                        f(&mut r);
+                        (r,)
+                    })).into_iter().flatten().chain(None)
                 }
                 None => {
                     None.into_iter().flatten().chain(Some(<_>::default()))
                 }
-            }
+            }).map(|r| move |r2: &mut _| *r2 = r)
         }
     }
 }
