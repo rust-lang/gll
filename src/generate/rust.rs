@@ -1186,10 +1186,9 @@ where
                     forest.all_choices(node).flat_map(move |node| {
                         match node.kind {
                             #(#variants_kind_src => Iter::#i_ident(
-                                traverse!(all(forest, node) #variants_shape)
-                                    .map(move |f| {
-                                        let mut r = <traverse!(typeof(_) #variants_shape)>::default();
-                                        f(&mut r);
+                                traverse!(all(forest, node, r: traverse!(typeof(_) #variants_shape) => *r) #variants_shape)
+                                    .into_iter()
+                                    .map(move |r| {
                                         #ident::#variants_from_forest_ident(self.forest, node, r)
                                     })
                             ),)*
@@ -1208,10 +1207,9 @@ where
                     #ident::from_forest(self.forest, node, r)
                 ),
                 quote!(
-                    traverse!(all(forest, node) #shape)
-                        .map(move |f| {
-                            let mut r = <traverse!(typeof(_) #shape)>::default();
-                            f(&mut r);
+                    traverse!(all(forest, node, r: traverse!(typeof(_) #shape) => *r) #shape)
+                        .into_iter()
+                        .map(move |r| {
                             #ident::from_forest(self.forest, node, r)
                         })
                 ),

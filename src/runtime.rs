@@ -406,6 +406,148 @@ pub trait CodeStep<I: Input, Pat>: CodeLabel {
     fn step<'i>(self, rt: Runtime<'_, 'i, Self, I, Pat>);
 }
 
+// HACK(eddyb) iterator replacement for the `traverse!` macro.
+pub mod cursor {
+    use std::marker::PhantomData;
+
+    pub trait Cursor<T> {
+        fn read(&self, out: &mut T);
+        fn advance(&mut self) -> bool;
+
+        fn into_iter(self) -> IntoIter<Self, T>
+        where
+            Self: Sized,
+        {
+            IntoIter {
+                cur: Some(self),
+                _marker: PhantomData,
+            }
+        }
+    }
+
+    pub struct IntoIter<C, T> {
+        cur: Option<C>,
+        _marker: PhantomData<T>,
+    }
+
+    impl<C: Cursor<T>, T: Default> Iterator for IntoIter<C, T> {
+        type Item = T;
+
+        fn next(&mut self) -> Option<T> {
+            let cur = self.cur.as_mut()?;
+
+            let mut out = T::default();
+            cur.read(&mut out);
+            if !cur.advance() {
+                self.cur.take();
+            }
+            Some(out)
+        }
+    }
+
+    #[derive(Clone)]
+    pub struct Once<F>(F);
+
+    impl<F> Once<F> {
+        pub fn new(f: F) -> Self {
+            Once(f)
+        }
+    }
+
+    impl<F: Fn(&mut T), T> Cursor<T> for Once<F> {
+        fn read(&self, out: &mut T) {
+            self.0(out);
+        }
+        fn advance(&mut self) -> bool {
+            false
+        }
+    }
+
+    #[derive(Clone)]
+    pub struct FlattenIter<I: Iterator> {
+        iter: I,
+        cur: I::Item,
+    }
+
+    impl<I: Iterator> FlattenIter<I> {
+        pub fn new(mut iter: I) -> Self {
+            let cur = iter.next().unwrap();
+            FlattenIter { iter, cur }
+        }
+    }
+
+    impl<I: Iterator, T> Cursor<T> for FlattenIter<I>
+    where
+        I::Item: Cursor<T>,
+    {
+        fn read(&self, out: &mut T) {
+            self.cur.read(out);
+        }
+        fn advance(&mut self) -> bool {
+            self.cur.advance() || self.iter.next().map(|next| self.cur = next).is_some()
+        }
+    }
+
+    #[derive(Clone)]
+    pub enum Either<A, B> {
+        Left(A),
+        Right(B),
+    }
+
+    impl<A, B, T> Cursor<T> for Either<A, B>
+    where
+        A: Cursor<T>,
+        B: Cursor<T>,
+    {
+        fn read(&self, out: &mut T) {
+            match self {
+                Either::Left(a) => a.read(out),
+                Either::Right(b) => b.read(out),
+            }
+        }
+        fn advance(&mut self) -> bool {
+            match self {
+                Either::Left(a) => a.advance(),
+                Either::Right(b) => b.advance(),
+            }
+        }
+    }
+
+    #[derive(Clone)]
+    pub struct Product<A, B> {
+        a: A,
+        b0: B,
+        b: B,
+    }
+
+    impl<A, B: Clone> Product<A, B> {
+        pub fn new(a: A, b: B) -> Self {
+            Product {
+                a,
+                b0: b.clone(),
+                b,
+            }
+        }
+    }
+
+    impl<A, B, T> Cursor<T> for Product<A, B>
+    where
+        A: Cursor<T>,
+        B: Cursor<T> + Clone,
+    {
+        fn read(&self, out: &mut T) {
+            self.a.read(out);
+            self.b.read(out);
+        }
+        fn advance(&mut self) -> bool {
+            self.b.advance() || {
+                self.b = self.b0.clone();
+                self.a.advance()
+            }
+        }
+    }
+}
+
 // HACK(eddyb) work around `macro_rules` not being `use`-able.
 pub use crate::__runtime_traverse as traverse;
 
@@ -439,64 +581,60 @@ macro_rules! __runtime_traverse {
         }
     };
 
-    (all($forest:ident, $node:ident) _) => {
-        ::std::iter::once(move |r: &mut _| *r = Some($node))
+    (all($forest:ident, $node:ident, $r:ident: $ty:ty => $r_proj:expr) _) => {
+        $crate::runtime::cursor::Once::new(move |$r: &mut $ty| $r_proj = Some($node))
     };
-    (all($forest:ident, $node:ident) ($l_shape:tt, $r_shape:tt)) => {
-        $forest.all_splits($node).flat_map(move |(left, right)| {
-            traverse!(all($forest, left) $l_shape).flat_map(move |left| {
-                traverse!(all($forest, right) $r_shape).map(move |right| {
-                    move |r: &mut (_, _)| (left(&mut r.0), right(&mut r.1))
-                })
+    (all($forest:ident, $node:ident, $r:ident: $ty:ty => $r_proj:expr) ($l_shape:tt, $r_shape:tt)) => {
+        $crate::runtime::cursor::FlattenIter::new(
+            $forest.all_splits($node).map(move |(left, right)| {
+                $crate::runtime::cursor::Product::new(
+                    traverse!(all($forest, left, $r: $ty => $r_proj.0) $l_shape),
+                    traverse!(all($forest, right, $r: $ty => $r_proj.1) $r_shape),
+                )
             })
-        })
+        )
     };
-    (all($forest:ident, $node:ident) { $($i:tt $_i:ident: $kind:pat => $shape:tt,)* }) => {
+    (all($forest:ident, $node:ident, $r:ident: $ty:ty => $r_proj:expr) { $($i:tt $_i:ident: $kind:pat => $shape:tt,)* }) => {
         {
+            // FIXME(eddyb) use `Either` for this.
+            use $crate::runtime::cursor::Cursor;
+
             #[derive(Clone)]
-            enum Iter<$($_i),*> {
+            enum OneOf<$($_i),*> {
                 $($_i($_i)),*
             }
-            impl<$($_i: Iterator),*> Iterator for Iter<$($_i),*>
-                where $($_i::Item: Default),*
-            {
-                type Item = ($($_i::Item),*);
-                fn next(&mut self) -> Option<Self::Item> {
-                    let mut r = Self::Item::default();
+
+            impl<T, $($_i: Cursor<T>),*> Cursor<T> for OneOf<$($_i),*> {
+                fn read(&self, out: &mut T) {
                     match self {
-                        $(Iter::$_i(iter) => r.$i = iter.next()?),*
+                        $(OneOf::$_i(cur) => cur.read(out)),*
                     }
-                    Some(r)
+                }
+                fn advance(&mut self) -> bool {
+                    match self {
+                        $(OneOf::$_i(cur) => cur.advance()),*
+                    }
                 }
             }
-            $forest.all_choices($node).flat_map(move |node| {
-                match node.kind {
-                    $($kind => Iter::$_i(traverse!(all($forest, node) $shape).map(|f| {
-                        // FIXME(eddyb) propagate the destination properly.
-                        let mut r = Default::default();
-                        f(&mut r);
-                        r
-                    })),)*
-                    _ => unreachable!(),
-                }
-            }).map(|r| move |r2: &mut _| *r2 = r)
+
+            $crate::runtime::cursor::FlattenIter::new(
+                $forest.all_choices($node).map(move |node| {
+                    match node.kind {
+                        $($kind => OneOf::$_i(traverse!(all($forest, node, $r: $ty => $r_proj.$i) $shape)),)*
+                        _ => unreachable!(),
+                    }
+                }),
+            )
         }
     };
-    (all($forest:ident, $node:ident) [$shape:tt]) => {
-        {
-            (match $forest.unpack_opt($node) {
-                Some(node) => {
-                    Some(traverse!(all($forest, node) $shape).map(|f| {
-                        // FIXME(eddyb) propagate the destination properly.
-                        let mut r = Default::default();
-                        f(&mut r);
-                        (r,)
-                    })).into_iter().flatten().chain(None)
-                }
-                None => {
-                    None.into_iter().flatten().chain(Some(<_>::default()))
-                }
-            }).map(|r| move |r2: &mut _| *r2 = r)
+    (all($forest:ident, $node:ident, $r:ident: $ty:ty => $r_proj:expr) [$shape:tt]) => {
+        match $forest.unpack_opt($node) {
+            Some(node) => $crate::runtime::cursor::Either::Left(
+                traverse!(all($forest, node, $r: $ty => $r_proj.0) $shape),
+            ),
+            None => $crate::runtime::cursor::Either::Right(
+                $crate::runtime::cursor::Once::new(|_: &mut _| {}),
+            ),
         }
     }
 }
