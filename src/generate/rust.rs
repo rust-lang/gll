@@ -869,7 +869,7 @@ impl<Pat: RustInputPat> RuleGenerateMethods<Pat> for IRule {
             | Rule::Eat(_)
             | Rule::Call(_)
             | Rule::RepeatMany(..)
-            | Rule::RepeatMore(..) => quote!(?),
+            | Rule::RepeatMore(..) => quote!(_),
             Rule::Concat([left, right]) => {
                 let left = left.generate_traverse_shape(cx, rules);
                 let right = right.generate_traverse_shape(cx, rules);

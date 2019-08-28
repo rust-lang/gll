@@ -411,16 +411,12 @@ pub use crate::__runtime_traverse as traverse;
 
 #[macro_export]
 macro_rules! __runtime_traverse {
-    (typeof($leaf:ty) _) => { $leaf };
-    (typeof($leaf:ty) ?) => { Option<traverse!(typeof($leaf) _)> };
+    (typeof($leaf:ty) _) => { Option<$leaf> };
     (typeof($leaf:ty) ($l_shape:tt, $r_shape:tt)) => { (traverse!(typeof($leaf) $l_shape), traverse!(typeof($leaf) $r_shape)) };
     (typeof($leaf:ty) { $($i:tt $_i:ident: $kind:pat => $shape:tt,)* }) => { ($(traverse!(typeof($leaf) $shape),)*) };
     (typeof($leaf:ty) [$shape:tt]) => { (traverse!(typeof($leaf) $shape),) };
 
     (one($forest:ident, $node:ident) _) => {
-        $node
-    };
-    (one($forest:ident, $node:ident) ?) => {
         Some($node)
     };
     (one($forest:ident, $node:ident) ($l_shape:tt, $r_shape:tt)) => {
@@ -454,9 +450,6 @@ macro_rules! __runtime_traverse {
     };
 
     (all($forest:ident) _) => {
-        $crate::grammer::forest::nd::Id::new()
-    };
-    (all($forest:ident) ?) => {
         $crate::grammer::forest::nd::Id::new().map(Some)
     };
     (all($forest:ident) ($l_shape:tt, $r_shape:tt)) => {
