@@ -410,11 +410,11 @@ pub trait CodeStep<I: Input, Pat>: CodeLabel {
 pub mod cursor {
     use std::marker::PhantomData;
 
-    pub trait Cursor<T> {
+    pub trait Cursor<T: ?Sized> {
         fn read(&self, out: &mut T);
         fn advance(&mut self) -> bool;
 
-        fn into_iter(self) -> IntoIter<Self, T>
+        fn into_iter<S>(self) -> IntoIter<Self, S, T>
         where
             Self: Sized,
         {
@@ -425,19 +425,23 @@ pub mod cursor {
         }
     }
 
-    pub struct IntoIter<C, T> {
+    pub struct IntoIter<C, S, T: ?Sized> {
         cur: Option<C>,
-        _marker: PhantomData<T>,
+        _marker: PhantomData<(S, T)>,
     }
 
-    impl<C: Cursor<T>, T: Default> Iterator for IntoIter<C, T> {
-        type Item = T;
+    impl<C, S, T: ?Sized> Iterator for IntoIter<C, S, T>
+    where
+        C: Cursor<T>,
+        S: Default + AsMut<T>,
+    {
+        type Item = S;
 
-        fn next(&mut self) -> Option<T> {
+        fn next(&mut self) -> Option<S> {
             let cur = self.cur.as_mut()?;
 
-            let mut out = T::default();
-            cur.read(&mut out);
+            let mut out = S::default();
+            cur.read(out.as_mut());
             if !cur.advance() {
                 self.cur.take();
             }
@@ -454,7 +458,7 @@ pub mod cursor {
         }
     }
 
-    impl<F: Fn(&mut T), T> Cursor<T> for Once<F> {
+    impl<F: Fn(&mut T), T: ?Sized> Cursor<T> for Once<F> {
         fn read(&self, out: &mut T) {
             self.0(out);
         }
@@ -476,7 +480,7 @@ pub mod cursor {
         }
     }
 
-    impl<I: Iterator, T> Cursor<T> for FlattenIter<I>
+    impl<I: Iterator, T: ?Sized> Cursor<T> for FlattenIter<I>
     where
         I::Item: Cursor<T>,
     {
@@ -494,7 +498,7 @@ pub mod cursor {
         Right(B),
     }
 
-    impl<A, B, T> Cursor<T> for Either<A, B>
+    impl<A, B, T: ?Sized> Cursor<T> for Either<A, B>
     where
         A: Cursor<T>,
         B: Cursor<T>,
@@ -530,7 +534,7 @@ pub mod cursor {
         }
     }
 
-    impl<A, B, T> Cursor<T> for Product<A, B>
+    impl<A, B, T: ?Sized> Cursor<T> for Product<A, B>
     where
         A: Cursor<T>,
         B: Cursor<T> + Clone,
@@ -553,48 +557,47 @@ pub use crate::__runtime_traverse as traverse;
 
 #[macro_export]
 macro_rules! __runtime_traverse {
-    (typeof($leaf:ty) _) => { Option<$leaf> };
-    (typeof($leaf:ty) ($l_shape:tt, $r_shape:tt)) => { (traverse!(typeof($leaf) $l_shape), traverse!(typeof($leaf) $r_shape)) };
-    (typeof($leaf:ty) { $($i:tt $_i:ident: $kind:pat => $shape:tt,)* }) => { ($(traverse!(typeof($leaf) $shape),)*) };
-    (typeof($leaf:ty) [$shape:tt]) => { (traverse!(typeof($leaf) $shape),) };
-
-    (one($forest:ident, $node:ident, $r:expr) _) => {
-        $r = Some($node);
+    (one($forest:ident, $node:ident, $r:ident) _) => {};
+    (one($forest:ident, $node:ident, $r:ident) $i:literal) => {
+        $r[$i] = Some($node);
     };
-    (one($forest:ident, $node:ident, $r:expr) ($l_shape:tt, $r_shape:tt)) => {
+    (one($forest:ident, $node:ident, $r:ident) ($l_shape:tt, $r_shape:tt)) => {
         let (left, right) = $forest.one_split($node)?;
-        traverse!(one($forest, left, $r.0) $l_shape);
-        traverse!(one($forest, right, $r.1) $r_shape);
+        traverse!(one($forest, left, $r) $l_shape);
+        traverse!(one($forest, right, $r) $r_shape);
     };
-    (one($forest:ident, $node:ident, $r:expr) { $($i:tt $_i:ident: $kind:pat => $shape:tt,)* }) => {
+    (one($forest:ident, $node:ident, $r:ident) { $($_i:ident: $kind:pat => $shape:tt,)* }) => {
         let node = $forest.one_choice($node)?;
         match node.kind {
             $($kind => {
-                traverse!(one($forest, node, $r.$i) $shape);
+                traverse!(one($forest, node, $r) $shape);
             })*
             _ => unreachable!(),
         }
     };
-    (one($forest:ident, $node:ident, $r:expr) [$shape:tt]) => {
+    (one($forest:ident, $node:ident, $r:ident) [$shape:tt]) => {
         if let Some(node) = $forest.unpack_opt($node) {
-            traverse!(one($forest, node, $r.0) $shape);
+            traverse!(one($forest, node, $r) $shape);
         }
     };
 
-    (all($forest:ident, $node:ident, $r:ident: $ty:ty => $r_proj:expr) _) => {
-        $crate::runtime::cursor::Once::new(move |$r: &mut $ty| $r_proj = Some($node))
+    (all($forest:ident, $node:ident) _) => {
+        $crate::runtime::cursor::Once::new(|_: &mut _| {})
     };
-    (all($forest:ident, $node:ident, $r:ident: $ty:ty => $r_proj:expr) ($l_shape:tt, $r_shape:tt)) => {
+    (all($forest:ident, $node:ident) $i:literal) => {
+        $crate::runtime::cursor::Once::new(move |r: &mut [_]| r[$i] = Some($node))
+    };
+    (all($forest:ident, $node:ident) ($l_shape:tt, $r_shape:tt)) => {
         $crate::runtime::cursor::FlattenIter::new(
             $forest.all_splits($node).map(move |(left, right)| {
                 $crate::runtime::cursor::Product::new(
-                    traverse!(all($forest, left, $r: $ty => $r_proj.0) $l_shape),
-                    traverse!(all($forest, right, $r: $ty => $r_proj.1) $r_shape),
+                    traverse!(all($forest, left) $l_shape),
+                    traverse!(all($forest, right) $r_shape),
                 )
             })
         )
     };
-    (all($forest:ident, $node:ident, $r:ident: $ty:ty => $r_proj:expr) { $($i:tt $_i:ident: $kind:pat => $shape:tt,)* }) => {
+    (all($forest:ident, $node:ident) { $($_i:ident: $kind:pat => $shape:tt,)* }) => {
         {
             // FIXME(eddyb) use `Either` for this.
             use $crate::runtime::cursor::Cursor;
@@ -604,7 +607,7 @@ macro_rules! __runtime_traverse {
                 $($_i($_i)),*
             }
 
-            impl<T, $($_i: Cursor<T>),*> Cursor<T> for OneOf<$($_i),*> {
+            impl<T: ?Sized, $($_i: Cursor<T>),*> Cursor<T> for OneOf<$($_i),*> {
                 fn read(&self, out: &mut T) {
                     match self {
                         $(OneOf::$_i(cur) => cur.read(out)),*
@@ -620,17 +623,17 @@ macro_rules! __runtime_traverse {
             $crate::runtime::cursor::FlattenIter::new(
                 $forest.all_choices($node).map(move |node| {
                     match node.kind {
-                        $($kind => OneOf::$_i(traverse!(all($forest, node, $r: $ty => $r_proj.$i) $shape)),)*
+                        $($kind => OneOf::$_i(traverse!(all($forest, node) $shape)),)*
                         _ => unreachable!(),
                     }
                 }),
             )
         }
     };
-    (all($forest:ident, $node:ident, $r:ident: $ty:ty => $r_proj:expr) [$shape:tt]) => {
+    (all($forest:ident, $node:ident) [$shape:tt]) => {
         match $forest.unpack_opt($node) {
             Some(node) => $crate::runtime::cursor::Either::Left(
-                traverse!(all($forest, node, $r: $ty => $r_proj.0) $shape),
+                traverse!(all($forest, node) $shape),
             ),
             None => $crate::runtime::cursor::Either::Right(
                 $crate::runtime::cursor::Once::new(|_: &mut _| {}),
