@@ -787,12 +787,7 @@ trait RuleGenerateMethods<Pat> {
         self,
     ) -> Thunk<Box<dyn for<'a, 'r> FnOnce(Continuation<'a, 'r, Pat>) -> Continuation<'a, 'r, Pat>>>;
 
-    fn generate_traverse_shape(
-        self,
-        refutable: bool,
-        cx: &Context<Pat>,
-        rules: &mut RuleMap<'_>,
-    ) -> Src;
+    fn generate_traverse_shape(self, cx: &Context<Pat>, rules: &mut RuleMap<'_>) -> Src;
 }
 
 impl<Pat: RustInputPat> RuleGenerateMethods<Pat> for IRule {
@@ -868,27 +863,16 @@ impl<Pat: RustInputPat> RuleGenerateMethods<Pat> for IRule {
         ))
     }
 
-    fn generate_traverse_shape(
-        self,
-        refutable: bool,
-        cx: &Context<Pat>,
-        rules: &mut RuleMap<'_>,
-    ) -> Src {
+    fn generate_traverse_shape(self, cx: &Context<Pat>, rules: &mut RuleMap<'_>) -> Src {
         match cx[self] {
             Rule::Empty
             | Rule::Eat(_)
             | Rule::Call(_)
             | Rule::RepeatMany(..)
-            | Rule::RepeatMore(..) => {
-                if refutable {
-                    quote!(?)
-                } else {
-                    quote!(_)
-                }
-            }
+            | Rule::RepeatMore(..) => quote!(?),
             Rule::Concat([left, right]) => {
-                let left = left.generate_traverse_shape(refutable, cx, rules);
-                let right = right.generate_traverse_shape(refutable, cx, rules);
+                let left = left.generate_traverse_shape(cx, rules);
+                let right = right.generate_traverse_shape(cx, rules);
                 quote!((#left, #right))
             }
             Rule::Or(ref cases) => {
@@ -901,14 +885,14 @@ impl<Pat: RustInputPat> RuleGenerateMethods<Pat> for IRule {
                 // HACK(eddyb) only collected to a `Vec` to avoid `rules` borrow conflicts.
                 let cases_shape = cases
                     .iter()
-                    .map(|rule| rule.generate_traverse_shape(true, cx, rules))
+                    .map(|rule| rule.generate_traverse_shape(cx, rules))
                     .collect::<Vec<_>>();
                 let cases_node_kind = cases.iter().map(|rule| rule.node_kind(cx, rules));
                 let cases_node_kind_src = cases_node_kind.map(|kind| kind.to_src());
                 quote!({ #(#cases_idx: #cases_node_kind_src => #cases_shape,)* })
             }
             Rule::Opt(rule) => {
-                let shape = rule.generate_traverse_shape(true, cx, rules);
+                let shape = rule.generate_traverse_shape(cx, rules);
                 quote!([#shape])
             }
         }
@@ -1062,7 +1046,7 @@ where
         } else {
             assert_eq!(field.paths.len(), 1);
             quote!(Handle {
-                node: #(#paths_expr)*,
+                node: #(#paths_expr)* .unwrap(),
                 forest,
                 _marker: PhantomData,
             })
@@ -1074,7 +1058,7 @@ where
             // HACK(eddyb) only collected to a `Vec` to avoid `rules` borrow conflicts.
             let variants_shape = variants
                 .values()
-                .map(|(v_rule, _)| v_rule.generate_traverse_shape(false, cx, rules))
+                .map(|(v_rule, _)| v_rule.generate_traverse_shape(cx, rules))
                 .collect::<Vec<_>>();
             let variants_from_forest_ident = variants
                 .keys()
@@ -1109,7 +1093,7 @@ where
         )*)
         }
         RustAdt::Struct(fields) => {
-            let shape = rule.generate_traverse_shape(false, cx, rules);
+            let shape = rule.generate_traverse_shape(cx, rules);
             let fields_ident = fields.keys().map(|&name| Src::ident(&cx[name]));
             let fields_expr = fields.values().map(field_handle_expr);
             let marker_field = if fields.is_empty() {
@@ -1169,7 +1153,7 @@ where
                 .collect::<Vec<_>>();
             let variants_shape = variants
                 .values()
-                .map(|(v_rule, _)| v_rule.generate_traverse_shape(false, cx, rules))
+                .map(|(v_rule, _)| v_rule.generate_traverse_shape(cx, rules))
                 .collect::<Vec<_>>();
 
             (
@@ -1212,7 +1196,7 @@ where
             )
         }
         RustAdt::Struct(_) => {
-            let shape = rule.generate_traverse_shape(false, cx, rules);
+            let shape = rule.generate_traverse_shape(cx, rules);
             (
                 quote!(
                     let r = traverse!(one(forest, node) #shape);
