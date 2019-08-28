@@ -449,15 +449,18 @@ macro_rules! __runtime_traverse {
         }
     };
 
-    (all($forest:ident) _) => {
-        $crate::grammer::forest::nd::Id::new().map(Some)
+    (all($forest:ident, $node:ident) _) => {
+        ::std::iter::once(Some($node))
     };
-    (all($forest:ident) ($l_shape:tt, $r_shape:tt)) => {
-        $crate::grammer::forest::nd::FromIterK::new($forest, $crate::grammer::forest::ParseForest::all_splits)
-            .then(traverse!(all($forest) $l_shape).pairs(traverse!(all($forest) $r_shape)))
+    (all($forest:ident, $node:ident) ($l_shape:tt, $r_shape:tt)) => {
+        $forest.all_splits($node).flat_map(move |(left, right)| {
+            traverse!(all($forest, left) $l_shape).flat_map(move |left| {
+                traverse!(all($forest, right) $r_shape).map(move |right| (left, right))
+            })
+        })
     };
-    (all($forest:ident) { $($i:tt $_i:ident: $kind:pat => $shape:tt,)* }) => {
-        $crate::grammer::forest::nd::FromIter::new(move |node| {
+    (all($forest:ident, $node:ident) { $($i:tt $_i:ident: $kind:pat => $shape:tt,)* }) => {
+        {
             #[derive(Clone)]
             enum Iter<$($_i),*> {
                 $($_i($_i)),*
@@ -474,25 +477,25 @@ macro_rules! __runtime_traverse {
                     Some(r)
                 }
             }
-            $forest.all_choices(node).flat_map(move |node| {
+            $forest.all_choices($node).flat_map(move |node| {
                 match node.kind {
-                    $($kind => Iter::$_i(traverse!(all($forest) $shape).apply(node)),)*
+                    $($kind => Iter::$_i(traverse!(all($forest, node) $shape)),)*
                     _ => unreachable!(),
                 }
             })
-        })
+        }
     };
-    (all($forest:ident) [$shape:tt]) => {
-        $crate::grammer::forest::nd::FromIter::new(move |node| {
-            match $forest.unpack_opt(node) {
+    (all($forest:ident, $node:ident) [$shape:tt]) => {
+        {
+            match $forest.unpack_opt($node) {
                 Some(node) => {
-                    Some(traverse!(all($forest) $shape).apply(node).map(|x| (x,)))
+                    Some(traverse!(all($forest, node) $shape).map(|x| (x,)))
                         .into_iter().flatten().chain(None)
                 }
                 None => {
                     None.into_iter().flatten().chain(Some(<_>::default()))
                 }
             }
-        })
+        }
     }
 }
