@@ -405,3 +405,101 @@ pub trait CodeLabel: fmt::Debug + Ord + Hash + Copy + 'static {
 pub trait CodeStep<I: Input, Pat>: CodeLabel {
     fn step<'i>(self, rt: Runtime<'_, 'i, Self, I, Pat>);
 }
+
+// HACK(eddyb) work around `macro_rules` not being `use`-able.
+pub use crate::__runtime_traverse as traverse;
+
+#[macro_export]
+macro_rules! __runtime_traverse {
+    (typeof($leaf:ty) _) => { $leaf };
+    (typeof($leaf:ty) ?) => { Option<traverse!(typeof($leaf) _)> };
+    (typeof($leaf:ty) ($l_shape:tt, $r_shape:tt)) => { (traverse!(typeof($leaf) $l_shape), traverse!(typeof($leaf) $r_shape)) };
+    (typeof($leaf:ty) { $($i:tt $_i:ident: $kind:pat => $shape:tt,)* }) => { ($(traverse!(typeof($leaf) $shape),)*) };
+    (typeof($leaf:ty) [$shape:tt]) => { (traverse!(typeof($leaf) $shape),) };
+
+    (one($forest:ident, $node:ident) _) => {
+        $node
+    };
+    (one($forest:ident, $node:ident) ?) => {
+        Some($node)
+    };
+    (one($forest:ident, $node:ident) ($l_shape:tt, $r_shape:tt)) => {
+        {
+            let (left, right) = $forest.one_split($node)?;
+            (
+                traverse!(one($forest, left) $l_shape),
+                traverse!(one($forest, right) $r_shape),
+            )
+        }
+    };
+    (one($forest:ident, $node:ident) { $($i:tt $_i:ident: $kind:pat => $shape:tt,)* }) => {
+        {
+            let node = $forest.one_choice($node)?;
+            let mut r = <($(traverse!(typeof(_) $shape),)*)>::default();
+            match node.kind {
+                $($kind => r.$i = traverse!(one($forest, node) $shape),)*
+                _ => unreachable!(),
+            }
+            r
+        }
+    };
+    (one($forest:ident, $node:ident) [$shape:tt]) => {
+        {
+            let mut r = <(traverse!(typeof(_) $shape),)>::default();
+            if let Some(node) = $forest.unpack_opt($node) {
+                r.0 = traverse!(one($forest, node) $shape);
+            }
+            r
+        }
+    };
+
+    (all($forest:ident) _) => {
+        $crate::grammer::forest::nd::Id::new()
+    };
+    (all($forest:ident) ?) => {
+        $crate::grammer::forest::nd::Id::new().map(Some)
+    };
+    (all($forest:ident) ($l_shape:tt, $r_shape:tt)) => {
+        $crate::grammer::forest::nd::FromIterK::new($forest, $crate::grammer::forest::ParseForest::all_splits)
+            .then(traverse!(all($forest) $l_shape).pairs(traverse!(all($forest) $r_shape)))
+    };
+    (all($forest:ident) { $($i:tt $_i:ident: $kind:pat => $shape:tt,)* }) => {
+        $crate::grammer::forest::nd::FromIter::new(move |node| {
+            #[derive(Clone)]
+            enum Iter<$($_i),*> {
+                $($_i($_i)),*
+            }
+            impl<$($_i: Iterator),*> Iterator for Iter<$($_i),*>
+                where $($_i::Item: Default),*
+            {
+                type Item = ($($_i::Item),*);
+                fn next(&mut self) -> Option<Self::Item> {
+                    let mut r = Self::Item::default();
+                    match self {
+                        $(Iter::$_i(iter) => r.$i = iter.next()?),*
+                    }
+                    Some(r)
+                }
+            }
+            $forest.all_choices(node).flat_map(move |node| {
+                match node.kind {
+                    $($kind => Iter::$_i(traverse!(all($forest) $shape).apply(node)),)*
+                    _ => unreachable!(),
+                }
+            })
+        })
+    };
+    (all($forest:ident) [$shape:tt]) => {
+        $crate::grammer::forest::nd::FromIter::new(move |node| {
+            match $forest.unpack_opt(node) {
+                Some(node) => {
+                    Some(traverse!(all($forest) $shape).apply(node).map(|x| (x,)))
+                        .into_iter().flatten().chain(None)
+                }
+                None => {
+                    None.into_iter().flatten().chain(Some(<_>::default()))
+                }
+            }
+        })
+    }
+}
