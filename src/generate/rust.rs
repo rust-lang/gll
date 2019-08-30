@@ -945,6 +945,9 @@ where
             }
         }
 
+        // FIXME(eddyb) these two impls cannot be easily implemented by a trait
+        // because of how `Handle<'a, 'i, I, X<'a, 'i, I>>` links together the
+        // lifetime parameters of `Handle` and those of `X`.
         impl<I: gll::grammer::input::Input> OwnedHandle<I, #ident<'_, '_, I>> {
             pub fn with<R>(&self, f: impl for<'a, 'i> FnOnce(Handle<'a, 'i, I, #ident<'a, 'i, I>>) -> R) -> R {
                 self.forest_and_node.unpack_ref(|_, forest_and_node| {
@@ -955,6 +958,12 @@ where
                         _marker: PhantomData,
                     })
                 })
+            }
+        }
+
+        impl<I: gll::grammer::input::Input> fmt::Debug for OwnedHandle<I, #ident<'_, '_, I>> {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                self.with(|handle| handle.fmt(f))
             }
         }
     )
@@ -1025,13 +1034,13 @@ where
         }
     };
     rule_ty_def
-        + rule_debug_impls(cx, name, &rust_adt)
-        + impl_rule_from_forest(name, &rust_adt, cx, rules)
-        + impl_rule_one_and_all(name, rule, &rust_adt, cx, rules)
+        + rule_debug_impl(cx, name, &rust_adt)
+        + impl_rule_traverse_impl(name, rule, &rust_adt, cx, rules)
 }
 
-fn impl_rule_from_forest<Pat>(
+fn impl_rule_traverse_impl<Pat>(
     name: IStr,
+    rule: RuleWithFields,
     rust_adt: &RustAdt,
     cx: &Context<Pat>,
     rules: &mut RuleMap<'_>,
@@ -1056,95 +1065,7 @@ where
         }
     };
 
-    let method = match rust_adt {
-        RustAdt::Enum(variants) => {
-            let max_fields_len = variants
-                .values()
-                .map(|(_, variant)| match variant {
-                    RustVariant::Newtype(_) => 0,
-                    RustVariant::StructLike(v_fields) => v_fields.len(),
-                })
-                .max()
-                .unwrap_or(0);
-            // HACK(eddyb) only collected to a `Vec` to avoid `rules` borrow conflicts.
-            let variants_kind = variants
-                .values()
-                .map(|(v_rule, _)| v_rule.rule.node_kind(cx, rules))
-                .collect::<Vec<_>>();
-            let variants_kind_src = variants_kind
-                .iter()
-                .map(|kind| kind.to_src())
-                .collect::<Vec<_>>();
-            let variants_expr = variants.iter().map(|(&v_name, (_, variant))| {
-                let variant_ident = Src::ident(&cx[v_name]);
-                match variant {
-                    RustVariant::Newtype(_) => quote!(#ident::#variant_ident(Handle {
-                        node: _r[#max_fields_len].unwrap(),
-                        forest,
-                        _marker: PhantomData,
-                    })),
-                    RustVariant::StructLike(v_fields) => {
-                        let fields_ident = v_fields.keys().map(|&name| Src::ident(&cx[name]));
-                        let fields_expr = v_fields.values().enumerate().map(field_handle_expr);
-                        quote!(#ident::#variant_ident {
-                            #(#fields_ident: #fields_expr),*
-                        })
-                    }
-                }
-            });
-
-            quote!(
-                fn from_forest(
-                    forest: &'a gll::grammer::forest::ParseForest<'i, _G, I>,
-                    _r: [Option<Node<'i, _G>>; #max_fields_len + 1],
-                ) -> Self {
-                    match _r[#max_fields_len].unwrap().kind {
-                        #(#variants_kind_src => #variants_expr,)*
-                        _ => unreachable!(),
-                    }
-                }
-            )
-        }
-        RustAdt::Struct(fields) => {
-            let fields_len = fields.len();
-            let fields_ident = fields.keys().map(|&name| Src::ident(&cx[name]));
-            let fields_expr = fields.values().enumerate().map(field_handle_expr);
-            let marker_field = if fields.is_empty() {
-                Some(quote!(_marker: { let _ = forest; PhantomData },))
-            } else {
-                None
-            };
-            quote!(
-                fn from_forest(
-                    forest: &'a gll::grammer::forest::ParseForest<'i, _G, I>,
-                    _r: [Option<Node<'i, _G>>; #fields_len],
-                ) -> Self {
-                    #ident {
-                        #(#fields_ident: #fields_expr),*
-                        #marker_field
-                    }
-                }
-            )
-        }
-    };
-
-    quote!(impl<'a, 'i, I: gll::grammer::input::Input> #ident<'a, 'i, I> {
-        #method
-    })
-}
-
-fn impl_rule_one_and_all<Pat>(
-    name: IStr,
-    rule: RuleWithFields,
-    rust_adt: &RustAdt,
-    cx: &Context<Pat>,
-    rules: &mut RuleMap<'_>,
-) -> Src
-where
-    Pat: RustInputPat,
-{
-    let ident = Src::ident(&cx[name]);
-    let (total_fields, shape) = match rust_adt {
+    let (total_fields, shape, from_shape) = match rust_adt {
         RustAdt::Enum(variants) => {
             let max_fields_len = variants
                 .values()
@@ -1172,60 +1093,74 @@ where
                     }
                 })
                 .collect::<Vec<_>>();
+            let variants_expr = variants.iter().map(|(&v_name, (_, variant))| {
+                let variant_ident = Src::ident(&cx[v_name]);
+                match variant {
+                    RustVariant::Newtype(_) => quote!(#ident::#variant_ident(Handle {
+                        node: _r[#max_fields_len].unwrap(),
+                        forest,
+                        _marker: PhantomData,
+                    })),
+                    RustVariant::StructLike(v_fields) => {
+                        let fields_ident = v_fields.keys().map(|&name| Src::ident(&cx[name]));
+                        let fields_expr = v_fields.values().enumerate().map(field_handle_expr);
+                        quote!(#ident::#variant_ident {
+                            #(#fields_ident: #fields_expr),*
+                        })
+                    }
+                }
+            });
 
             (
                 max_fields_len + 1,
                 quote!({ _P; #max_fields_len @ #(#variants_kind_src => #variants_shape,)* }),
+                quote!(
+                    match _r[#max_fields_len].unwrap().kind {
+                        #(#variants_kind_src => #variants_expr,)*
+                        _ => unreachable!(),
+                    }
+                ),
             )
         }
-        RustAdt::Struct(fields) => (
-            fields.len(),
-            rule.generate_traverse_shape(cx, rules, fields),
-        ),
+        RustAdt::Struct(fields) => {
+            let fields_ident = fields.keys().map(|&name| Src::ident(&cx[name]));
+            let fields_expr = fields.values().enumerate().map(field_handle_expr);
+            let marker_field = if fields.is_empty() {
+                Some(quote!(_marker: { let _ = forest; PhantomData },))
+            } else {
+                None
+            };
+
+            (
+                fields.len(),
+                rule.generate_traverse_shape(cx, rules, fields),
+                quote!(
+                    #ident {
+                        #(#fields_ident: #fields_expr),*
+                        #marker_field
+                    }
+                ),
+            )
+        }
     };
 
-    quote!(
-    impl<'a, 'i, I: gll::grammer::input::Input> #ident<'a, 'i, I> {
-        const SHAPE: traverse::ty!(#shape) = traverse::new!(#shape);
-    }
-
-    impl<'a, 'i, I> Handle<'a, 'i, I, #ident<'a, 'i, I>>
+    quote!(impl<'a, 'i, I>
+        traverse::FromShape<&'a gll::grammer::forest::ParseForest<'i, _G, I>, Node<'i, _G>>
+            for #ident<'a, 'i, I>
         where I: gll::grammer::input::Input,
     {
-        pub fn one(self) -> Result<#ident<'a, 'i, I>, Ambiguity<Self>> {
-            let forest = self.forest;
-            let node = forest.unpack_alias(self.node);
+        type Shape = traverse::ty!(#shape);
+        type Fields = [Option<Node<'i, _G>>; #total_fields];
 
-            let mut r = [None; #total_fields];
-            #ident::<I>::SHAPE
-                .one(forest, node, &mut r)
-                .map_err(|gll::grammer::forest::MoreThanOne| Ambiguity(self))?;
+        const SHAPE: Self::Shape = traverse::new!(#shape);
 
-            Ok(#ident::from_forest(forest, r))
+        fn from_shape(
+            forest: &'a gll::grammer::forest::ParseForest<'i, _G, I>,
+            _r: Self::Fields,
+        ) -> Self {
+            #from_shape
         }
-
-        pub fn all(self) -> ::std::iter::Map<
-            cursor::IntoIter<
-                <traverse::ty!(#shape) as traverse::Shape<'a, 'i, _G>>::All,
-                [Option<Node<'i, _G>>; #total_fields],
-                [Option<Node<'i, _G>>],
-            >,
-            impl FnMut([Option<Node<'i, _G>>; #total_fields]) -> #ident<'a, 'i, I>,
-        > {
-            let forest = self.forest;
-            let node = forest.unpack_alias(self.node);
-
-            #ident::<I>::SHAPE
-                .all(forest, node)
-                .into_iter()
-                .map(move |r| #ident::from_forest(forest, r))
-        }
-    }
-    )
-}
-
-fn rule_debug_impls<Pat>(cx: &Context<Pat>, name: IStr, rust_adt: &RustAdt) -> Src {
-    rule_debug_impl(cx, name, rust_adt) + rule_handle_debug_impl(cx, name, rust_adt)
+    })
 }
 
 fn rule_debug_impl<Pat>(cx: &Context<Pat>, name: IStr, rust_adt: &RustAdt) -> Src {
@@ -1304,44 +1239,6 @@ fn rule_debug_impl<Pat>(cx: &Context<Pat>, name: IStr, rust_adt: &RustAdt) -> Sr
             #body
         }
     })
-}
-
-fn rule_handle_debug_impl<Pat>(cx: &Context<Pat>, name: IStr, rust_adt: &RustAdt) -> Src {
-    let ident = Src::ident(&cx[name]);
-    let is_opaque = match rust_adt {
-        RustAdt::Struct(fields) => fields.is_empty(),
-        _ => false,
-    };
-    let body = if is_opaque {
-        quote!()
-    } else {
-        quote!(
-            write!(f, " => ")?;
-            let mut first = true;
-            for x in self.all() {
-                if !first {
-                    write!(f, " | ")?;
-                }
-                first = false;
-                fmt::Debug::fmt(&x, f)?;
-            }
-        )
-    };
-    quote!(
-        impl<'a, 'i, I: gll::grammer::input::Input> fmt::Debug for Handle<'a, 'i, I, #ident<'a, 'i, I>> {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                write!(f, "{:?}", self.source_info())?;
-                #body
-                Ok(())
-            }
-        }
-
-        impl<I: gll::grammer::input::Input> fmt::Debug for OwnedHandle<I, #ident<'_, '_, I>> {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                self.with(|handle| handle.fmt(f))
-            }
-        }
-    )
 }
 
 fn define_parse_fn<Pat>(

@@ -408,63 +408,9 @@ pub trait CodeStep<I: Input, Pat>: CodeLabel {
 
 // HACK(eddyb) iterator replacement for the `traverse!` macro.
 pub mod cursor {
-    use std::marker::PhantomData;
-
     pub trait Cursor<T: ?Sized> {
         fn read(&self, out: &mut T);
         fn advance(&mut self) -> bool;
-
-        fn into_iter<S>(self) -> IntoIter<Self, S, T>
-        where
-            Self: Sized,
-        {
-            IntoIter {
-                cur: Some(self),
-                _marker: PhantomData,
-            }
-        }
-    }
-
-    pub struct IntoIter<C, S, T: ?Sized> {
-        cur: Option<C>,
-        _marker: PhantomData<(S, T)>,
-    }
-
-    impl<C, S, T: ?Sized> Iterator for IntoIter<C, S, T>
-    where
-        C: Cursor<T>,
-        S: Default + AsMut<T>,
-    {
-        type Item = S;
-
-        fn next(&mut self) -> Option<S> {
-            let cur = self.cur.as_mut()?;
-
-            let mut out = S::default();
-            cur.read(out.as_mut());
-            if !cur.advance() {
-                self.cur.take();
-            }
-            Some(out)
-        }
-    }
-
-    #[derive(Clone)]
-    pub struct Once<F>(F);
-
-    impl<F> Once<F> {
-        pub fn new(f: F) -> Self {
-            Once(f)
-        }
-    }
-
-    impl<F: Fn(&mut T), T: ?Sized> Cursor<T> for Once<F> {
-        fn read(&self, out: &mut T) {
-            self.0(out);
-        }
-        fn advance(&mut self) -> bool {
-            false
-        }
     }
 
     #[derive(Clone)]
@@ -558,45 +504,94 @@ pub mod traverse {
 
     use super::cursor::*;
 
-    pub trait Shape<'a, 'i, G: GrammarReflector>: Copy {
-        fn one<I: Input>(
+    pub trait FromShape<Forest: Copy, Node: Copy>: Sized {
+        type Shape: Shape<Forest, Node>;
+        // FIXME(eddyb) use an array length const here instead when that works.
+        type Fields: Default + AsMut<[Option<Node>]>;
+
+        const SHAPE: Self::Shape;
+
+        fn from_shape(forest: Forest, fields: Self::Fields) -> Self;
+
+        fn one(forest: Forest, node: Node) -> Result<Self, MoreThanOne> {
+            let mut fields = Self::Fields::default();
+            Self::SHAPE.one(forest, node, fields.as_mut())?;
+            Ok(Self::from_shape(forest, fields))
+        }
+
+        fn all(forest: Forest, node: Node) -> FromShapeAll<Self, Forest, Node> {
+            FromShapeAll {
+                forest,
+                cur: Some(Self::SHAPE.all(forest, node)),
+            }
+        }
+    }
+
+    impl<Forest: Copy, Node: Copy> FromShape<Forest, Node> for () {
+        type Shape = ty!(_);
+        type Fields = [Option<Node>; 0];
+
+        const SHAPE: Self::Shape = new!(_);
+
+        fn from_shape(_: Forest, []: Self::Fields) {}
+    }
+
+    pub struct FromShapeAll<T: FromShape<Forest, Node>, Forest: Copy, Node: Copy> {
+        forest: Forest,
+        cur: Option<<T::Shape as Shape<Forest, Node>>::All>,
+    }
+
+    impl<T, Forest: Copy, Node: Copy> Iterator for FromShapeAll<T, Forest, Node>
+    where
+        T: FromShape<Forest, Node>,
+    {
+        type Item = T;
+
+        fn next(&mut self) -> Option<T> {
+            let cur = self.cur.as_mut()?;
+            let mut fields = T::Fields::default();
+            cur.read(fields.as_mut());
+            if !cur.advance() {
+                self.cur.take();
+            }
+            Some(T::from_shape(self.forest, fields))
+        }
+    }
+
+    pub trait Shape<Forest: Copy, Node: Copy>: Copy {
+        fn one(
             self,
-            forest: &'a ParseForest<'i, G, I>,
-            node: Node<'i, G>,
-            out: &mut [Option<Node<'i, G>>],
+            forest: Forest,
+            node: Node,
+            out: &mut [Option<Node>],
         ) -> Result<(), MoreThanOne>;
 
-        type All: Cursor<[Option<Node<'i, G>>]>;
-        fn all<I: Input>(self, forest: &'a ParseForest<'i, G, I>, node: Node<'i, G>) -> Self::All;
+        type All: Cursor<[Option<Node>]>;
+        fn all(self, forest: Forest, node: Node) -> Self::All;
     }
 
     #[derive(Copy, Clone)]
     pub struct Leaf(pub Option<usize>);
 
-    impl<'i, G: GrammarReflector> Shape<'_, 'i, G> for Leaf {
-        fn one<I: Input>(
-            self,
-            _: &ParseForest<'i, G, I>,
-            node: Node<'i, G>,
-            out: &mut [Option<Node<'i, G>>],
-        ) -> Result<(), MoreThanOne> {
+    impl<Forest: Copy, Node: Copy> Shape<Forest, Node> for Leaf {
+        fn one(self, _: Forest, node: Node, out: &mut [Option<Node>]) -> Result<(), MoreThanOne> {
             if let Some(i) = self.0 {
                 out[i] = Some(node);
             }
             Ok(())
         }
 
-        type All = LeafCursor<Node<'i, G>>;
-        fn all<I: Input>(self, _: &ParseForest<'i, G, I>, node: Node<'i, G>) -> Self::All {
+        type All = LeafCursor<Node>;
+        fn all(self, _: Forest, node: Node) -> Self::All {
             LeafCursor(self.0, node)
         }
     }
 
     #[derive(Clone)]
-    pub struct LeafCursor<T>(Option<usize>, T);
+    pub struct LeafCursor<Node>(Option<usize>, Node);
 
-    impl<T: Copy> Cursor<[Option<T>]> for LeafCursor<T> {
-        fn read(&self, out: &mut [Option<T>]) {
+    impl<Node: Copy> Cursor<[Option<Node>]> for LeafCursor<Node> {
+        fn read(&self, out: &mut [Option<Node>]) {
             if let Some(i) = self.0 {
                 out[i] = Some(self.1);
             }
@@ -626,10 +621,11 @@ pub mod traverse {
     #[derive(Copy, Clone)]
     pub struct Split<A, B>(pub A, pub B);
 
-    impl<'a, 'i, G: GrammarReflector, A, B> Shape<'a, 'i, G> for Split<A, B>
+    impl<'a, 'i, G: GrammarReflector, I: Input, A, B> Shape<&'a ParseForest<'i, G, I>, Node<'i, G>>
+        for Split<A, B>
     where
-        A: Shape<'a, 'i, G>,
-        B: Shape<'a, 'i, G>,
+        A: Shape<&'a ParseForest<'i, G, I>, Node<'i, G>>,
+        B: Shape<&'a ParseForest<'i, G, I>, Node<'i, G>>,
         B::All: Clone,
 
         // HACK(eddyb) these are only because of dynamic dispatch / boxing:
@@ -637,7 +633,7 @@ pub mod traverse {
         B: 'a,
         G: 'a,
     {
-        fn one<I: Input>(
+        fn one(
             self,
             forest: &'a ParseForest<'i, G, I>,
             node: Node<'i, G>,
@@ -649,7 +645,7 @@ pub mod traverse {
         }
 
         type All = FlattenIter<Box<dyn IteratorCloneHack<'a, Item = Product<A::All, B::All>>>>;
-        fn all<I: Input>(self, forest: &'a ParseForest<'i, G, I>, node: Node<'i, G>) -> Self::All {
+        fn all(self, forest: &'a ParseForest<'i, G, I>, node: Node<'i, G>) -> Self::All {
             FlattenIter::new(Box::new(forest.all_splits(node).map(move |(left, right)| {
                 Product::new(self.0.all(forest, left), self.1.all(forest, right))
             }))
@@ -660,18 +656,19 @@ pub mod traverse {
     #[derive(Copy, Clone)]
     pub struct Choice<A, M>(pub A, pub M);
 
-    impl<'a, 'i, G: GrammarReflector, A, M> Shape<'a, 'i, G> for Choice<A, M>
+    impl<'a, 'i, G: GrammarReflector, I: Input, A, M> Shape<&'a ParseForest<'i, G, I>, Node<'i, G>>
+        for Choice<A, M>
     where
-        A: Shape<'a, 'i, G>,
+        A: Shape<&'a ParseForest<'i, G, I>, Node<'i, G>>,
         A::All: Clone,
-        M: Shape<'a, 'i, G>,
+        M: Shape<&'a ParseForest<'i, G, I>, Node<'i, G>>,
 
         // HACK(eddyb) these are only because of dynamic dispatch / boxing:
         A: 'a,
         M: 'a,
         G: 'a,
     {
-        fn one<I: Input>(
+        fn one(
             self,
             forest: &'a ParseForest<'i, G, I>,
             node: Node<'i, G>,
@@ -686,7 +683,7 @@ pub mod traverse {
         // of `Y` (so that it can reset the `Y` when `X` advances), and we don't
         // want two copies of `M` (a dedicated reset mechanism might be better?).
         type All = FlattenIter<Box<dyn IteratorCloneHack<'a, Item = Product<M::All, A::All>>>>;
-        fn all<I: Input>(self, forest: &'a ParseForest<'i, G, I>, node: Node<'i, G>) -> Self::All {
+        fn all(self, forest: &'a ParseForest<'i, G, I>, node: Node<'i, G>) -> Self::All {
             FlattenIter::new(Box::new(
                 forest.all_choices(node).map(move |node| {
                     Product::new(self.1.all(forest, node), self.0.all(forest, node))
@@ -699,14 +696,15 @@ pub mod traverse {
     #[derive(Copy, Clone)]
     pub struct MatchCons<P, A, Tail>(pub P, pub A, pub Tail);
 
-    impl<'a, 'i, G: GrammarReflector, A, Tail> Shape<'a, 'i, G> for MatchCons<G::NodeKind, A, Tail>
+    impl<'i, Forest: Copy, G: GrammarReflector, A, Tail> Shape<Forest, Node<'i, G>>
+        for MatchCons<G::NodeKind, A, Tail>
     where
-        A: Shape<'a, 'i, G>,
-        Tail: Shape<'a, 'i, G>,
+        A: Shape<Forest, Node<'i, G>>,
+        Tail: Shape<Forest, Node<'i, G>>,
     {
-        fn one<I: Input>(
+        fn one(
             self,
-            forest: &'a ParseForest<'i, G, I>,
+            forest: Forest,
             node: Node<'i, G>,
             out: &mut [Option<Node<'i, G>>],
         ) -> Result<(), MoreThanOne> {
@@ -718,7 +716,7 @@ pub mod traverse {
         }
 
         type All = Either<A::All, Tail::All>;
-        fn all<I: Input>(self, forest: &'a ParseForest<'i, G, I>, node: Node<'i, G>) -> Self::All {
+        fn all(self, forest: Forest, node: Node<'i, G>) -> Self::All {
             if node.kind == self.0 {
                 Either::Left(self.1.all(forest, node))
             } else {
@@ -730,18 +728,13 @@ pub mod traverse {
     #[derive(Copy, Clone)]
     pub struct MatchNil;
 
-    impl<'i, G: GrammarReflector> Shape<'_, 'i, G> for MatchNil {
-        fn one<I: Input>(
-            self,
-            _: &ParseForest<'i, G, I>,
-            _: Node<'i, G>,
-            _: &mut [Option<Node<'i, G>>],
-        ) -> Result<(), MoreThanOne> {
+    impl<Forest: Copy, Node: Copy> Shape<Forest, Node> for MatchNil {
+        fn one(self, _: Forest, _: Node, _: &mut [Option<Node>]) -> Result<(), MoreThanOne> {
             unreachable!()
         }
 
         type All = MatchNil;
-        fn all<I: Input>(self, _: &ParseForest<'i, G, I>, _: Node<'i, G>) -> Self::All {
+        fn all(self, _: Forest, _: Node) -> Self::All {
             unreachable!()
         }
     }
@@ -758,11 +751,12 @@ pub mod traverse {
     #[derive(Copy, Clone)]
     pub struct Opt<A>(pub A);
 
-    impl<'a, 'i, G: GrammarReflector, A> Shape<'a, 'i, G> for Opt<A>
+    impl<'a, 'i, G: GrammarReflector, I: Input, A> Shape<&'a ParseForest<'i, G, I>, Node<'i, G>>
+        for Opt<A>
     where
-        A: Shape<'a, 'i, G>,
+        A: Shape<&'a ParseForest<'i, G, I>, Node<'i, G>>,
     {
-        fn one<I: Input>(
+        fn one(
             self,
             forest: &'a ParseForest<'i, G, I>,
             node: Node<'i, G>,
@@ -775,7 +769,7 @@ pub mod traverse {
         }
 
         type All = Either<A::All, LeafCursor<Node<'i, G>>>;
-        fn all<I: Input>(self, forest: &'a ParseForest<'i, G, I>, node: Node<'i, G>) -> Self::All {
+        fn all(self, forest: &'a ParseForest<'i, G, I>, node: Node<'i, G>) -> Self::All {
             match forest.unpack_opt(node) {
                 Some(node) => Either::Left(self.0.all(forest, node)),
                 None => Either::Right(LeafCursor(None, node)),

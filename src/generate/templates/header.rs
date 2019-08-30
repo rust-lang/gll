@@ -64,15 +64,12 @@ impl<'a, 'i, I: gll::grammer::input::Input, T> From<Ambiguity<Handle<'a, 'i, I, 
     }
 }
 
-impl<I: gll::grammer::input::Input> fmt::Debug for Handle<'_, '_, I, ()> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", self.source_info())
-    }
-}
-
 impl<'a, 'i, I: gll::grammer::input::Input, T> fmt::Debug for Handle<'a, 'i, I, [T]>
 where
-    Handle<'a, 'i, I, T>: fmt::Debug,
+    // FIXME(eddyb) this should be `Handle<'a, 'i, I, T>: fmt::Debug` but that
+    // runs into overflows looking for `Handle<I, [[[...[[[_]]]...]]]>`.
+    T: traverse::FromShape<&'a gll::grammer::forest::ParseForest<'i, _G, I>, Node<'i, _G>>,
+    T: fmt::Debug,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:?} => ", self.source_info())?;
@@ -223,5 +220,48 @@ impl<'a, 'i, I: gll::grammer::input::Input, T> Handle<'a, 'i, I, [T]> {
                     )
                 }),
         )
+    }
+}
+
+// FIXME(eddyb) move Handle somewhere in `runtime` or even `grammer::forest`.
+impl<'a, 'i, I, T> fmt::Debug for Handle<'a, 'i, I, T>
+where
+    I: gll::grammer::input::Input,
+    T: traverse::FromShape<&'a gll::grammer::forest::ParseForest<'i, _G, I>, Node<'i, _G>>,
+    T: fmt::Debug,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self.source_info())?;
+        if !T::Fields::default().as_mut().is_empty() {
+            write!(f, " => ")?;
+            let mut first = true;
+            for x in self.all() {
+                if !first {
+                    write!(f, " | ")?;
+                }
+                first = false;
+                fmt::Debug::fmt(&x, f)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+// FIXME(eddyb) move Handle somewhere in `runtime` or even `grammer::forest`.
+impl<'a, 'i, I, T> Handle<'a, 'i, I, T>
+where
+    I: gll::grammer::input::Input,
+    T: traverse::FromShape<&'a gll::grammer::forest::ParseForest<'i, _G, I>, Node<'i, _G>>,
+{
+    pub fn one(self) -> Result<T, Ambiguity<Self>> {
+        T::one(self.forest, self.forest.unpack_alias(self.node))
+            .map_err(|gll::grammer::forest::MoreThanOne| Ambiguity(self))
+    }
+
+    pub fn all(
+        self,
+    ) -> traverse::FromShapeAll<T, &'a gll::grammer::forest::ParseForest<'i, _G, I>, Node<'i, _G>>
+    {
+        T::all(self.forest, self.forest.unpack_alias(self.node))
     }
 }
