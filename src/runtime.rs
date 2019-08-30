@@ -658,13 +658,16 @@ pub mod traverse {
     }
 
     #[derive(Copy, Clone)]
-    pub struct Choice<M>(pub M);
+    pub struct Choice<A, M>(pub A, pub M);
 
-    impl<'a, 'i, G: GrammarReflector, M> Shape<'a, 'i, G> for Choice<M>
+    impl<'a, 'i, G: GrammarReflector, A, M> Shape<'a, 'i, G> for Choice<A, M>
     where
+        A: Shape<'a, 'i, G>,
+        A::All: Clone,
         M: Shape<'a, 'i, G>,
 
         // HACK(eddyb) these are only because of dynamic dispatch / boxing:
+        A: 'a,
         M: 'a,
         G: 'a,
     {
@@ -675,17 +678,21 @@ pub mod traverse {
             out: &mut [Option<Node<'i, G>>],
         ) -> Result<(), MoreThanOne> {
             let node = forest.one_choice(node)?;
+            self.1.one(forest, node, out)?;
             self.0.one(forest, node, out)
         }
 
-        type All = FlattenIter<Box<dyn IteratorCloneHack<'a, Item = M::All>>>;
+        // HACK(eddyb) `A` is after `M` because `Product<X, Y>` keeps two copies
+        // of `Y` (so that it can reset the `Y` when `X` advances), and we don't
+        // want two copies of `M` (a dedicated reset mechanism might be better?).
+        type All = FlattenIter<Box<dyn IteratorCloneHack<'a, Item = Product<M::All, A::All>>>>;
         fn all<I: Input>(self, forest: &'a ParseForest<'i, G, I>, node: Node<'i, G>) -> Self::All {
             FlattenIter::new(Box::new(
-                forest
-                    .all_choices(node)
-                    .map(move |node| self.0.all(forest, node)),
+                forest.all_choices(node).map(move |node| {
+                    Product::new(self.1.all(forest, node), self.0.all(forest, node))
+                }),
             )
-                as Box<dyn IteratorCloneHack<'_, Item = M::All>>)
+                as Box<dyn IteratorCloneHack<'_, Item = Product<M::All, A::All>>>)
         }
     }
 
@@ -793,8 +800,9 @@ pub mod traverse {
                 $crate::runtime::traverse::ty!($r_shape),
             >
         };
-        ({ $kind_ty:ty; $($kind:expr => $shape:tt,)* }) => {
+        ({ $kind_ty:ty; $at_shape:tt @ $($kind:expr => $shape:tt,)* }) => {
             $crate::runtime::traverse::Choice<
+                $crate::runtime::traverse::ty!($at_shape),
                 $crate::runtime::traverse::ty!(match($kind_ty) { $($shape,)* }),
             >
         };
@@ -830,8 +838,9 @@ pub mod traverse {
                 $crate::runtime::traverse::new!($r_shape),
             )
         };
-        ({ $kind_ty:ty; $($kind:expr => $shape:tt,)* }) => {
+        ({ $kind_ty:ty; $at_shape:tt @ $($kind:expr => $shape:tt,)* }) => {
             $crate::runtime::traverse::Choice(
+                $crate::runtime::traverse::new!($at_shape),
                 $crate::runtime::traverse::new!(match { $($kind => $shape,)* }),
             )
         };

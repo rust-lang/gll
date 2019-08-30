@@ -902,7 +902,7 @@ impl<Pat: RustInputPat> RuleWithFieldsGenerateMethods<Pat> for RuleWithFields {
                     .collect::<Vec<_>>();
                 let cases_node_kind = cases.iter().map(|rule| rule.node_kind(cx, rules));
                 let cases_node_kind_src = cases_node_kind.map(|kind| kind.to_src());
-                quote!({ _P; #(#cases_node_kind_src => #cases_shape,)* })
+                quote!({ _P; _ @ #(#cases_node_kind_src => #cases_shape,)* })
             }
             Rule::Opt(rule) => {
                 let shape = child(rule, 0).generate_traverse_shape(cx, rules, rust_fields);
@@ -1026,11 +1026,16 @@ where
     };
     rule_ty_def
         + rule_debug_impls(cx, name, &rust_adt)
-        + impl_rule_from_forest(name, &rust_adt, cx)
+        + impl_rule_from_forest(name, &rust_adt, cx, rules)
         + impl_rule_one_and_all(name, rule, &rust_adt, cx, rules)
 }
 
-fn impl_rule_from_forest<Pat>(name: IStr, rust_adt: &RustAdt, cx: &Context<Pat>) -> Src
+fn impl_rule_from_forest<Pat>(
+    name: IStr,
+    rust_adt: &RustAdt,
+    cx: &Context<Pat>,
+    rules: &mut RuleMap<'_>,
+) -> Src
 where
     Pat: RustInputPat,
 {
@@ -1051,20 +1056,30 @@ where
         }
     };
 
-    let methods = match rust_adt {
+    let method = match rust_adt {
         RustAdt::Enum(variants) => {
-            let variants_fields_len = variants.values().map(|(_, variant)| match variant {
-                RustVariant::Newtype(_) => 0,
-                RustVariant::StructLike(v_fields) => v_fields.len(),
-            });
-            let variants_from_forest_ident = variants
-                .keys()
-                .map(|&v_name| Src::ident(format!("{}_from_forest", &cx[v_name])));
-            let variants_body = variants.iter().map(|(&v_name, (_, variant))| {
+            let max_fields_len = variants
+                .values()
+                .map(|(_, variant)| match variant {
+                    RustVariant::Newtype(_) => 0,
+                    RustVariant::StructLike(v_fields) => v_fields.len(),
+                })
+                .max()
+                .unwrap_or(0);
+            // HACK(eddyb) only collected to a `Vec` to avoid `rules` borrow conflicts.
+            let variants_kind = variants
+                .values()
+                .map(|(v_rule, _)| v_rule.rule.node_kind(cx, rules))
+                .collect::<Vec<_>>();
+            let variants_kind_src = variants_kind
+                .iter()
+                .map(|kind| kind.to_src())
+                .collect::<Vec<_>>();
+            let variants_expr = variants.iter().map(|(&v_name, (_, variant))| {
                 let variant_ident = Src::ident(&cx[v_name]);
                 match variant {
                     RustVariant::Newtype(_) => quote!(#ident::#variant_ident(Handle {
-                        node: _node,
+                        node: _r[#max_fields_len].unwrap(),
                         forest,
                         _marker: PhantomData,
                     })),
@@ -1078,16 +1093,17 @@ where
                 }
             });
 
-            quote!(#(
-            #[allow(non_snake_case)]
-            fn #variants_from_forest_ident(
-                forest: &'a gll::grammer::forest::ParseForest<'i, _G, I>,
-                _node: Node<'i, _G>,
-                _r: [Option<Node<'i, _G>>; #variants_fields_len],
-            ) -> Self {
-                #variants_body
-            }
-        )*)
+            quote!(
+                fn from_forest(
+                    forest: &'a gll::grammer::forest::ParseForest<'i, _G, I>,
+                    _r: [Option<Node<'i, _G>>; #max_fields_len + 1],
+                ) -> Self {
+                    match _r[#max_fields_len].unwrap().kind {
+                        #(#variants_kind_src => #variants_expr,)*
+                        _ => unreachable!(),
+                    }
+                }
+            )
         }
         RustAdt::Struct(fields) => {
             let fields_len = fields.len();
@@ -1101,7 +1117,6 @@ where
             quote!(
                 fn from_forest(
                     forest: &'a gll::grammer::forest::ParseForest<'i, _G, I>,
-                    _node: Node<'i, _G>,
                     _r: [Option<Node<'i, _G>>; #fields_len],
                 ) -> Self {
                     #ident {
@@ -1114,7 +1129,7 @@ where
     };
 
     quote!(impl<'a, 'i, I: gll::grammer::input::Input> #ident<'a, 'i, I> {
-        #methods
+        #method
     })
 }
 
@@ -1129,21 +1144,17 @@ where
     Pat: RustInputPat,
 {
     let ident = Src::ident(&cx[name]);
-    let (consts, one, all) = match rust_adt {
+    let (total_fields, shape) = match rust_adt {
         RustAdt::Enum(variants) => {
-            let variants_fields_len = variants.values().map(|(_, variant)| match variant {
-                RustVariant::Newtype(_) => 0,
-                RustVariant::StructLike(v_fields) => v_fields.len(),
-            });
-            // FIXME(eddyb) figure out a more efficient way to reuse
-            // iterators with `quote!(...)` than `.collect::<Vec<_>>()`.
-            let i_ident = (0..variants.len())
-                .map(|i| Src::ident(format!("_{}", i)))
-                .collect::<Vec<_>>();
-            let variants_from_forest_ident = variants
-                .keys()
-                .map(|&v_name| Src::ident(format!("{}_from_forest", &cx[v_name])))
-                .collect::<Vec<_>>();
+            let max_fields_len = variants
+                .values()
+                .map(|(_, variant)| match variant {
+                    RustVariant::Newtype(_) => 0,
+                    RustVariant::StructLike(v_fields) => v_fields.len(),
+                })
+                .max()
+                .unwrap_or(0);
+            // HACK(eddyb) only collected to a `Vec` to avoid `rules` borrow conflicts.
             let variants_kind = variants
                 .values()
                 .map(|(v_rule, _)| v_rule.rule.node_kind(cx, rules))
@@ -1151,10 +1162,6 @@ where
             let variants_kind_src = variants_kind
                 .iter()
                 .map(|kind| kind.to_src())
-                .collect::<Vec<_>>();
-            let variants_shape_ident = variants
-                .keys()
-                .map(|&v_name| Src::ident(format!("{}_SHAPE", &cx[v_name])))
                 .collect::<Vec<_>>();
             let variants_shape = variants
                 .values()
@@ -1167,100 +1174,51 @@ where
                 .collect::<Vec<_>>();
 
             (
-                quote!(#(
-                    #[allow(non_upper_case_globals)]
-                    const #variants_shape_ident: traverse::ty!(#variants_shape) = traverse::new!(#variants_shape);
-                )*),
-                quote!(
-                    forest.one_choice(node).and_then(|node| match node.kind {
-                        #(#variants_kind_src => {
-                            let mut r = [None; #variants_fields_len];
-                            #ident::<I>::#variants_shape_ident
-                                .one(forest, node, &mut r)
-                                .map(|()| {
-                                    #ident::#variants_from_forest_ident(self.forest, node, r)
-                                })
-                        })*
-                        _ => unreachable!()
-                    })
-                ),
-                quote!(
-                    #[derive(Clone)]
-                    enum Iter<#(#i_ident),*> {
-                        #(#i_ident(#i_ident)),*
-                    }
-                    impl<T #(, #i_ident: Iterator<Item = T>)*> Iterator for Iter<#(#i_ident),*>
-                    {
-                        type Item = T;
-                        fn next(&mut self) -> Option<T> {
-                            match self {
-                                #(Iter::#i_ident(iter) => iter.next()),*
-                            }
-                        }
-                    }
-
-                    forest.all_choices(node).flat_map(move |node| {
-                        match node.kind {
-                            #(#variants_kind_src => Iter::#i_ident({
-                                #ident::<I>::#variants_shape_ident
-                                    .all(forest, node)
-                                    .into_iter()
-                                    .map(move |r| {
-                                        #ident::#variants_from_forest_ident(self.forest, node, r)
-                                    })
-                            }),)*
-                            _ => unreachable!(),
-                        }
-                    })
-                ),
+                max_fields_len + 1,
+                quote!({ _P; #max_fields_len @ #(#variants_kind_src => #variants_shape,)* }),
             )
         }
-        RustAdt::Struct(fields) => {
-            let fields_len = fields.len();
-            let shape = rule.generate_traverse_shape(cx, rules, fields);
-            (
-                quote!(
-                    #[allow(non_upper_case_globals)]
-                    const SHAPE: traverse::ty!(#shape) = traverse::new!(#shape);
-                ),
-                quote!(
-                    let mut r = [None; #fields_len];
-                    #ident::<I>::SHAPE
-                        .one(forest, node, &mut r)
-                        .map(|()| #ident::from_forest(self.forest, node, r))
-                ),
-                quote!(
-                    #ident::<I>::SHAPE
-                        .all(forest, node)
-                        .into_iter()
-                        .map(move |r| {
-                            #ident::from_forest(self.forest, node, r)
-                        })
-                ),
-            )
-        }
+        RustAdt::Struct(fields) => (
+            fields.len(),
+            rule.generate_traverse_shape(cx, rules, fields),
+        ),
     };
 
     quote!(
     impl<'a, 'i, I: gll::grammer::input::Input> #ident<'a, 'i, I> {
-        #consts
+        const SHAPE: traverse::ty!(#shape) = traverse::new!(#shape);
     }
 
     impl<'a, 'i, I> Handle<'a, 'i, I, #ident<'a, 'i, I>>
         where I: gll::grammer::input::Input,
     {
-        #consts
-
         pub fn one(self) -> Result<#ident<'a, 'i, I>, Ambiguity<Self>> {
             let forest = self.forest;
             let node = forest.unpack_alias(self.node);
-            #one.map_err(|gll::grammer::forest::MoreThanOne| Ambiguity(self))
+
+            let mut r = [None; #total_fields];
+            #ident::<I>::SHAPE
+                .one(forest, node, &mut r)
+                .map_err(|gll::grammer::forest::MoreThanOne| Ambiguity(self))?;
+
+            Ok(#ident::from_forest(forest, r))
         }
 
-        pub fn all(self) -> impl Iterator<Item = #ident<'a, 'i, I>> {
+        pub fn all(self) -> ::std::iter::Map<
+            cursor::IntoIter<
+                <traverse::ty!(#shape) as traverse::Shape<'a, 'i, _G>>::All,
+                [Option<Node<'i, _G>>; #total_fields],
+                [Option<Node<'i, _G>>],
+            >,
+            impl FnMut([Option<Node<'i, _G>>; #total_fields]) -> #ident<'a, 'i, I>,
+        > {
             let forest = self.forest;
             let node = forest.unpack_alias(self.node);
-            #all
+
+            #ident::<I>::SHAPE
+                .all(forest, node)
+                .into_iter()
+                .map(move |r| #ident::from_forest(forest, r))
         }
     }
     )

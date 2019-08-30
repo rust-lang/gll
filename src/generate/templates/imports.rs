@@ -1,6 +1,6 @@
 use gll::grammer::forest::{GrammarReflector as _, Node, NodeShape};
 use gll::runtime::{
-    cursor::Cursor as _,
+    cursor::{self, Cursor as _},
     traverse::{self, Shape as _},
 };
 use std::any;
