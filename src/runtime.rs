@@ -140,7 +140,8 @@ where
         self.saved.take().unwrap()
     }
 
-    pub fn forest_add_choice(&mut self, kind: P, choice: P) {
+    // FIXME(eddyb) safeguard this against misuse.
+    pub fn forest_add_choice(&mut self, kind: P, choice: usize) {
         self.parser.forest_add_choice(kind, choice);
     }
 
