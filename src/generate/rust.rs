@@ -1030,17 +1030,9 @@ where
     let ident = Src::ident(&cx[name]);
     let field_handle_expr = |(i, field): (usize, &RustField)| {
         if field.refutable {
-            quote!(_r[#i].map(|node| Handle {
-                node,
-                forest,
-                _marker: PhantomData,
-            }))
+            quote!(Option::<Handle<'a, 'i, I, _>>::from_shape_fields(forest, [fields[#i]]))
         } else {
-            quote!(Handle {
-                node: _r[#i].unwrap(),
-                forest,
-                _marker: PhantomData,
-            })
+            quote!(Handle::from_shape_fields(forest, [fields[#i]]))
         }
     };
 
@@ -1073,11 +1065,9 @@ where
             let variants_expr = variants.iter().map(|(&v_name, (_, variant))| {
                 let variant_ident = Src::ident(&cx[v_name]);
                 match variant {
-                    RustVariant::Newtype(_) => quote!(#ident::#variant_ident(Handle {
-                        node: _r[#max_fields_len].unwrap(),
-                        forest,
-                        _marker: PhantomData,
-                    })),
+                    RustVariant::Newtype(_) => quote!(#ident::#variant_ident(
+                        Handle::from_shape_fields(forest, [fields[#max_fields_len]]),
+                    )),
                     RustVariant::StructLike(v_fields) => {
                         let fields_ident = v_fields.keys().map(|&name| Src::ident(&cx[name]));
                         let fields_expr = v_fields.values().enumerate().map(field_handle_expr);
@@ -1092,7 +1082,7 @@ where
                 max_fields_len + 1,
                 quote!({ #max_fields_len @ #(#variants_shape)* }),
                 quote!(
-                    match _r[#max_fields_len].unwrap().kind {
+                    match fields[#max_fields_len].unwrap().kind {
                         #(#variants_kind_src => #variants_expr,)*
                         _ => unreachable!(),
                     }
@@ -1103,7 +1093,7 @@ where
             let fields_ident = fields.keys().map(|&name| Src::ident(&cx[name]));
             let fields_expr = fields.values().enumerate().map(field_handle_expr);
             let marker_field = if fields.is_empty() {
-                Some(quote!(_marker: { let _ = forest; PhantomData },))
+                Some(quote!(_marker: { let _ = forest; let [] = fields; PhantomData },))
             } else {
                 None
             };
@@ -1138,7 +1128,7 @@ where
 
         fn from_shape_fields(
             forest: &'a _forest::ParseForest<'i, _G, I>,
-            _r: Self::Fields,
+            fields: Self::Fields,
         ) -> Self {
             #from_shape
         }

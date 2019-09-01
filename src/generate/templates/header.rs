@@ -40,6 +40,27 @@ impl<'a, I: gll::grammer::input::Input, T: ?Sized> Handle<'a, '_, I, T> {
     }
 }
 
+impl<'a, 'i, I, T: ?Sized>
+    _forest::typed::FromShapeFields<'a, _forest::ParseForest<'i, _G, I>, Node<'i, _G>>
+    for Handle<'a, 'i, I, T>
+where
+    I: gll::grammer::input::Input,
+{
+    type Output = Self;
+    type Fields = [Option<Node<'i, _G>>; 1];
+
+    fn from_shape_fields(
+        forest: &'a _forest::ParseForest<'i, _G, I>,
+        [node]: Self::Fields,
+    ) -> Self {
+        Handle {
+            node: node.unwrap(),
+            forest,
+            _marker: PhantomData,
+        }
+    }
+}
+
 impl<'a, 'i, I: gll::grammer::input::Input, T> From<Ambiguity<Handle<'a, 'i, I, T>>>
     for Ambiguity<Handle<'a, 'i, I, Any>>
 {
