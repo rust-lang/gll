@@ -4,7 +4,7 @@ pub type Any = dyn any::Any;
 pub struct Ambiguity<T>(T);
 
 pub struct OwnedHandle<I: gll::grammer::input::Input, T: ?Sized> {
-    forest_and_node: gll::grammer::forest::OwnedParseForestAndNode<_G, _P, I>,
+    forest_and_node: gll::grammer::forest::OwnedParseForestAndNode<_G, I>,
     _marker: PhantomData<T>,
 }
 
@@ -18,7 +18,7 @@ impl<I: gll::grammer::input::Input, T: ?Sized> OwnedHandle<I, T> {
 }
 
 pub struct Handle<'a, 'i, I: gll::grammer::input::Input, T: ?Sized> {
-    pub node: Node<'i, _P>,
+    pub node: Node<'i, _G>,
     pub forest: &'a gll::grammer::forest::ParseForest<'i, _G, I>,
     _marker: PhantomData<T>,
 }

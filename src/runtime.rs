@@ -11,7 +11,7 @@ pub struct Runtime<'a, 'i, C: CodeLabel, I: Input, Pat> {
     parser: Parser<'a, 'i, C::GrammarReflector, I, Pat>,
     state: &'a mut RuntimeState<'i, C>,
     current: C,
-    saved: Option<Node<'i, C::NodeKind>>,
+    saved: Option<Node<'i, C::GrammarReflector>>,
 }
 
 struct RuntimeState<'i, C: CodeLabel> {
@@ -20,20 +20,18 @@ struct RuntimeState<'i, C: CodeLabel> {
     memoizer: Memoizer<'i, C>,
 }
 
-impl<'i, P, G, C, I: Input, Pat: Ord> Runtime<'_, 'i, C, I, Pat>
+impl<'i, G, C, I: Input, Pat: Ord> Runtime<'_, 'i, C, I, Pat>
 where
-    // FIXME(eddyb) these shouldn't be needed, as they are bounds on
-    // `GrammarReflector::NodeKind`, but that's ignored currently.
-    P: fmt::Debug + Ord + Hash + Copy,
-    G: GrammarReflector<NodeKind = P>,
-    C: CodeStep<I, Pat, GrammarReflector = G, NodeKind = P>,
+    G: GrammarReflector,
+    G::NodeKind: Ord,
+    C: CodeStep<I, Pat, GrammarReflector = G>,
 {
     pub fn parse(
         grammar: G,
         input: I,
         callee: C,
-        kind: P,
-    ) -> ParseResult<I::SourceInfoPoint, Pat, OwnedParseForestAndNode<G, P, I>> {
+        kind: G::NodeKind,
+    ) -> ParseResult<I::SourceInfoPoint, Pat, OwnedParseForestAndNode<G, I>> {
         Parser::parse_with(grammar, input, |mut parser| {
             let call = Call {
                 callee,
@@ -128,7 +126,7 @@ where
     }
 
     // FIXME(eddyb) maybe specialize this further, for `forest_add_split`?
-    pub fn save(&mut self, kind: P) {
+    pub fn save(&mut self, kind: G::NodeKind) {
         let old_saved = self.saved.replace(Node {
             kind,
             range: self.parser.take_result(),
@@ -136,17 +134,17 @@ where
         assert_eq!(old_saved, None);
     }
 
-    pub fn take_saved(&mut self) -> Node<'i, P> {
+    pub fn take_saved(&mut self) -> Node<'i, G> {
         self.saved.take().unwrap()
     }
 
     // FIXME(eddyb) safeguard this against misuse.
-    pub fn forest_add_choice(&mut self, kind: P, choice: usize) {
+    pub fn forest_add_choice(&mut self, kind: G::NodeKind, choice: usize) {
         self.parser.forest_add_choice(kind, choice);
     }
 
     // FIXME(eddyb) safeguard this against misuse.
-    pub fn forest_add_split(&mut self, kind: P, left: Node<'i, P>) {
+    pub fn forest_add_split(&mut self, kind: G::NodeKind, left: Node<'i, G>) {
         self.parser.forest_add_split(kind, left);
     }
 
@@ -234,7 +232,10 @@ struct Threads<'i, C: CodeLabel> {
     seen: BTreeSet<Call<'i, Continuation<'i, C>>>,
 }
 
-impl<'i, C: CodeLabel> Threads<'i, C> {
+impl<'i, C: CodeLabel> Threads<'i, C>
+where
+    <C::GrammarReflector as GrammarReflector>::NodeKind: Ord,
+{
     fn spawn(&mut self, next: Continuation<'i, C>, range: Range<'i>) {
         let t = Call {
             callee: next,
@@ -266,15 +267,45 @@ impl<'i, C: CodeLabel> Threads<'i, C> {
     }
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct Continuation<'i, C: CodeLabel> {
     code: C,
-    saved: Option<Node<'i, C::NodeKind>>,
+    saved: Option<Node<'i, C::GrammarReflector>>,
     // FIXME(eddyb) for GC purposes, this would also need to be a `Node`,
     // except that's not always the case? But `Node | Range` seems likely
     // to be a deoptimization, especially if `Node` stops containing a
     // `Range` (e.g. if it's an index in a node array).
     result: Range<'i>,
+}
+
+// FIXME(eddyb) can't derive these on `Continuation<C>` because that puts
+// bounds on `C` (and worse, `C::GrammarReflector`).
+impl<C: CodeLabel> Copy for Continuation<'_, C> {}
+impl<C: CodeLabel> Clone for Continuation<'_, C> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<C: CodeLabel> PartialEq for Continuation<'_, C> {
+    fn eq(&self, other: &Self) -> bool {
+        (self.code, self.saved, self.result) == (other.code, other.saved, other.result)
+    }
+}
+impl<C: CodeLabel> Eq for Continuation<'_, C> {}
+impl<C: CodeLabel> PartialOrd for Continuation<'_, C>
+where
+    <C::GrammarReflector as GrammarReflector>::NodeKind: Ord,
+{
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        (self.code, self.saved, self.result).partial_cmp(&(other.code, other.saved, other.result))
+    }
+}
+impl<C: CodeLabel> Ord for Continuation<'_, C>
+where
+    <C::GrammarReflector as GrammarReflector>::NodeKind: Ord,
+{
+    fn cmp(&self, other: &Self) -> Ordering {
+        (self.code, self.saved, self.result).cmp(&(other.code, other.saved, other.result))
+    }
 }
 
 // TODO(eddyb) figure out if `Call<Continuation<C>>` can be optimized,
@@ -314,7 +345,10 @@ struct GraphStack<'i, C: CodeLabel> {
     returns: HashMap<Call<'i, C>, BTreeSet<Continuation<'i, C>>>,
 }
 
-impl<C: CodeLabel> GraphStack<'_, C> {
+impl<C: CodeLabel> GraphStack<'_, C>
+where
+    <C::GrammarReflector as GrammarReflector>::NodeKind: Ord,
+{
     // FIXME(eddyb) figure out what to do here, now that
     // the GSS is no longer exposed in the public API.
     #[allow(unused)]
@@ -343,7 +377,10 @@ struct Memoizer<'i, C: CodeLabel> {
     lengths: HashMap<Call<'i, C>, BTreeSet<usize>>,
 }
 
-impl<'i, C: CodeLabel> Memoizer<'i, C> {
+impl<'i, C: CodeLabel> Memoizer<'i, C>
+where
+    <C::GrammarReflector as GrammarReflector>::NodeKind: Ord,
+{
     fn results<'a>(&'a self, call: Call<'i, C>) -> impl DoubleEndedIterator<Item = Range<'i>> + 'a {
         self.lengths
             .get(&call)
@@ -360,10 +397,7 @@ impl<'i, C: CodeLabel> Memoizer<'i, C> {
 }
 
 pub trait CodeLabel: fmt::Debug + Ord + Hash + Copy + 'static {
-    // HACK(eddyb) this allows using `C::NodeKind` in structs without
-    // autoderiving adding spurious bounds on `C::GrammarReflector`.
-    type GrammarReflector: GrammarReflector<NodeKind = Self::NodeKind>;
-    type NodeKind: fmt::Debug + Ord + Hash + Copy;
+    type GrammarReflector: GrammarReflector;
 
     fn enclosing_fn(self) -> Self;
 }
