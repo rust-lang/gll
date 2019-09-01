@@ -108,6 +108,7 @@ enum RustAdt {
 trait RuleWithFieldsMethods<Pat> {
     fn rust_fields(self, cx: &Context<Pat>) -> RustFields;
     fn rust_adt(self, cx: &Context<Pat>) -> RustAdt;
+    fn traverse_shape(self, cx: &Context<Pat>, rust_fields: &RustFields) -> Src;
 }
 
 impl<Pat: RustInputPat> RuleWithFieldsMethods<Pat> for RuleWithFields {
@@ -223,6 +224,48 @@ impl<Pat: RustInputPat> RuleWithFieldsMethods<Pat> for RuleWithFields {
         }
 
         RustAdt::Struct(self.rust_fields(cx))
+    }
+
+    fn traverse_shape(self, cx: &Context<Pat>, rust_fields: &RustFields) -> Src {
+        let children = match &cx[self.fields] {
+            Fields::Leaf(None) => return quote!(_),
+            Fields::Leaf(Some(field)) => {
+                let (i, _, _) = rust_fields.get_full(&field.name).unwrap();
+                return quote!(#i);
+            }
+            Fields::Aggregate(children) => children,
+        };
+        let child = |rule, i| RuleWithFields {
+            rule,
+            fields: children
+                .get(i)
+                .cloned()
+                .unwrap_or_else(|| cx.intern(Fields::Leaf(None))),
+        };
+
+        match cx[self.rule] {
+            Rule::Empty
+            | Rule::Eat(_)
+            | Rule::Call(_)
+            | Rule::RepeatMany(..)
+            | Rule::RepeatMore(..) => unreachable!(),
+            Rule::Concat([left, right]) => {
+                let left = child(left, 0).traverse_shape(cx, rust_fields);
+                let right = child(right, 1).traverse_shape(cx, rust_fields);
+                quote!((#left #right))
+            }
+            Rule::Or(ref cases) => {
+                let cases_shape = cases
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &rule)| child(rule, i).traverse_shape(cx, rust_fields));
+                quote!({ _ @ #(#cases_shape)* })
+            }
+            Rule::Opt(rule) => {
+                let shape = child(rule, 0).traverse_shape(cx, rust_fields);
+                quote!([#shape])
+            }
+        }
     }
 }
 
@@ -848,70 +891,6 @@ impl<Pat: RustInputPat> RuleGenerateMethods<Pat> for IRule {
     }
 }
 
-trait RuleWithFieldsGenerateMethods<Pat> {
-    fn generate_traverse_shape(
-        self,
-        cx: &Context<Pat>,
-        rules: &mut RuleMap<'_>,
-        rust_fields: &RustFields,
-    ) -> Src;
-}
-
-impl<Pat: RustInputPat> RuleWithFieldsGenerateMethods<Pat> for RuleWithFields {
-    fn generate_traverse_shape(
-        self,
-        cx: &Context<Pat>,
-        rules: &mut RuleMap<'_>,
-        rust_fields: &RustFields,
-    ) -> Src {
-        let children = match &cx[self.fields] {
-            Fields::Leaf(None) => return quote!(_),
-            Fields::Leaf(Some(field)) => {
-                let (i, _, _) = rust_fields.get_full(&field.name).unwrap();
-                return quote!(#i);
-            }
-            Fields::Aggregate(children) => children,
-        };
-        let child = |rule, i| RuleWithFields {
-            rule,
-            fields: children
-                .get(i)
-                .cloned()
-                .unwrap_or_else(|| cx.intern(Fields::Leaf(None))),
-        };
-
-        match cx[self.rule] {
-            Rule::Empty
-            | Rule::Eat(_)
-            | Rule::Call(_)
-            | Rule::RepeatMany(..)
-            | Rule::RepeatMore(..) => unreachable!(),
-            Rule::Concat([left, right]) => {
-                let left = child(left, 0).generate_traverse_shape(cx, rules, rust_fields);
-                let right = child(right, 1).generate_traverse_shape(cx, rules, rust_fields);
-                quote!((#left, #right))
-            }
-            Rule::Or(ref cases) => {
-                // HACK(eddyb) only collected to a `Vec` to avoid `rules` borrow conflicts.
-                let cases_shape = cases
-                    .iter()
-                    .enumerate()
-                    .map(|(i, &rule)| {
-                        child(rule, i).generate_traverse_shape(cx, rules, rust_fields)
-                    })
-                    .collect::<Vec<_>>();
-                let cases_node_kind = cases.iter().map(|rule| rule.node_kind(cx, rules));
-                let cases_node_kind_src = cases_node_kind.map(|kind| kind.to_src());
-                quote!({ _P; _ @ #(#cases_node_kind_src => #cases_shape,)* })
-            }
-            Rule::Opt(rule) => {
-                let shape = child(rule, 0).generate_traverse_shape(cx, rules, rust_fields);
-                quote!([#shape])
-            }
-        }
-    }
-}
-
 fn impl_parse_with<Pat>(cx: &Context<Pat>, name: IStr) -> Src
 where
     Pat: RustInputPat,
@@ -1088,9 +1067,7 @@ where
                 .values()
                 .map(|(v_rule, variant)| match variant {
                     RustVariant::Newtype(_) => quote!(_),
-                    RustVariant::StructLike(v_fields) => {
-                        v_rule.generate_traverse_shape(cx, rules, v_fields)
-                    }
+                    RustVariant::StructLike(v_fields) => v_rule.traverse_shape(cx, v_fields),
                 })
                 .collect::<Vec<_>>();
             let variants_expr = variants.iter().map(|(&v_name, (_, variant))| {
@@ -1113,7 +1090,7 @@ where
 
             (
                 max_fields_len + 1,
-                quote!({ _P; #max_fields_len @ #(#variants_kind_src => #variants_shape,)* }),
+                quote!({ #max_fields_len @ #(#variants_shape)* }),
                 quote!(
                     match _r[#max_fields_len].unwrap().kind {
                         #(#variants_kind_src => #variants_expr,)*
@@ -1133,7 +1110,7 @@ where
 
             (
                 fields.len(),
-                rule.generate_traverse_shape(cx, rules, fields),
+                rule.traverse_shape(cx, fields),
                 quote!(
                     #ident {
                         #(#fields_ident: #fields_expr),*
@@ -1144,23 +1121,29 @@ where
         }
     };
 
-    quote!(impl<'a, 'i, I>
-        traverse::FromShape<&'a gll::grammer::forest::ParseForest<'i, _G, I>, Node<'i, _G>>
+    quote!(
+    impl<'i, I> _forest::typed::Shaped for #ident<'_, 'i, I>
+        where I: gll::grammer::input::Input,
+    {
+        type Shape = _forest::typed::shape!(#shape);
+        type State = [usize; <_forest::typed::shape!(#shape) as _forest::typed::ShapeStateLen>::STATE_LEN];
+    }
+    impl<'a, 'i, I>
+        _forest::typed::FromShapeFields<'a, _forest::ParseForest<'i, _G, I>, Node<'i, _G>>
             for #ident<'a, 'i, I>
         where I: gll::grammer::input::Input,
     {
-        type Shape = traverse::ty!(#shape);
+        type Output = Self;
         type Fields = [Option<Node<'i, _G>>; #total_fields];
 
-        const SHAPE: Self::Shape = traverse::new!(#shape);
-
-        fn from_shape(
-            forest: &'a gll::grammer::forest::ParseForest<'i, _G, I>,
+        fn from_shape_fields(
+            forest: &'a _forest::ParseForest<'i, _G, I>,
             _r: Self::Fields,
         ) -> Self {
             #from_shape
         }
-    })
+    }
+    )
 }
 
 fn rule_debug_impl<Pat>(cx: &Context<Pat>, name: IStr, rust_adt: &RustAdt) -> Src {
@@ -1333,7 +1316,7 @@ fn declare_node_kind<Pat: RustInputPat>(
             )*
         }
 
-        impl gll::grammer::forest::GrammarReflector for _G {
+        impl _forest::GrammarReflector for _G {
             type NodeKind = _P;
 
             fn node_shape(&self, kind: _P) -> NodeShape<_P> {

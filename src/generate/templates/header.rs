@@ -4,7 +4,7 @@ pub type Any = dyn any::Any;
 pub struct Ambiguity<T>(T);
 
 pub struct OwnedHandle<I: gll::grammer::input::Input, T: ?Sized> {
-    forest_and_node: gll::grammer::forest::OwnedParseForestAndNode<_G, I>,
+    forest_and_node: _forest::OwnedParseForestAndNode<_G, I>,
     _marker: PhantomData<T>,
 }
 
@@ -19,7 +19,7 @@ impl<I: gll::grammer::input::Input, T: ?Sized> OwnedHandle<I, T> {
 
 pub struct Handle<'a, 'i, I: gll::grammer::input::Input, T: ?Sized> {
     pub node: Node<'i, _G>,
-    pub forest: &'a gll::grammer::forest::ParseForest<'i, _G, I>,
+    pub forest: &'a _forest::ParseForest<'i, _G, I>,
     _marker: PhantomData<T>,
 }
 
@@ -68,8 +68,10 @@ impl<'a, 'i, I: gll::grammer::input::Input, T> fmt::Debug for Handle<'a, 'i, I, 
 where
     // FIXME(eddyb) this should be `Handle<'a, 'i, I, T>: fmt::Debug` but that
     // runs into overflows looking for `Handle<I, [[[...[[[_]]]...]]]>`.
-    T: traverse::FromShape<&'a gll::grammer::forest::ParseForest<'i, _G, I>, Node<'i, _G>>,
-    T: fmt::Debug,
+    T: _forest::typed::Shaped
+        + _forest::typed::FromShapeFields<'a, _forest::ParseForest<'i, _G, I>, Node<'i, _G>>,
+    T::Shape: _forest::typed::Shape<_forest::ParseForest<'i, _G, I>, Node<'i, _G>>,
+    T::Output: fmt::Debug,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:?} => ", self.source_info())?;
@@ -227,8 +229,10 @@ impl<'a, 'i, I: gll::grammer::input::Input, T> Handle<'a, 'i, I, [T]> {
 impl<'a, 'i, I, T> fmt::Debug for Handle<'a, 'i, I, T>
 where
     I: gll::grammer::input::Input,
-    T: traverse::FromShape<&'a gll::grammer::forest::ParseForest<'i, _G, I>, Node<'i, _G>>,
-    T: fmt::Debug,
+    T: _forest::typed::Shaped
+        + _forest::typed::FromShapeFields<'a, _forest::ParseForest<'i, _G, I>, Node<'i, _G>>,
+    T::Shape: _forest::typed::Shape<_forest::ParseForest<'i, _G, I>, Node<'i, _G>>,
+    T::Output: fmt::Debug,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:?}", self.source_info())?;
@@ -251,17 +255,18 @@ where
 impl<'a, 'i, I, T> Handle<'a, 'i, I, T>
 where
     I: gll::grammer::input::Input,
-    T: traverse::FromShape<&'a gll::grammer::forest::ParseForest<'i, _G, I>, Node<'i, _G>>,
+    T: _forest::typed::Shaped
+        + _forest::typed::FromShapeFields<'a, _forest::ParseForest<'i, _G, I>, Node<'i, _G>>,
+    T::Shape: _forest::typed::Shape<_forest::ParseForest<'i, _G, I>, Node<'i, _G>>,
 {
-    pub fn one(self) -> Result<T, Ambiguity<Self>> {
+    pub fn one(self) -> Result<T::Output, Ambiguity<Self>> {
         T::one(self.forest, self.forest.unpack_alias(self.node))
-            .map_err(|gll::grammer::forest::MoreThanOne| Ambiguity(self))
+            .map_err(|_forest::MoreThanOne| Ambiguity(self))
     }
 
     pub fn all(
         self,
-    ) -> traverse::FromShapeAll<T, &'a gll::grammer::forest::ParseForest<'i, _G, I>, Node<'i, _G>>
-    {
+    ) -> _forest::typed::ShapedAllIter<'a, T, _forest::ParseForest<'i, _G, I>, Node<'i, _G>> {
         T::all(self.forest, self.forest.unpack_alias(self.node))
     }
 }

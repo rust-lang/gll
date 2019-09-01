@@ -1,8 +1,4 @@
-use gll::grammer::forest::{GrammarReflector as _, Node, NodeShape};
-use gll::runtime::{
-    cursor::{self, Cursor as _},
-    traverse::{self, Shape as _},
-};
+use gll::grammer::forest::{self as _forest, GrammarReflector as _, Node, NodeShape};
 use std::any;
 use std::fmt;
 use std::marker::PhantomData;
