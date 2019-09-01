@@ -94,9 +94,17 @@ struct RustField {
     paths: Vec<Vec<usize>>,
 }
 
+enum RustVariant {
+    // `Foo:X`, the whole top-level field is wrapped `Foo(X)`.
+    Newtype(RustField),
+
+    // `Bar:{ x:X y:Y }`, subfields are extracted into `Bar { x: X, y: Y }`.
+    StructLike(IndexMap<IStr, RustField>),
+}
+
 enum RustAdt {
     Struct(IndexMap<IStr, RustField>),
-    Enum(IndexMap<IStr, (IRule, IndexMap<IStr, RustField>)>),
+    Enum(IndexMap<IStr, (IRule, RustVariant)>),
 }
 
 trait RuleWithFieldsMethods<Pat> {
@@ -198,11 +206,17 @@ impl<Pat: RustInputPat> RuleWithFieldsMethods<Pat> for RuleWithFields {
                     .enumerate()
                     .map(|(i, &rule)| match cx[children[i]] {
                         Fields::Leaf(Some(field)) => {
-                            let child = RuleWithFields {
+                            let subfields = RuleWithFields {
                                 rule,
                                 fields: field.sub,
+                            }
+                            .rust_fields(cx);
+                            let variant = if subfields.is_empty() {
+                                RustVariant::Newtype(rule.leaf_rust_field(cx))
+                            } else {
+                                RustVariant::StructLike(subfields)
                             };
-                            Some((field.name, (rule, child.rust_fields(cx))))
+                            Some((field.name, (rule, variant)))
                         }
                         _ => None,
                     })
@@ -973,18 +987,20 @@ where
 
     let rule_ty_def = match &rust_adt {
         RustAdt::Enum(variants) => {
-            let variants = variants.iter().map(|(&v_name, (v_rule, v_fields))| {
+            let variants = variants.iter().map(|(&v_name, (_, variant))| {
                 let variant_ident = Src::ident(&cx[v_name]);
-                if v_fields.is_empty() {
-                    // FIXME(eddyb) this should be reflected in `RustAdt`
-                    let field_ty = field_handle_ty(&v_rule.leaf_rust_field(cx));
-                    quote!(#variant_ident(#field_ty))
-                } else {
-                    let fields_ident = v_fields.keys().map(|&name| Src::ident(&cx[name]));
-                    let fields_ty = v_fields.values().map(field_handle_ty);
-                    quote!(#variant_ident {
-                        #(#fields_ident: #fields_ty),*
-                    })
+                match variant {
+                    RustVariant::Newtype(field) => {
+                        let field_ty = field_handle_ty(field);
+                        quote!(#variant_ident(#field_ty))
+                    }
+                    RustVariant::StructLike(v_fields) => {
+                        let fields_ident = v_fields.keys().map(|&name| Src::ident(&cx[name]));
+                        let fields_ty = v_fields.values().map(field_handle_ty);
+                        quote!(#variant_ident {
+                            #(#fields_ident: #fields_ty),*
+                        })
+                    }
                 }
             });
             quote!(
@@ -1063,20 +1079,21 @@ where
             let variants_from_forest_ident = variants
                 .keys()
                 .map(|&v_name| Src::ident(format!("{}_from_forest", &cx[v_name])));
-            let variants_body = variants.iter().map(|(&v_name, (_, v_fields))| {
+            let variants_body = variants.iter().map(|(&v_name, (_, variant))| {
                 let variant_ident = Src::ident(&cx[v_name]);
-                if v_fields.is_empty() {
-                    quote!(#ident::#variant_ident(Handle {
+                match variant {
+                    RustVariant::Newtype(_) => quote!(#ident::#variant_ident(Handle {
                         node: _node,
                         forest,
                         _marker: PhantomData,
-                    }))
-                } else {
-                    let fields_ident = v_fields.keys().map(|&name| Src::ident(&cx[name]));
-                    let fields_expr = v_fields.values().map(field_handle_expr);
-                    quote!(#ident::#variant_ident {
-                        #(#fields_ident: #fields_expr),*
-                    })
+                    })),
+                    RustVariant::StructLike(v_fields) => {
+                        let fields_ident = v_fields.keys().map(|&name| Src::ident(&cx[name]));
+                        let fields_expr = v_fields.values().map(field_handle_expr);
+                        quote!(#ident::#variant_ident {
+                            #(#fields_ident: #fields_expr),*
+                        })
+                    }
                 }
             });
 
@@ -1239,42 +1256,46 @@ fn rule_debug_impl<Pat>(cx: &Context<Pat>, name: IStr, rust_adt: &RustAdt) -> Sr
     let ident = Src::ident(name);
     let body = match rust_adt {
         RustAdt::Enum(variants) => {
-            let variants_pat = variants.iter().map(|(&v_name, (_, v_fields))| {
+            let variants_pat = variants.iter().map(|(&v_name, (_, variant))| {
                 let variant_ident = Src::ident(&cx[v_name]);
-                if v_fields.is_empty() {
-                    quote!(#ident::#variant_ident(x))
-                } else {
-                    let fields_ident = v_fields.keys().map(|&name| Src::ident(&cx[name]));
-                    let fields_var_ident = v_fields
-                        .keys()
-                        .map(|&field_name| Src::ident(format!("f_{}", &cx[field_name])));
-                    quote!(#ident::#variant_ident {
-                        #(#fields_ident: #fields_var_ident,)*
-                    })
+                match variant {
+                    RustVariant::Newtype(_) => quote!(#ident::#variant_ident(x)),
+                    RustVariant::StructLike(v_fields) => {
+                        let fields_ident = v_fields.keys().map(|&name| Src::ident(&cx[name]));
+                        let fields_var_ident = v_fields
+                            .keys()
+                            .map(|&field_name| Src::ident(format!("f_{}", &cx[field_name])));
+                        quote!(#ident::#variant_ident {
+                            #(#fields_ident: #fields_var_ident,)*
+                        })
+                    }
                 }
             });
-            let variants_body = variants.iter().map(|(&v_name, (_, v_fields))| {
+            let variants_body = variants.iter().map(|(&v_name, (_, variant))| {
                 let variant_path_str = format!("{}::{}", name, &cx[v_name]);
-                if v_fields.is_empty() {
-                    quote!(f.debug_tuple(#variant_path_str).field(x).finish(),)
-                } else {
-                    let fields_debug = v_fields.iter().map(|(field_name, field)| {
-                        let field_name = &cx[*field_name];
-                        let field_var_ident = Src::ident(format!("f_{}", field_name));
-                        if field.refutable {
-                            quote!(if let Some(field) = #field_var_ident {
-                                d.field(#field_name, field);
-                            })
-                        } else {
-                            quote!(d.field(#field_name, #field_var_ident);)
-                        }
-                    });
+                match variant {
+                    RustVariant::Newtype(_) => {
+                        quote!(f.debug_tuple(#variant_path_str).field(x).finish(),)
+                    }
+                    RustVariant::StructLike(v_fields) => {
+                        let fields_debug = v_fields.iter().map(|(field_name, field)| {
+                            let field_name = &cx[*field_name];
+                            let field_var_ident = Src::ident(format!("f_{}", field_name));
+                            if field.refutable {
+                                quote!(if let Some(field) = #field_var_ident {
+                                    d.field(#field_name, field);
+                                })
+                            } else {
+                                quote!(d.field(#field_name, #field_var_ident);)
+                            }
+                        });
 
-                    quote!({
-                        let mut d = f.debug_struct(#variant_path_str);
-                        #(#fields_debug)*
-                        d.finish()
-                    })
+                        quote!({
+                            let mut d = f.debug_struct(#variant_path_str);
+                            #(#fields_debug)*
+                            d.finish()
+                        })
+                    }
                 }
             });
 
