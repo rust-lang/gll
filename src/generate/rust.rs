@@ -1084,8 +1084,8 @@ where
             #[allow(non_snake_case)]
             fn #variants_from_forest_ident(
                 forest: &'a gll::grammer::forest::ParseForest<'i, _G, I>,
-                _node: Node<'i, _P>,
-                _r: traverse!(typeof(Node<'i, _P>) #variants_shape),
+                _node: Node<'i, _G>,
+                _r: traverse!(typeof(Node<'i, _G>) #variants_shape),
             ) -> Self {
                 #variants_body
             }
@@ -1103,8 +1103,8 @@ where
             quote!(
                 fn from_forest(
                     forest: &'a gll::grammer::forest::ParseForest<'i, _G, I>,
-                    _node: Node<'i, _P>,
-                    _r: traverse!(typeof(Node<'i, _P>) #shape),
+                    _node: Node<'i, _G>,
+                    _r: traverse!(typeof(Node<'i, _G>) #shape),
                 ) -> Self {
                     #ident {
                         #(#fields_ident: #fields_expr),*
@@ -1538,7 +1538,6 @@ fn code_label_decl_and_impls<Pat>(
         }
         impl gll::runtime::CodeLabel for _C {
             type GrammarReflector = _G;
-            type NodeKind = _P;
 
             fn enclosing_fn(self) -> Self {
                 match self {
