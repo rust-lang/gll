@@ -304,7 +304,7 @@ impl<Pat: RustInputPat> NodeShapeMethods<Pat> for NodeShape<IRule> {
         let variant = match shape {
             NodeShape::Opaque => quote!(Opaque),
             NodeShape::Alias(inner) => quote!(Alias(#inner)),
-            NodeShape::Choice => quote!(Choice),
+            NodeShape::Choice(count) => quote!(Choice(#count)),
             NodeShape::Opt(inner) => quote!(Opt(#inner)),
             NodeShape::Split(left, right) => quote!(Split(#left, #right)),
         };
@@ -389,6 +389,13 @@ impl<Pat: MatchesEmpty + RustInputPat> GrammarGenerateMethods<Pat> for grammer::
             let rule = *rules.anon.get_index(i).unwrap();
             rule.node_shape(cx, Some(rules.named))
                 .map(|rule| rule.node_kind(cx, &mut rules));
+            // HACK(eddyb) this is needed because `NodeShape` doesn't
+            // encode `Choice` cases directly, only their count.
+            if let Rule::Or(cases) = &cx[rule] {
+                for &rule in cases {
+                    rule.node_kind(cx, &mut rules);
+                }
+            }
             i += 1;
         }
 
@@ -727,12 +734,11 @@ fn reify_as<Pat>(label: Rc<CodeLabel>) -> Thunk<impl ContFn<Pat>> {
     })
 }
 
-fn forest_add_choice<Pat: RustInputPat>(rule: IRule, choice: IRule) -> Thunk<impl ContFn<Pat>> {
+fn forest_add_choice<Pat: RustInputPat>(rule: IRule, choice: usize) -> Thunk<impl ContFn<Pat>> {
     Thunk::new(move |mut cont| {
         if let Some(rules) = &mut cont.rules.as_mut() {
             let node_kind_src = rule.node_kind(cont.cx, rules).to_src();
-            let choice_src = choice.node_kind(cont.cx, rules).to_src();
-            cont = thunk!(rt.forest_add_choice(#node_kind_src, #choice_src);).apply(cont);
+            cont = thunk!(rt.forest_add_choice(#node_kind_src, #choice);).apply(cont);
         }
         cont
     })
@@ -794,8 +800,8 @@ impl<Pat: RustInputPat> RuleGenerateMethods<Pat> for IRule {
                     concat_and_forest_add(self, left, right.generate_parse()).apply(cont)
                 }
                 Rule::Or(ref cases) => {
-                    parallel(ThunkIter(cases.iter().map(|&rule| {
-                        rule.generate_parse() + forest_add_choice(self, rule)
+                    parallel(ThunkIter(cases.iter().enumerate().map(|(i, &rule)| {
+                        rule.generate_parse() + forest_add_choice(self, i)
                     })))
                     .apply(cont)
                 }
@@ -1407,6 +1413,19 @@ fn declare_node_kind<Pat: RustInputPat>(
         .iter()
         .map(|&rule| rule.node_shape(cx, Some(rules.named)).to_src(cx, rules))
         .collect::<Vec<_>>();
+    let nodes_shape_choices = all_rules
+        .iter()
+        .map(|&rule| {
+            let choices = match &cx[rule] {
+                Rule::Or(choices) => &choices[..],
+                _ => &[],
+            };
+            let choices = choices
+                .iter()
+                .map(|rule| rule.node_kind(cx, rules).to_src());
+            quote!([#(#choices,)*])
+        })
+        .collect::<Vec<_>>();
 
     quote!(
         pub struct _G;
@@ -1425,6 +1444,11 @@ fn declare_node_kind<Pat: RustInputPat>(
             fn node_shape(&self, kind: _P) -> NodeShape<_P> {
                 match kind {
                     #(#nodes_kind_src => #nodes_shape_src),*
+                }
+            }
+            fn node_shape_choice_get(&self, kind: _P, i: usize) -> _P {
+                match kind {
+                    #(#nodes_kind_src => #nodes_shape_choices[i]),*
                 }
             }
             fn node_desc(&self, kind: _P) -> String {
