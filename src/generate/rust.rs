@@ -230,8 +230,16 @@ impl<Pat: RustInputPat> RuleWithFieldsMethods<Pat> for RuleWithFields {
         let children = match &cx[self.fields] {
             Fields::Leaf(None) => return quote!(_),
             Fields::Leaf(Some(field)) => {
-                let (i, _, _) = rust_fields.get_full(&field.name).unwrap();
-                return quote!(#i);
+                let (i, _, rust_field) = rust_fields.get_full(&field.name).unwrap();
+
+                // HACK(eddyb) account for the fact that `x:X?` is `x:{X?}`.
+                let shape = quote!(#i);
+                if let Rule::Opt(_) = cx[self.rule] {
+                    if rust_field.refutable {
+                        return quote!([#shape]);
+                    }
+                }
+                return shape;
             }
             Fields::Aggregate(children) => children,
         };

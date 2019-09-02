@@ -199,6 +199,8 @@ testcases![
             Bar:{ "a" field:"b"? } |
             Baz:{ baz:"ab" };
     }:
+    A("a") => "\
+1:1-1:2 => A::Bar",
     A("ab") => "\
 1:1-1:3 => A::Foo(
     1:1-1:3,
