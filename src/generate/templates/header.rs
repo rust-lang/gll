@@ -273,11 +273,22 @@ where
     T: _forest::typed::Shaped + _forest::typed::FromShapeFields<'a, 'i, _G, I>,
 {
     pub fn one(self) -> Result<T::Output, Ambiguity<Self>> {
-        T::one(self.forest, self.forest.unpack_alias(self.node))
-            .map_err(|_forest::MoreThanOne| Ambiguity(self))
+        // HACK(eddyb) this can probably still be wrong sometimes.
+        let mut node = self.node;
+        if let NodeShape::Alias(_) = self.forest.grammar.node_shape(node.kind) {
+            node = self.forest.unpack_alias(node);
+        }
+
+        T::one(self.forest, node).map_err(|_forest::MoreThanOne| Ambiguity(self))
     }
 
     pub fn all(self) -> _forest::typed::ShapedAllIter<'a, 'i, _G, I, T> {
-        T::all(self.forest, self.forest.unpack_alias(self.node))
+        // HACK(eddyb) this can probably still be wrong sometimes.
+        let mut node = self.node;
+        if let NodeShape::Alias(_) = self.forest.grammar.node_shape(node.kind) {
+            node = self.forest.unpack_alias(node);
+        }
+
+        T::all(self.forest, node)
     }
 }
