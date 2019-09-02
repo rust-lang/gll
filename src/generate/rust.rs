@@ -116,10 +116,42 @@ impl<Pat: RustInputPat> RuleWithFieldsMethods<Pat> for RuleWithFields {
         let children = match &cx[self.fields] {
             Fields::Leaf(None) => return indexmap! {},
             Fields::Leaf(Some(field)) => {
-                // FIXME(eddyb) support this properly (see issue #128).
-                assert_eq!(cx[field.sub], Fields::Leaf(None));
+                let mut sub = RuleWithFields {
+                    rule: self.rule,
+                    fields: field.sub,
+                };
 
-                return indexmap! { field.name => self.rule.leaf_rust_field(cx) };
+                // FIXME(eddyb) support this properly (see issue #128).
+                assert_eq!(cx[sub.fields], Fields::Leaf(None));
+
+                let mut refutable = false;
+                while let Rule::Opt(child) = cx[sub.rule] {
+                    refutable = true;
+                    sub.rule = child;
+                }
+
+                let repeat = match cx[sub.rule] {
+                    Rule::RepeatMany(elem, _) | Rule::RepeatMore(elem, _) => {
+                        sub.rule = elem;
+                        true
+                    }
+                    _ => false,
+                };
+
+                let ty = match cx[sub.rule] {
+                    Rule::Call(r) => {
+                        let ident = Src::ident(&cx[r]);
+                        quote!(#ident<'a, 'i, I>)
+                    }
+                    _ => quote!(()),
+                };
+
+                return indexmap! {
+                    field.name => RustField {
+                        ty: if repeat { quote!([#ty]) } else { ty },
+                        refutable,
+                    },
+                };
             }
             Fields::Aggregate(children) => children,
         };
@@ -203,7 +235,13 @@ impl<Pat: RustInputPat> RuleWithFieldsMethods<Pat> for RuleWithFields {
                             };
                             let subfields = child.rust_fields(cx);
                             let variant = if subfields.is_empty() {
-                                RustVariant::Newtype(rule.leaf_rust_field(cx))
+                                let variant = RuleWithFields {
+                                    rule,
+                                    fields: children[i],
+                                };
+                                let variant_fields = variant.rust_fields(cx);
+                                assert_eq!(variant_fields.len(), 1);
+                                RustVariant::Newtype(variant_fields.into_iter().next().unwrap().1)
                             } else {
                                 RustVariant::StructLike(subfields)
                             };
@@ -278,37 +316,10 @@ impl<Pat: RustInputPat> RuleWithFieldsMethods<Pat> for RuleWithFields {
 }
 
 trait RuleMethods<Pat>: Sized {
-    fn leaf_rust_field(self, cx: &Context<Pat>) -> RustField;
     fn node_kind(self, cx: &Context<Pat>, rules: &mut RuleMap<'_>) -> NodeKind;
 }
 
 impl<Pat: RustInputPat> RuleMethods<Pat> for IRule {
-    fn leaf_rust_field(self, cx: &Context<Pat>) -> RustField {
-        let ty = match cx[self] {
-            Rule::Empty | Rule::Eat(_) | Rule::Concat(_) | Rule::Or(_) => quote!(()),
-
-            Rule::Call(r) => {
-                let ident = Src::ident(&cx[r]);
-                quote!(#ident<'a, 'i, I>)
-            }
-
-            Rule::Opt(rule) => {
-                let mut field = rule.leaf_rust_field(cx);
-                field.refutable = true;
-                return field;
-            }
-
-            Rule::RepeatMany(elem, _) | Rule::RepeatMore(elem, _) => {
-                let elem = elem.leaf_rust_field(cx).ty;
-                quote!([#elem])
-            }
-        };
-        RustField {
-            ty,
-            refutable: false,
-        }
-    }
-
     fn node_kind(self, cx: &Context<Pat>, rules: &mut RuleMap<'_>) -> NodeKind {
         if let Rule::Call(r) = cx[self] {
             return NodeKind::NamedRule(cx[r].to_string());
