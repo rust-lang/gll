@@ -40,9 +40,7 @@ impl<'a, I: gll::grammer::input::Input, T: ?Sized> Handle<'a, '_, I, T> {
     }
 }
 
-impl<'a, 'i, I, T: ?Sized>
-    _forest::typed::FromShapeFields<'a, _forest::ParseForest<'i, _G, I>, Node<'i, _G>>
-    for Handle<'a, 'i, I, T>
+impl<'a, 'i, I, T: ?Sized> _forest::typed::FromShapeFields<'a, 'i, _G, I> for Handle<'a, 'i, I, T>
 where
     I: gll::grammer::input::Input,
 {
@@ -89,9 +87,7 @@ impl<'a, 'i, I: gll::grammer::input::Input, T> fmt::Debug for Handle<'a, 'i, I, 
 where
     // FIXME(eddyb) this should be `Handle<'a, 'i, I, T>: fmt::Debug` but that
     // runs into overflows looking for `Handle<I, [[[...[[[_]]]...]]]>`.
-    T: _forest::typed::Shaped
-        + _forest::typed::FromShapeFields<'a, _forest::ParseForest<'i, _G, I>, Node<'i, _G>>,
-    T::Shape: _forest::typed::Shape<_forest::ParseForest<'i, _G, I>, Node<'i, _G>>,
+    T: _forest::typed::Shaped + _forest::typed::FromShapeFields<'a, 'i, _G, I>,
     T::Output: fmt::Debug,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -250,9 +246,7 @@ impl<'a, 'i, I: gll::grammer::input::Input, T> Handle<'a, 'i, I, [T]> {
 impl<'a, 'i, I, T> fmt::Debug for Handle<'a, 'i, I, T>
 where
     I: gll::grammer::input::Input,
-    T: _forest::typed::Shaped
-        + _forest::typed::FromShapeFields<'a, _forest::ParseForest<'i, _G, I>, Node<'i, _G>>,
-    T::Shape: _forest::typed::Shape<_forest::ParseForest<'i, _G, I>, Node<'i, _G>>,
+    T: _forest::typed::Shaped + _forest::typed::FromShapeFields<'a, 'i, _G, I>,
     T::Output: fmt::Debug,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -276,18 +270,14 @@ where
 impl<'a, 'i, I, T> Handle<'a, 'i, I, T>
 where
     I: gll::grammer::input::Input,
-    T: _forest::typed::Shaped
-        + _forest::typed::FromShapeFields<'a, _forest::ParseForest<'i, _G, I>, Node<'i, _G>>,
-    T::Shape: _forest::typed::Shape<_forest::ParseForest<'i, _G, I>, Node<'i, _G>>,
+    T: _forest::typed::Shaped + _forest::typed::FromShapeFields<'a, 'i, _G, I>,
 {
     pub fn one(self) -> Result<T::Output, Ambiguity<Self>> {
         T::one(self.forest, self.forest.unpack_alias(self.node))
             .map_err(|_forest::MoreThanOne| Ambiguity(self))
     }
 
-    pub fn all(
-        self,
-    ) -> _forest::typed::ShapedAllIter<'a, T, _forest::ParseForest<'i, _G, I>, Node<'i, _G>> {
+    pub fn all(self) -> _forest::typed::ShapedAllIter<'a, 'i, _G, I, T> {
         T::all(self.forest, self.forest.unpack_alias(self.node))
     }
 }

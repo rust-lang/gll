@@ -1116,10 +1116,10 @@ where
         where I: gll::grammer::input::Input,
     {
         type Shape = _forest::typed::shape!(#shape);
-        type State = [usize; <_forest::typed::shape!(#shape) as _forest::typed::ShapeStateLen>::STATE_LEN];
+        type State = [usize; <_forest::typed::shape!(#shape) as _forest::typed::Shape>::STATE_LEN];
     }
     impl<'a, 'i, I>
-        _forest::typed::FromShapeFields<'a, _forest::ParseForest<'i, _G, I>, Node<'i, _G>>
+        _forest::typed::FromShapeFields<'a, 'i, _G, I>
             for #ident<'a, 'i, I>
         where I: gll::grammer::input::Input,
     {
