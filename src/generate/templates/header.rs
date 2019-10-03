@@ -4,7 +4,7 @@ pub type Any = dyn any::Any;
 pub struct Ambiguity<T>(T);
 
 pub struct OwnedHandle<I: gll::grammer::input::Input, T: ?Sized> {
-    forest_and_node: gll::grammer::forest::OwnedParseForestAndNode<_G, I>,
+    forest_and_node: _forest::OwnedParseForestAndNode<_G, I>,
     _marker: PhantomData<T>,
 }
 
@@ -19,7 +19,7 @@ impl<I: gll::grammer::input::Input, T: ?Sized> OwnedHandle<I, T> {
 
 pub struct Handle<'a, 'i, I: gll::grammer::input::Input, T: ?Sized> {
     pub node: Node<'i, _G>,
-    pub forest: &'a gll::grammer::forest::ParseForest<'i, _G, I>,
+    pub forest: &'a _forest::ParseForest<'i, _G, I>,
     _marker: PhantomData<T>,
 }
 
@@ -37,6 +37,25 @@ impl<'a, I: gll::grammer::input::Input, T: ?Sized> Handle<'a, '_, I, T> {
     }
     pub fn source_info(self) -> I::SourceInfo {
         self.forest.source_info(self.node.range)
+    }
+}
+
+impl<'a, 'i, I, T: ?Sized> _forest::typed::FromShapeFields<'a, 'i, _G, I> for Handle<'a, 'i, I, T>
+where
+    I: gll::grammer::input::Input,
+{
+    type Output = Self;
+    type Fields = [Option<Node<'i, _G>>; 1];
+
+    fn from_shape_fields(
+        forest: &'a _forest::ParseForest<'i, _G, I>,
+        [node]: Self::Fields,
+    ) -> Self {
+        Handle {
+            node: node.unwrap(),
+            forest,
+            _marker: PhantomData,
+        }
     }
 }
 
@@ -64,15 +83,12 @@ impl<'a, 'i, I: gll::grammer::input::Input, T> From<Ambiguity<Handle<'a, 'i, I, 
     }
 }
 
-impl<I: gll::grammer::input::Input> fmt::Debug for Handle<'_, '_, I, ()> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", self.source_info())
-    }
-}
-
 impl<'a, 'i, I: gll::grammer::input::Input, T> fmt::Debug for Handle<'a, 'i, I, [T]>
 where
-    Handle<'a, 'i, I, T>: fmt::Debug,
+    // FIXME(eddyb) this should be `Handle<'a, 'i, I, T>: fmt::Debug` but that
+    // runs into overflows looking for `Handle<I, [[[...[[[_]]]...]]]>`.
+    T: _forest::typed::Shaped + _forest::typed::FromShapeFields<'a, 'i, _G, I>,
+    T::Output: fmt::Debug,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:?} => ", self.source_info())?;
@@ -223,5 +239,45 @@ impl<'a, 'i, I: gll::grammer::input::Input, T> Handle<'a, 'i, I, [T]> {
                     )
                 }),
         )
+    }
+}
+
+// FIXME(eddyb) move Handle somewhere in `runtime` or even `grammer::forest`.
+impl<'a, 'i, I, T> fmt::Debug for Handle<'a, 'i, I, T>
+where
+    I: gll::grammer::input::Input,
+    T: _forest::typed::Shaped + _forest::typed::FromShapeFields<'a, 'i, _G, I>,
+    T::Output: fmt::Debug,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self.source_info())?;
+        if !T::Fields::default().as_mut().is_empty() {
+            write!(f, " => ")?;
+            let mut first = true;
+            for x in self.all() {
+                if !first {
+                    write!(f, " | ")?;
+                }
+                first = false;
+                fmt::Debug::fmt(&x, f)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+// FIXME(eddyb) move Handle somewhere in `runtime` or even `grammer::forest`.
+impl<'a, 'i, I, T> Handle<'a, 'i, I, T>
+where
+    I: gll::grammer::input::Input,
+    T: _forest::typed::Shaped + _forest::typed::FromShapeFields<'a, 'i, _G, I>,
+{
+    pub fn one(self) -> Result<T::Output, Ambiguity<Self>> {
+        T::one(self.forest, self.forest.unpack_alias(self.node))
+            .map_err(|_forest::MoreThanOne| Ambiguity(self))
+    }
+
+    pub fn all(self) -> _forest::typed::ShapedAllIter<'a, 'i, _G, I, T> {
+        T::all(self.forest, self.forest.unpack_alias(self.node))
     }
 }
