@@ -6,6 +6,7 @@ use grammer::{proc_macro, scannerless};
 
 use indexmap::{indexmap, IndexMap, IndexSet};
 use std::borrow::Cow;
+use std::collections::BTreeSet;
 use std::fmt::{self, Write as _};
 use std::hash::Hash;
 use std::ops::Add;
@@ -90,6 +91,18 @@ struct RustField {
     refutable: bool,
 }
 
+impl RustField {
+    fn handle_ty(&self) -> Src {
+        let ty = &self.ty;
+        let handle_ty = quote!(Handle<'a, 'i, I, #ty>);
+        if self.refutable {
+            quote!(Option<#handle_ty>)
+        } else {
+            handle_ty
+        }
+    }
+}
+
 type RustFields = IndexMap<IStr, RustField>;
 
 enum RustVariant {
@@ -106,24 +119,100 @@ enum RustAdt {
 }
 
 trait RuleWithFieldsMethods<Pat> {
-    fn rust_fields(self, cx: &Context<Pat>) -> RustFields;
-    fn rust_adt(self, cx: &Context<Pat>) -> RustAdt;
+    fn rust_fields(self, cx: &Context<Pat>, records: &mut BTreeSet<Vec<String>>) -> RustFields;
+    fn rust_adt(self, cx: &Context<Pat>, records: &mut BTreeSet<Vec<String>>) -> RustAdt;
     fn traverse_shape(self, cx: &Context<Pat>, rust_fields: &RustFields) -> Src;
 }
 
 impl<Pat: RustInputPat> RuleWithFieldsMethods<Pat> for RuleWithFields {
-    fn rust_fields(self, cx: &Context<Pat>) -> RustFields {
+    fn rust_fields(self, cx: &Context<Pat>, records: &mut BTreeSet<Vec<String>>) -> RustFields {
         let children = match &cx[self.fields] {
             Fields::Leaf(None) => return indexmap! {},
             Fields::Leaf(Some(field)) => {
-                // FIXME(eddyb) support this properly (see issue #128).
-                assert_eq!(cx[field.sub], Fields::Leaf(None));
+                let mut sub = RuleWithFields {
+                    rule: self.rule,
+                    fields: field.sub,
+                };
 
-                return indexmap! { field.name => self.rule.leaf_rust_field(cx) };
+                let refutable = match cx[sub.rule] {
+                    Rule::Opt(child) => match &cx[sub.fields] {
+                        // `x:{ y:Y? }`
+                        Fields::Leaf(Some(_)) => false,
+
+                        // `x:X?`
+                        Fields::Leaf(None) => {
+                            sub.rule = child;
+                            true
+                        }
+
+                        // `x:{ y:Y z:Z }?`
+                        Fields::Aggregate(children) => {
+                            sub.rule = child;
+                            sub.fields = children[0];
+                            true
+                        }
+                    },
+                    _ => false,
+                };
+
+                let repeat = match cx[sub.rule] {
+                    Rule::RepeatMany(elem, _) | Rule::RepeatMore(elem, _) => {
+                        match &cx[sub.fields] {
+                            // `xs:{ ys:Y* }`
+                            Fields::Leaf(Some(_)) => false,
+
+                            // `xs:X*`
+                            Fields::Leaf(None) => {
+                                sub.rule = elem;
+                                true
+                            }
+
+                            // `xs:{ y:Y z:Z }*`
+                            Fields::Aggregate(children) => {
+                                sub.rule = elem;
+                                sub.fields = children[0];
+                                true
+                            }
+                        }
+                    }
+                    _ => false,
+                };
+
+                let subfields = sub.rust_fields(cx, records);
+                let ty = if !subfields.is_empty() {
+                    let rec_fields_name: Vec<_> =
+                        subfields.keys().map(|&name| cx[name].to_string()).collect();
+                    let rec_ident = Src::ident(&(rec_fields_name.join("__") + "__"));
+                    let rec_fields_handle_ty = subfields.values().map(|field| field.handle_ty());
+                    let shape = sub.traverse_shape(cx, &subfields);
+
+                    records.insert(rec_fields_name);
+
+                    quote!(_forest::typed::WithShape<
+                        _rec::#rec_ident<#(#rec_fields_handle_ty),*>,
+                        _forest::typed::shape!(#shape),
+                        [usize; <_forest::typed::shape!(#shape) as _forest::typed::Shape>::STATE_LEN],
+                    >)
+                } else {
+                    match cx[sub.rule] {
+                        Rule::Call(r) => {
+                            let ident = Src::ident(&cx[r]);
+                            quote!(#ident<'a, 'i, I>)
+                        }
+                        _ => quote!(()),
+                    }
+                };
+
+                return indexmap! {
+                    field.name => RustField {
+                        ty: if repeat { quote!([#ty]) } else { ty },
+                        refutable,
+                    },
+                };
             }
             Fields::Aggregate(children) => children,
         };
-        let child_fields = |rule, i| {
+        let mut child_fields = |rule, i| {
             let child = RuleWithFields {
                 rule,
                 fields: children
@@ -131,7 +220,7 @@ impl<Pat: RustInputPat> RuleWithFieldsMethods<Pat> for RuleWithFields {
                     .cloned()
                     .unwrap_or_else(|| cx.intern(Fields::Leaf(None))),
             };
-            child.rust_fields(cx)
+            child.rust_fields(cx, records)
         };
 
         match cx[self.rule] {
@@ -149,7 +238,7 @@ impl<Pat: RustInputPat> RuleWithFieldsMethods<Pat> for RuleWithFields {
                 fields
             }
             Rule::Or(ref cases) => {
-                let child_fields = |i| {
+                let mut child_fields = |i| {
                     let mut fields = child_fields(cases[i], i);
                     for field in fields.values_mut() {
                         field.refutable = true;
@@ -189,7 +278,7 @@ impl<Pat: RustInputPat> RuleWithFieldsMethods<Pat> for RuleWithFields {
         }
     }
 
-    fn rust_adt(self, cx: &Context<Pat>) -> RustAdt {
+    fn rust_adt(self, cx: &Context<Pat>, records: &mut BTreeSet<Vec<String>>) -> RustAdt {
         match (&cx[self.rule], &cx[self.fields]) {
             (Rule::Or(cases), Fields::Aggregate(children)) => {
                 let variants: Option<IndexMap<_, _>> = cases
@@ -201,9 +290,15 @@ impl<Pat: RustInputPat> RuleWithFieldsMethods<Pat> for RuleWithFields {
                                 rule,
                                 fields: field.sub,
                             };
-                            let subfields = child.rust_fields(cx);
+                            let subfields = child.rust_fields(cx, records);
                             let variant = if subfields.is_empty() {
-                                RustVariant::Newtype(rule.leaf_rust_field(cx))
+                                let variant = RuleWithFields {
+                                    rule,
+                                    fields: children[i],
+                                };
+                                let variant_fields = variant.rust_fields(cx, records);
+                                assert_eq!(variant_fields.len(), 1);
+                                RustVariant::Newtype(variant_fields.into_iter().next().unwrap().1)
                             } else {
                                 RustVariant::StructLike(subfields)
                             };
@@ -223,15 +318,23 @@ impl<Pat: RustInputPat> RuleWithFieldsMethods<Pat> for RuleWithFields {
             _ => {}
         }
 
-        RustAdt::Struct(self.rust_fields(cx))
+        RustAdt::Struct(self.rust_fields(cx, records))
     }
 
     fn traverse_shape(self, cx: &Context<Pat>, rust_fields: &RustFields) -> Src {
         let children = match &cx[self.fields] {
             Fields::Leaf(None) => return quote!(_),
             Fields::Leaf(Some(field)) => {
-                let (i, _, _) = rust_fields.get_full(&field.name).unwrap();
-                return quote!(#i);
+                let (i, _, rust_field) = rust_fields.get_full(&field.name).unwrap();
+
+                // HACK(eddyb) account for the fact that `x:X?` is `x:{X?}`.
+                let shape = quote!(#i);
+                if let Rule::Opt(_) = cx[self.rule] {
+                    if rust_field.refutable {
+                        return quote!([#shape]);
+                    }
+                }
+                return shape;
             }
             Fields::Aggregate(children) => children,
         };
@@ -270,37 +373,10 @@ impl<Pat: RustInputPat> RuleWithFieldsMethods<Pat> for RuleWithFields {
 }
 
 trait RuleMethods<Pat>: Sized {
-    fn leaf_rust_field(self, cx: &Context<Pat>) -> RustField;
     fn node_kind(self, cx: &Context<Pat>, rules: &mut RuleMap<'_>) -> NodeKind;
 }
 
 impl<Pat: RustInputPat> RuleMethods<Pat> for IRule {
-    fn leaf_rust_field(self, cx: &Context<Pat>) -> RustField {
-        let ty = match cx[self] {
-            Rule::Empty | Rule::Eat(_) | Rule::Concat(_) | Rule::Or(_) => quote!(()),
-
-            Rule::Call(r) => {
-                let ident = Src::ident(&cx[r]);
-                quote!(#ident<'a, 'i, I>)
-            }
-
-            Rule::Opt(rule) => {
-                let mut field = rule.leaf_rust_field(cx);
-                field.refutable = true;
-                return field;
-            }
-
-            Rule::RepeatMany(elem, _) | Rule::RepeatMore(elem, _) => {
-                let elem = elem.leaf_rust_field(cx).ty;
-                quote!([#elem])
-            }
-        };
-        RustField {
-            ty,
-            refutable: false,
-        }
-    }
-
     fn node_kind(self, cx: &Context<Pat>, rules: &mut RuleMap<'_>) -> NodeKind {
         if let Rule::Call(r) = cx[self] {
             return NodeKind::NamedRule(cx[r].to_string());
@@ -411,9 +487,70 @@ impl<Pat: MatchesEmpty + RustInputPat> GrammarGenerateMethods<Pat> for grammer::
         .parse::<Src>()
         .unwrap();
 
+        let mut records = BTreeSet::new();
+
         for (&name, &rule) in rules.named {
-            out += declare_rule(name, rule, cx, &mut rules) + impl_parse_with(cx, name);
+            let rust_adt = rule.rust_adt(cx, &mut records);
+            out += declare_rule(name, rule, &rust_adt, cx, &mut rules) + impl_parse_with(cx, name);
         }
+
+        let records = records.into_iter().map(|fields| {
+            let ident = Src::ident(&(fields.join("__") + "__"));
+            // FIXME(eddyb) figure out a more efficient way to reuse
+            // iterators with `quote!(...)` than `.collect::<Vec<_>>()`.
+            let f_ident = fields.iter().map(Src::ident).collect::<Vec<_>>();
+            let f_len = fields.len();
+
+            quote!(
+                #[derive(Copy, Clone)]
+                pub struct #ident<#(#f_ident),*> {
+                    #(pub #f_ident: #f_ident),*
+                }
+
+                impl<#(#f_ident),*> fmt::Debug for #ident<#(#f_ident),*>
+                where
+                    #(#f_ident: fmt::Debug),*
+                {
+                    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                        f.debug_map()
+                            #(.entry(&FieldName(stringify!(#f_ident)), &self.#f_ident))*
+                            .finish()
+                    }
+                }
+
+                impl<'a, 'i, I, #(#f_ident),*> _forest::typed::FromShapeFields<'a, 'i, _G, I> for #ident<#(#f_ident),*>
+                where
+                    I: gll::grammer::input::Input,
+                    #(#f_ident: _forest::typed::FromShapeFields<'a, 'i, _G, I, Fields = [Option<Node<'i, _G>>; 1]>),*
+                {
+                    type Output = #ident<#(#f_ident::Output),*>;
+                    type Fields = [Option<Node<'i, _G>>; #f_len];
+
+                    fn from_shape_fields(
+                        forest: &'a _forest::ParseForest<'i, _G, I>,
+                        [#(#f_ident),*]: Self::Fields,
+                    ) -> Self::Output {
+                        #ident {
+                            #(#f_ident: #f_ident::from_shape_fields(forest, [#f_ident])),*
+                        }
+                    }
+                }
+            )
+        });
+        out += quote!(pub mod _rec {
+            use super::{_forest, _G, Node};
+            use std::fmt;
+
+            // FIXME(eddyb) move this somewhere else.
+            struct FieldName<'a>(&'a str);
+            impl fmt::Debug for FieldName<'_> {
+                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                    f.write_str(self.0)
+                }
+            }
+
+            #(#records)*
+        });
 
         let mut code_labels = IndexMap::new();
         out += define_parse_fn(cx, &mut rules, &mut code_labels);
@@ -951,6 +1088,7 @@ where
 fn declare_rule<Pat>(
     name: IStr,
     rule: RuleWithFields,
+    rust_adt: &RustAdt,
     cx: &Context<Pat>,
     rules: &mut RuleMap<'_>,
 ) -> Src
@@ -958,32 +1096,21 @@ where
     Pat: RustInputPat,
 {
     let ident = Src::ident(&cx[name]);
-    let rust_adt = rule.rust_adt(cx);
 
-    let field_handle_ty = |field: &RustField| {
-        let ty = &field.ty;
-        let handle_ty = quote!(Handle<'a, 'i, I, #ty>);
-        if field.refutable {
-            quote!(Option<#handle_ty>)
-        } else {
-            handle_ty
-        }
-    };
-
-    let rule_ty_def = match &rust_adt {
+    let rule_ty_def = match rust_adt {
         RustAdt::Enum(variants) => {
             let variants = variants.iter().map(|(&v_name, (_, variant))| {
                 let variant_ident = Src::ident(&cx[v_name]);
                 match variant {
                     RustVariant::Newtype(field) => {
-                        let field_ty = field_handle_ty(field);
+                        let field_ty = field.handle_ty();
                         quote!(#variant_ident(#field_ty))
                     }
                     RustVariant::StructLike(v_fields) => {
                         let fields_ident = v_fields.keys().map(|&name| Src::ident(&cx[name]));
-                        let fields_ty = v_fields.values().map(field_handle_ty);
+                        let fields_handle_ty = v_fields.values().map(|field| field.handle_ty());
                         quote!(#variant_ident {
-                            #(#fields_ident: #fields_ty),*
+                            #(#fields_ident: #fields_handle_ty),*
                         })
                     }
                 }
@@ -997,7 +1124,7 @@ where
         }
         RustAdt::Struct(fields) => {
             let fields_ident = fields.keys().map(|&name| Src::ident(&cx[name]));
-            let fields_ty = fields.values().map(field_handle_ty);
+            let fields_handle_ty = fields.values().map(|field| field.handle_ty());
             let marker_field = if fields.is_empty() {
                 Some(quote!(_marker: PhantomData<(&'a (), &'i (), I)>,))
             } else {
@@ -1006,15 +1133,15 @@ where
             quote!(
                 #[allow(non_camel_case_types)]
                 pub struct #ident<'a, 'i, I: gll::grammer::input::Input> {
-                    #(pub #fields_ident: #fields_ty),*
+                    #(pub #fields_ident: #fields_handle_ty),*
                     #marker_field
                 }
             )
         }
     };
     rule_ty_def
-        + rule_debug_impl(cx, name, &rust_adt)
-        + impl_rule_traverse_impl(name, rule, &rust_adt, cx, rules)
+        + rule_debug_impl(cx, name, rust_adt)
+        + impl_rule_traverse_impl(name, rule, rust_adt, cx, rules)
 }
 
 fn impl_rule_traverse_impl<Pat>(
