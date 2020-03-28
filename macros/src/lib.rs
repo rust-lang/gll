@@ -1,7 +1,5 @@
 #![deny(rust_2018_idioms)]
 
-extern crate proc_macro;
-
 use proc_macro::TokenStream;
 use proc_quote::ToTokens as _;
 
