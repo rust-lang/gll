@@ -528,7 +528,7 @@ impl<Pat: MatchesEmpty + RustInputPat> GrammarGenerateMethods<Pat> for grammer::
 
                     fn from_shape_fields(
                         forest: &'a _forest::ParseForest<'i, _G, I>,
-                        [#(#f_ident),*]: Self::Fields,
+                        [#(#f_ident),*]: <Self as _forest::typed::FromShapeFields<'a, 'i, _G, I>>::Fields,
                     ) -> Self::Output {
                         #ident {
                             #(#f_ident: #f_ident::from_shape_fields(forest, [#f_ident])),*
@@ -1255,7 +1255,7 @@ where
 
         fn from_shape_fields(
             forest: &'a _forest::ParseForest<'i, _G, I>,
-            fields: Self::Fields,
+            fields: <Self as _forest::typed::FromShapeFields<'a, 'i, _G, I>>::Fields,
         ) -> Self {
             #from_shape
         }
