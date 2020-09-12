@@ -60,6 +60,7 @@ Rules are made out of:
 * **optionals**: `A?` - "either `A` or nothing"
 * **lists**: `A*` - "zero or more `A`s", `A+` - "one or more `A`s"
   * optional separator: `A* % ","` - "comma-separated `A`s"
+  * variant: `A* %% ","` - "comma-separated `A`s", with an optional trailing comma
 
 Parts of a rule can be labeled with **field names**, to allow later access to them:
 
