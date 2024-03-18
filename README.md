@@ -1,3 +1,9 @@
+# ⚠️ This repo is archived
+
+Future work to establish an official grammar for Rust will likely be handled as part of the [Rust Specification](https://github.com/rust-lang/spec).
+
+----
+
 # GLL parsing framework
 
 [![Build Status](https://travis-ci.com/rust-lang/gll.svg?branch=master)](https://travis-ci.com/rust-lang/gll)
